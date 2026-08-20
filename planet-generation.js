@@ -34,6 +34,10 @@ let N = 10000;
 let P = 20;
 let jitter = 0.75;
 let rotation = -1;
+let dragRotation = mat4.create();
+let zoom = 1;
+let northHeadingAngle = 0;
+let northAnimId = 0;
 let drawMode = 'centroid';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
@@ -722,6 +726,101 @@ function drawPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     });
 }
 
+function globeViewMatrix(out) {
+    mat4.identity(out);
+    mat4.multiply(out, out, dragRotation);
+    mat4.rotate(out, out, -rotation, [0.1, 1, 0]);
+    mat4.rotate(out, out, -Math.PI / 2 + 0.2, [1, 0, 0]);
+    return out;
+}
+
+function northHeading() {
+    const view = globeViewMatrix(mat4.create());
+    const inv = mat4.invert(mat4.create(), view);
+    if (!inv) return northHeadingAngle;
+
+    const facing = vec3.transformMat4([], [0, 0, -1], inv);
+    vec3.normalize(facing, facing);
+    const poleDot = facing[2];
+    const tangent = [
+        -facing[0] * poleDot,
+        -facing[1] * poleDot,
+        1 - poleDot * poleDot,
+    ];
+    const tangentLength = vec3.length(tangent);
+    if (tangentLength < 1e-4) {
+        const pole = vec3.transformMat4([], [0, 0, 1], view);
+        if (Math.hypot(pole[0], pole[1]) < 1e-4) return northHeadingAngle;
+        northHeadingAngle = Math.atan2(pole[0], pole[1]);
+        return northHeadingAngle;
+    }
+    vec3.scale(tangent, tangent, 1 / tangentLength);
+    const viewNorth = vec3.transformMat4([], tangent, view);
+    northHeadingAngle = Math.atan2(viewNorth[0], viewNorth[1]);
+    return northHeadingAngle;
+}
+
+function drawNorthPole(u_projection) {
+    const line_xyz = [], line_rgba = [];
+    const red = [0.89, 0.18, 0.14, 1];
+    const redFade = [0.89, 0.18, 0.14, 0.2];
+
+    line_xyz.push([0, 0, 0.78], [0, 0, 1.18]);
+    line_rgba.push(redFade, red);
+
+    const tip = 1.18, base = 1.04, s = 0.05;
+    line_xyz.push([0, 0, tip], [s, 0, base], [0, 0, tip], [-s, 0, base],
+                  [0, 0, tip], [0, s, base], [0, 0, tip], [0, -s, base]);
+    for (let i = 0; i < 8; i++) line_rgba.push(red);
+
+    const lat = 78 * Math.PI / 180;
+    const ringZ = Math.sin(lat);
+    const ringR = Math.cos(lat);
+    const steps = 48;
+    for (let i = 0; i < steps; i++) {
+        const a0 = (i / steps) * Math.PI * 2;
+        const a1 = ((i + 1) / steps) * Math.PI * 2;
+        line_xyz.push(
+            [ringR * Math.cos(a0), ringR * Math.sin(a0), ringZ],
+            [ringR * Math.cos(a1), ringR * Math.sin(a1), ringZ]
+        );
+        line_rgba.push(red, red);
+    }
+
+    renderLines({
+        u_projection,
+        u_multiply_rgba: [1, 1, 1, 1],
+        u_add_rgba: [0, 0, 0, 0],
+        a_xyz: line_xyz,
+        a_rgba: line_rgba,
+        count: line_xyz.length,
+    });
+}
+
+function reorientNorth() {
+    const heading = northHeading();
+    if (!isFinite(heading) || Math.abs(heading) < 1e-3) return;
+
+    const animId = ++northAnimId;
+    const startDrag = mat4.clone(dragRotation);
+    const startedAt = performance.now();
+    const duration = 420;
+
+    function step(now) {
+        if (animId !== northAnimId) return;
+        const t = Math.min(1, (now - startedAt) / duration);
+        const eased = 1 - (1 - t) ** 3;
+        const delta = mat4.create();
+        mat4.rotateZ(delta, delta, heading * eased);
+        mat4.multiply(dragRotation, delta, startDrag);
+        draw();
+        if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+}
+
+window.reorientNorth = reorientNorth;
+
 function drawRivers(u_projection, mesh, {t_xyz, s_flow}) {
     let line_xyz = [], line_rgba = [];
 
@@ -751,7 +850,8 @@ let _draw_pending = false;
 function _draw() {
     let u_pointsize = 0.1 + 100 / Math.sqrt(N);
     let u_projection = mat4.create();
-    mat4.scale(u_projection, u_projection, [1, 1, 0.5, 1]); // avoid clipping
+    mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5, 1]); // avoid clipping
+    mat4.multiply(u_projection, u_projection, dragRotation);
     mat4.rotate(u_projection, u_projection, -rotation, [0.1, 1, 0]);
     mat4.rotate(u_projection, u_projection, -Math.PI/2+0.2, [1, 0, 0]);
 
@@ -779,12 +879,18 @@ function _draw() {
     }
 
     drawRivers(u_projection, mesh, map);
+    drawNorthPole(u_projection);
     
     if (draw_plateVectors) {
         drawPlateVectors(u_projection, mesh, map);
     }
     if (draw_plateBoundaries) {
         drawPlateBoundaries(u_projection, mesh, map);
+    }
+
+    const rose = document.querySelector('.north-compass-rose');
+    if (rose) {
+        rose.style.transform = `rotate(${northHeading() * 180 / Math.PI}deg)`;
     }
     
     // renderPoints({
@@ -803,4 +909,98 @@ function draw() {
     }
 }
 
+function setupDragRotation() {
+    const canvas = document.getElementById('output');
+    canvas.style.cursor = 'grab';
+    canvas.style.touchAction = 'none';
+    canvas.style.userSelect = 'none';
+
+    const ZOOM_MIN = 0.4;
+    const ZOOM_MAX = 8;
+    const pointers = new Map();
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    let pinchStartDist = 0;
+    let pinchStartZoom = 1;
+
+    function clampZoom(value) {
+        return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+    }
+
+    function pointerDistance() {
+        const pts = Array.from(pointers.values());
+        return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    }
+
+    canvas.addEventListener('pointerdown', (event) => {
+        northAnimId += 1;
+        pointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
+        if (pointers.size === 2) {
+            dragging = false;
+            canvas.style.cursor = 'grab';
+            pinchStartDist = pointerDistance();
+            pinchStartZoom = zoom;
+            return;
+        }
+        if (event.button !== 0) return;
+        dragging = true;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        canvas.setPointerCapture(event.pointerId);
+        canvas.style.cursor = 'grabbing';
+        event.preventDefault();
+    });
+
+    canvas.addEventListener('pointermove', (event) => {
+        if (pointers.has(event.pointerId)) {
+            pointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
+        }
+        if (pointers.size === 2 && pinchStartDist > 0) {
+            zoom = clampZoom(pinchStartZoom * (pointerDistance() / pinchStartDist));
+            draw();
+            return;
+        }
+        if (!dragging) return;
+        const rect = canvas.getBoundingClientRect();
+        const size = Math.max(rect.width, rect.height);
+        const dx = (event.clientX - lastX) / size * Math.PI * 2;
+        const dy = (event.clientY - lastY) / size * Math.PI * 2;
+        lastX = event.clientX;
+        lastY = event.clientY;
+
+        const delta = mat4.create();
+        mat4.rotateX(delta, delta, -dy);
+        mat4.rotateY(delta, delta, -dx);
+        mat4.multiply(dragRotation, delta, dragRotation);
+        draw();
+    });
+
+    function endDrag(event) {
+        pointers.delete(event.pointerId);
+        if (pointers.size === 1) {
+            const remaining = pointers.values().next().value;
+            lastX = remaining.x;
+            lastY = remaining.y;
+            dragging = true;
+            canvas.style.cursor = 'grabbing';
+            return;
+        }
+        dragging = false;
+        pinchStartDist = 0;
+        canvas.style.cursor = 'grab';
+    }
+
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
+    canvas.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        zoom = clampZoom(zoom * Math.exp(-event.deltaY * 0.002));
+        draw();
+    }, {passive: false});
+}
+
+setupDragRotation();
+document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
 generateMesh();

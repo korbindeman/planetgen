@@ -5,11 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Procedural Planet Generation</title>
     <style>
+      html {
+        color-scheme: light;
+        background: #fff;
+        color: #000;
+      }
       html, body { height: 100%; margin: 0; }
       body {
         display: flex;
         height: 100dvh;
         overflow: hidden;
+        background: #fff;
+        color: #000;
+      }
+      @media (prefers-color-scheme: dark) {
+        html { filter: invert(1); }
+        canvas { filter: invert(1); }
       }
       .controls {
         flex: 0 0 14rem;
@@ -27,9 +38,62 @@
         display: grid;
         place-items: center;
       }
-      canvas {
+      .globe {
+        position: relative;
         max-width: 100cqw;
         max-height: 100cqh;
+        line-height: 0;
+      }
+      canvas {
+        display: block;
+        max-width: 100cqw;
+        max-height: 100cqh;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+      }
+      canvas:active {
+        cursor: grabbing;
+      }
+      .north-compass {
+        position: absolute;
+        right: 0.7rem;
+        bottom: 0.7rem;
+        width: 48px;
+        height: 48px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.08),
+          0 1px 2px rgba(0, 0, 0, 0.12),
+          0 6px 16px rgba(0, 0, 0, 0.14);
+        cursor: pointer;
+        -webkit-font-smoothing: antialiased;
+        transition-property: transform, box-shadow;
+        transition-duration: 150ms;
+        transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+      }
+      .north-compass:hover {
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.1),
+          0 2px 4px rgba(0, 0, 0, 0.12),
+          0 8px 20px rgba(0, 0, 0, 0.16);
+      }
+      .north-compass:active {
+        transform: scale(0.96);
+      }
+      .north-compass-rose {
+        display: block;
+        width: 40px;
+        height: 40px;
+        margin: 4px;
+        transform-origin: 50% 50%;
+        will-change: transform;
+      }
+      @media (prefers-color-scheme: dark) {
+        .north-compass { filter: invert(1); }
       }
     </style>
   </head>
@@ -58,7 +122,16 @@
     </div>
 
     <figure>
-      <canvas id="output" width="1024" height="1024"></canvas>
+      <div class="globe">
+        <canvas id="output" width="1024" height="1024"></canvas>
+        <button type="button" class="north-compass" title="Click to reorient north" aria-label="Reorient north">
+          <svg class="north-compass-rose" viewBox="0 0 48 48" aria-hidden="true">
+            <polygon points="24,26 19.5,36 24,45 28.5,36" fill="#c5c9d1"/>
+            <polygon points="24,3 19.5,20 24,26 28.5,20" fill="#e23d2b"/>
+            <text x="24" y="17.5" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="system-ui, sans-serif">N</text>
+          </svg>
+        </button>
+      </div>
     </figure>
     <script type="module" src="./planet-generation.js"></script>
   </body>
