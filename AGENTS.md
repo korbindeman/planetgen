@@ -25,16 +25,24 @@ Keep the base honest enough that those stages have something real to work with: 
 
 ## Visual check
 
-The globe is a WebGL canvas. After any change that affects how the planet looks:
+The planet is a WebGL canvas. You cannot see it until you capture a PNG. Do not finish visual work from code alone.
 
 ```
-bun run preview
+bun run preview                 # globe 2x2 + equirect (default)
+bun run preview globe
+bun run preview equirect
+bun run preview equirect --lon=90
 ```
 
-Then read `preview/compare.png` if it exists (before | after), otherwise `preview/planet.png`. Each globe is a 2x2 of longitudes 0°, 90°, 180°, and 270°. Previous shots live in `preview/planet-before.png` and `preview/history/`. Do not finish visual work from code alone.
+Then read the **compare** sheet for that view if it exists, otherwise the latest capture.
 
-```
-bun run dev
-```
+| Capture | Files | What it shows | Use when |
+| --- | --- | --- | --- |
+| **globe** | `preview/planet.png`, `preview/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
+| **equirect** | `preview/equirect.png`, `preview/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
 
-opens the interactive globe at `http://localhost:3000`.
+After a geography / climate / colormap change, capture the default (both) and **read both**. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian.
+
+Previous shots: `preview/planet-before.png`, `preview/equirect-before.png`, `preview/history/`.
+
+Do not open the interactive app in any built-in agent browser (Simple Browser, MCP browser, Cursor browser, etc.). Tell the user they can run `bun run dev` and open `http://localhost:3000` themselves.

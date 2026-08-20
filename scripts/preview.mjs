@@ -1,10 +1,15 @@
 #!/usr/bin/env bun
 /**
- * Render the planet to preview/planet.png so agents can Read the image.
- * The previous capture is kept as preview/planet-before.png, a before/after
- * sheet as preview/compare.png, and every capture under preview/history/.
+ * Capture planet views to preview/*.png so agents can Read the images.
  *
- * Usage: bun run preview
+ * Usage:
+ *   bun run preview                 globe 2x2 + equirect
+ *   bun run preview globe
+ *   bun run preview equirect
+ *   bun run preview equirect --lon=90
+ *
+ * Each view keeps preview/<name>.png, <name>-before.png, <name>-compare.png
+ * (globe files are planet.png / compare.png), plus preview/history/.
  */
 import { chromium } from "playwright-core";
 import { copyFile, mkdir, readdir } from "node:fs/promises";
@@ -15,12 +20,26 @@ process.env.PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL = "1";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const previewDir = join(root, "preview");
-const outPath = join(previewDir, "planet.png");
-const beforePath = join(previewDir, "planet-before.png");
-const comparePath = join(previewDir, "compare.png");
 const historyDir = join(previewDir, "history");
 const port = 41000 + Math.floor(Math.random() * 1000);
 const origin = `http://localhost:${port}`;
+
+const VIEWS = {
+  globe: {
+    file: "planet.png",
+    before: "planet-before.png",
+    compare: "compare.png",
+    historyPrefix: "planet",
+  },
+  equirect: {
+    file: "equirect.png",
+    before: "equirect-before.png",
+    compare: "equirect-compare.png",
+    historyPrefix: "equirect",
+  },
+};
+
+const { views, lon0 } = parseArgs(process.argv.slice(2));
 
 const server = Bun.spawn(["bun", "--port", String(port), "index.html"], {
   cwd: root,
@@ -44,41 +63,85 @@ try {
   await page.waitForFunction(() => window.__PLANET_READY__ === true, null, {
     timeout: 60_000,
   });
-  const dataUrl = await page.evaluate(() => window.exportPlanetPreview());
-  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
-    throw new Error("exportPlanetPreview did not return a PNG");
-  }
-  const png = Buffer.from(dataUrl.split(",")[1], "base64");
 
   await mkdir(historyDir, { recursive: true });
-  const hadPrevious = await bunFileExists(outPath);
   const stamp = timestamp();
-  if (hadPrevious) {
-    await copyFile(outPath, beforePath);
-    const archived = (await readdir(historyDir)).some((name) => name.endsWith(".png"));
-    if (!archived) {
-      await copyFile(beforePath, join(historyDir, `planet-${stamp}-before.png`));
-    }
-  }
-  await Bun.write(outPath, png);
-  await Bun.write(join(historyDir, `planet-${stamp}.png`), png);
 
-  if (hadPrevious) {
-    const beforeUrl = `data:image/png;base64,${Buffer.from(await Bun.file(beforePath).arrayBuffer()).toString("base64")}`;
-    const compareUrl = await page.evaluate(drawCompare, {
-      beforeUrl,
-      afterUrl: dataUrl,
-    });
-    if (typeof compareUrl !== "string" || !compareUrl.startsWith("data:image/png")) {
-      throw new Error("compare sheet did not return a PNG");
+  for (const view of views) {
+    const spec = VIEWS[view];
+    const dataUrl = await page.evaluate(
+      ({ view, lon0 }) => window.exportPreview(view, { lon0 }),
+      { view, lon0 },
+    );
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
+      throw new Error(`exportPreview(${view}) did not return a PNG`);
     }
-    await Bun.write(comparePath, Buffer.from(compareUrl.split(",")[1], "base64"));
-    console.log(comparePath);
+    const png = Buffer.from(dataUrl.split(",")[1], "base64");
+    const outPath = join(previewDir, spec.file);
+    const beforePath = join(previewDir, spec.before);
+    const comparePath = join(previewDir, spec.compare);
+
+    const hadPrevious = await bunFileExists(outPath);
+    if (hadPrevious) {
+      await copyFile(outPath, beforePath);
+      const archived = (await readdir(historyDir)).some(
+        (name) => name.startsWith(`${spec.historyPrefix}-`) && name.endsWith(".png"),
+      );
+      if (!archived) {
+        await copyFile(beforePath, join(historyDir, `${spec.historyPrefix}-${stamp}-before.png`));
+      }
+    }
+    await Bun.write(outPath, png);
+    await Bun.write(join(historyDir, `${spec.historyPrefix}-${stamp}.png`), png);
+
+    if (hadPrevious) {
+      const beforeUrl = `data:image/png;base64,${Buffer.from(await Bun.file(beforePath).arrayBuffer()).toString("base64")}`;
+      const compareUrl = await page.evaluate(drawCompare, {
+        beforeUrl,
+        afterUrl: dataUrl,
+      });
+      if (typeof compareUrl !== "string" || !compareUrl.startsWith("data:image/png")) {
+        throw new Error(`${view} compare sheet did not return a PNG`);
+      }
+      await Bun.write(comparePath, Buffer.from(compareUrl.split(",")[1], "base64"));
+      console.log(comparePath);
+    }
+    console.log(outPath);
   }
-  console.log(outPath);
 } finally {
   await browser?.close();
   server.kill();
+}
+
+function parseArgs(argv) {
+  const views = [];
+  let lon0 = 0;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "all") {
+      views.push("globe", "equirect");
+    } else if (arg === "globe" || arg === "equirect") {
+      views.push(arg);
+    } else if (arg === "--lon" || arg === "--lon0") {
+      const next = argv[++i];
+      if (next == null || Number.isNaN(Number(next))) {
+        throw new Error(`${arg} needs a number (degrees)`);
+      }
+      lon0 = Number(next);
+    } else if (arg.startsWith("--lon=") || arg.startsWith("--lon0=")) {
+      lon0 = Number(arg.slice(arg.indexOf("=") + 1));
+      if (Number.isNaN(lon0)) throw new Error(`invalid ${arg}`);
+    } else {
+      throw new Error(
+        `unknown preview arg: ${arg}\n` +
+          "usage: bun run preview [globe|equirect|all] [--lon=degrees]",
+      );
+    }
+  }
+  return {
+    views: views.length ? [...new Set(views)] : ["globe", "equirect"],
+    lon0,
+  };
 }
 
 function timestamp() {

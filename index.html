@@ -106,11 +106,27 @@
       @media (prefers-color-scheme: dark) {
         .globe-hud { filter: invert(1); }
       }
+      body.view-equirect .globe-only {
+        display: none;
+      }
+      body.view-equirect .north-compass {
+        display: none;
+      }
+      body.view-equirect .icon-to-map {
+        display: none;
+      }
+      body:not(.view-equirect) .icon-to-globe {
+        display: none;
+      }
     </style>
   </head>
   <body>
     <div class="controls">
       <p>
+        View:
+        <button onclick="setViewMode('globe')">Globe</button>
+        <button onclick="setViewMode('equirect')">Equirect</button>
+        <br>
         Draw:
         <button onclick="setDrawMode('quads')">Quads</button>
         <button onclick="setDrawMode('centroid')">Flat</button>
@@ -126,9 +142,11 @@
         <br>
         Jitter:
         <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)">
+        <span class="globe-only">
         <br>
         Sphere rotation:
-        <input type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)">
+        <input id="sphere-rotation" type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)">
+        </span>
       </p>
     </div>
 
@@ -136,6 +154,17 @@
       <div class="globe">
         <canvas id="output" width="1024" height="1024"></canvas>
         <div class="globe-hud">
+          <button type="button" class="globe-hud-btn view-mode-toggle" title="Equirectangular map" aria-label="Equirectangular map">
+            <svg class="view-reset-icon icon-to-map" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="#2a2e36" stroke-width="1.8"/>
+              <path d="M5.5 12c2.2-3.2 3.8 3.2 6.5 0s4.3 3.2 6.5 0" fill="none" stroke="#2a2e36" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <svg class="view-reset-icon icon-to-globe" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="7.5" fill="none" stroke="#2a2e36" stroke-width="1.8"/>
+              <ellipse cx="12" cy="12" rx="3.2" ry="7.5" fill="none" stroke="#2a2e36" stroke-width="1.5"/>
+              <path d="M4.5 12h15" stroke="#2a2e36" stroke-width="1.5"/>
+            </svg>
+          </button>
           <button type="button" class="globe-hud-btn view-reset" title="Reset view" aria-label="Reset view">
             <svg class="view-reset-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="#2a2e36" d="M12 3.6 3.2 11.2h3.1v8.2h5.1v-5.4h4.2v5.4h5.1v-8.2h3.1L12 3.6z"/>

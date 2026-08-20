@@ -66,9 +66,14 @@ let zoom = 1;
 let northHeadingAngle = 0;
 let viewAnimId = 0;
 let drawMode = 'quads';
+let viewMode = 'globe';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
 let previewYaw = 0;
+let mapId = 0;
+let equirectPanX = 0;
+let equirectPanY = 0;
+let equirectZoom = 1;
 
 window.__PLANET_READY__ = false;
 
@@ -77,6 +82,7 @@ window.setP = newP => { P = newP; generateMap(); };
 window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
 window.setDrawMode = newMode => { drawMode = newMode; draw(); };
+window.setViewMode = newMode => { applyViewMode(newMode); };
 window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
 
@@ -759,6 +765,8 @@ function generateMap() {
     assignTriangleValues(mesh, map);
 
     quadGeometry.setMap(mesh, map);
+    mapId++;
+    equirectCache = null;
     draw();
 }
 
@@ -807,11 +815,15 @@ function drawPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     });
 }
 
+function applyGlobeOrientation(out) {
+    mat4.rotate(out, out, -Math.PI / 2, [1, 0, 0]);
+    mat4.rotate(out, out, -rotation + previewYaw, [0, 0, 1]);
+}
+
 function globeViewMatrix(out) {
     mat4.identity(out);
     mat4.multiply(out, out, dragRotation);
-    mat4.rotate(out, out, -rotation, [0.1, 1, 0]);
-    mat4.rotate(out, out, -Math.PI / 2 + 0.2, [1, 0, 0]);
+    applyGlobeOrientation(out);
     return out;
 }
 
@@ -906,6 +918,23 @@ function reorientNorth() {
 }
 
 function resetView() {
+    if (viewMode === 'equirect') {
+        const startPanX = equirectPanX;
+        const startPanY = equirectPanY;
+        const startZoom = equirectZoom;
+        const alreadyHome =
+            Math.abs(startZoom - 1) < 1e-3 &&
+            Math.abs(startPanX) < 1e-3 &&
+            Math.abs(startPanY) < 1e-3;
+        if (alreadyHome) return;
+        animateView((eased) => {
+            equirectPanX = wrapPanX(startPanX * (1 - eased));
+            equirectPanY = startPanY * (1 - eased);
+            equirectZoom = startZoom + (1 - startZoom) * eased;
+        });
+        return;
+    }
+
     const startDrag = mat4.clone(dragRotation);
     const startQuat = mat4.getRotation(quat.create(), startDrag);
     const endQuat = quat.create();
@@ -925,16 +954,349 @@ function resetView() {
 window.reorientNorth = reorientNorth;
 window.resetView = resetView;
 
+const PI = Math.PI;
+const TWO_PI = 2 * PI;
+const EQUIRECT_W = 2048;
+const EQUIRECT_H = 1024;
+const GLOBE_SIZE = 1024;
+const POLE_LAT = PI / 2 - 1e-6;
+const POLE_SNAP = 3 * PI / 180;
+
+let equirectCache = null;
+let seqI = null;
+
+function wrapPanX(x) {
+    return ((x + 1) % 2 + 2) % 2 - 1;
+}
+
+function syncViewModeDom() {
+    const canvas = document.getElementById('output');
+    if (viewMode === 'equirect') {
+        canvas.width = EQUIRECT_W;
+        canvas.height = EQUIRECT_H;
+        document.body.classList.add('view-equirect');
+        const toggle = document.querySelector('.view-mode-toggle');
+        if (toggle) {
+            toggle.title = 'Globe view';
+            toggle.setAttribute('aria-label', 'Globe view');
+        }
+    } else {
+        canvas.width = GLOBE_SIZE;
+        canvas.height = GLOBE_SIZE;
+        document.body.classList.remove('view-equirect');
+        const toggle = document.querySelector('.view-mode-toggle');
+        if (toggle) {
+            toggle.title = 'Equirectangular map';
+            toggle.setAttribute('aria-label', 'Equirectangular map');
+        }
+    }
+}
+
+function applyViewMode(mode) {
+    if (mode !== 'globe' && mode !== 'equirect') return;
+    if (mode === viewMode) {
+        draw();
+        return;
+    }
+    viewAnimId += 1;
+    viewMode = mode;
+    syncViewModeDom();
+    draw();
+}
+
+function isPoleLat(lat) {
+    return Math.abs(lat) > POLE_LAT;
+}
+
+function appendEquirectVertex(outXYZ, outTM, lon, lat, tm) {
+    let y = (2 * lat) / PI;
+    if (y >= 1) y = 1.02;
+    if (y <= -1) y = -1.02;
+    outXYZ.push(lon / PI, y, -0.5);
+    outTM.push(tm[0], tm[1], tm[2]);
+}
+
+function emitEquirectTriangle(outXYZ, outTM, verts) {
+    const v = [
+        {lon: verts[0].lon, lat: verts[0].lat, tm: verts[0].tm},
+        {lon: verts[1].lon, lat: verts[1].lat, tm: verts[1].tm},
+        {lon: verts[2].lon, lat: verts[2].lat, tm: verts[2].tm},
+    ];
+    for (let i = 1; i < 3; i++) {
+        while (v[i].lon - v[0].lon > PI) v[i].lon -= TWO_PI;
+        while (v[0].lon - v[i].lon > PI) v[i].lon += TWO_PI;
+    }
+    function emit(shift) {
+        for (let i = 0; i < 3; i++) {
+            appendEquirectVertex(outXYZ, outTM, v[i].lon + shift, v[i].lat, v[i].tm);
+        }
+    }
+    emit(0);
+    const minL = Math.min(v[0].lon, v[1].lon, v[2].lon);
+    const maxL = Math.max(v[0].lon, v[1].lon, v[2].lon);
+    if (minL < -PI) emit(TWO_PI);
+    if (maxL > PI) emit(-TWO_PI);
+}
+
+function appendEquirectTriangle(outXYZ, outTM, verts) {
+    const poles = [];
+    for (let i = 0; i < 3; i++) {
+        if (isPoleLat(verts[i].lat)) poles.push(i);
+    }
+    if (poles.length === 1) {
+        const p = poles[0];
+        const a = verts[(p + 1) % 3];
+        const b = verts[(p + 2) % 3];
+        let lonA = a.lon, lonB = b.lon;
+        while (lonB - lonA > PI) lonB -= TWO_PI;
+        while (lonA - lonB > PI) lonB += TWO_PI;
+        const poleLat = Math.sign(verts[p].lat) * (PI / 2);
+        const poleA = {lon: lonA, lat: poleLat, tm: verts[p].tm};
+        const poleB = {lon: lonB, lat: poleLat, tm: verts[p].tm};
+        const aFix = {lon: lonA, lat: a.lat, tm: a.tm};
+        const bFix = {lon: lonB, lat: b.lat, tm: b.tm};
+        emitEquirectTriangle(outXYZ, outTM, [aFix, bFix, poleB]);
+        emitEquirectTriangle(outXYZ, outTM, [aFix, poleB, poleA]);
+        return;
+    }
+    emitEquirectTriangle(outXYZ, outTM, verts);
+}
+
+function vertexLonLat(xyz, tm, idx) {
+    const x = xyz[idx * 3], y = xyz[idx * 3 + 1], z = xyz[idx * 3 + 2];
+    let lat = Math.asin(Math.max(-1, Math.min(1, z)));
+    if (PI / 2 - Math.abs(lat) < POLE_SNAP) {
+        lat = Math.sign(lat || z) * (PI / 2);
+    }
+    return {
+        lon: Math.atan2(y, x),
+        lat,
+        tm: [tm[idx * 3], tm[idx * 3 + 1], tm[idx * 3 + 2]],
+    };
+}
+
+function buildEquirectTriangles(xyz, tm, indices) {
+    const outXYZ = [], outTM = [];
+    const n = indices ? indices.length : (xyz.length / 3);
+    for (let i = 0; i < n; i += 3) {
+        const i0 = indices ? indices[i] : i;
+        const i1 = indices ? indices[i + 1] : i + 1;
+        const i2 = indices ? indices[i + 2] : i + 2;
+        appendEquirectTriangle(outXYZ, outTM, [
+            vertexLonLat(xyz, tm, i0),
+            vertexLonLat(xyz, tm, i1),
+            vertexLonLat(xyz, tm, i2),
+        ]);
+    }
+    return {
+        xyz: new Float32Array(outXYZ),
+        tm: new Float32Array(outTM),
+        count: outXYZ.length / 3,
+    };
+}
+
+function sequentialElements(count) {
+    if (!seqI || seqI.length < count) {
+        seqI = new Int32Array(count);
+        for (let i = 0; i < count; i++) seqI[i] = i;
+    }
+    return seqI.subarray(0, count);
+}
+
+function rColorFn(r) {
+    return [map.r_elevation[r], map.r_moisture[r], map.r_temperature[r]];
+}
+
+function getEquirectSurfaceGeometry() {
+    const key = `${drawMode}:${mapId}`;
+    if (equirectCache && equirectCache.key === key) return equirectCache.geo;
+    let geo;
+    if (drawMode === 'centroid') {
+        const raw = generateVoronoiGeometry(mesh, map, rColorFn);
+        geo = buildEquirectTriangles(raw.xyz, raw.tm, null);
+    } else {
+        geo = buildEquirectTriangles(quadGeometry.xyz, quadGeometry.tm, quadGeometry.I);
+    }
+    equirectCache = {key, geo};
+    return geo;
+}
+
+function equirectProjection(xshift) {
+    const p = mat4.create();
+    mat4.scale(p, p, [equirectZoom, equirectZoom, 1]);
+    mat4.translate(p, p, [equirectPanX + xshift, equirectPanY, 0]);
+    return p;
+}
+
+function appendEquirectSegment(line_xyz, line_rgba, ax, ay, az, bx, by, bz, rgbaA, rgbaB) {
+    const a = {lon: Math.atan2(ay, ax), lat: Math.asin(Math.max(-1, Math.min(1, az)))};
+    const b = {lon: Math.atan2(by, bx), lat: Math.asin(Math.max(-1, Math.min(1, bz)))};
+    while (b.lon - a.lon > PI) b.lon -= TWO_PI;
+    while (a.lon - b.lon > PI) b.lon += TWO_PI;
+    const shifts = [0];
+    const minL = Math.min(a.lon, b.lon);
+    const maxL = Math.max(a.lon, b.lon);
+    if (minL < -PI) shifts.push(TWO_PI);
+    if (maxL > PI) shifts.push(-TWO_PI);
+    for (const shift of shifts) {
+        line_xyz.push(
+            [(a.lon + shift) / PI, (2 * a.lat) / PI, -0.5],
+            [(b.lon + shift) / PI, (2 * b.lat) / PI, -0.5]
+        );
+        line_rgba.push(rgbaA, rgbaB);
+    }
+}
+
+function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_vec}) {
+    let line_xyz = [], line_rgba = [];
+    const scale = 2 / Math.sqrt(N);
+    for (let r = 0; r < mesh.numRegions; r++) {
+        const ax = r_xyz[3 * r], ay = r_xyz[3 * r + 1], az = r_xyz[3 * r + 2];
+        const v = plate_vec[r_plate[r]];
+        appendEquirectSegment(
+            line_xyz, line_rgba,
+            ax, ay, az,
+            ax + v[0] * scale, ay + v[1] * scale, az + v[2] * scale,
+            [1, 1, 1, 1], [1, 0, 0, 0]
+        );
+    }
+    renderLines({
+        u_projection,
+        u_multiply_rgba: [1, 1, 1, 1],
+        u_add_rgba: [0, 0, 0, 0],
+        a_xyz: line_xyz,
+        a_rgba: line_rgba,
+        count: line_xyz.length,
+    });
+}
+
+function drawEquirectPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
+    let line_xyz = [], line_rgba = [];
+    const white = [1, 1, 1, 1];
+    for (let s = 0; s < mesh.numSides; s++) {
+        const begin_r = mesh.s_begin_r(s),
+            end_r = mesh.s_end_r(s);
+        if (r_plate[begin_r] !== r_plate[end_r]) {
+            const inner_t = mesh.s_inner_t(s),
+                outer_t = mesh.s_outer_t(s);
+            appendEquirectSegment(
+                line_xyz, line_rgba,
+                t_xyz[3 * inner_t], t_xyz[3 * inner_t + 1], t_xyz[3 * inner_t + 2],
+                t_xyz[3 * outer_t], t_xyz[3 * outer_t + 1], t_xyz[3 * outer_t + 2],
+                white, white
+            );
+        }
+    }
+    renderLines({
+        u_projection,
+        u_multiply_rgba: [1, 1, 1, 1],
+        u_add_rgba: [0, 0, 0, 0],
+        a_xyz: line_xyz,
+        a_rgba: line_rgba,
+        count: line_xyz.length,
+    });
+}
+
+function drawEquirect() {
+    const geo = getEquirectSurfaceGeometry();
+    for (const xshift of [-2, 0, 2]) {
+        const u_projection = equirectProjection(xshift);
+        if (drawMode === 'centroid') {
+            renderTriangles({
+                u_projection,
+                a_xyz: geo.xyz,
+                a_tm: geo.tm,
+                count: geo.count,
+            });
+        } else {
+            renderIndexedTriangles({
+                u_projection,
+                a_xyz: geo.xyz,
+                a_tm: geo.tm,
+                elements: sequentialElements(geo.count),
+            });
+        }
+        if (draw_plateVectors) {
+            drawEquirectPlateVectors(u_projection, mesh, map);
+        }
+        if (draw_plateBoundaries) {
+            drawEquirectPlateBoundaries(u_projection, mesh, map);
+        }
+    }
+}
+
+const VIEW_STORE_KEY = 'planetgen.view';
+const VIEW_STORE_VERSION = 2;
+let viewPersistSuspended = false;
+
+function persistViewState() {
+    if (viewPersistSuspended) return;
+    try {
+        sessionStorage.setItem(VIEW_STORE_KEY, JSON.stringify({
+            v: VIEW_STORE_VERSION,
+            zoom,
+            rotation,
+            drag: Array.from(dragRotation),
+            viewMode,
+            equirectPanX,
+            equirectPanY,
+            equirectZoom,
+        }));
+    } catch {
+        /* ignore quota / private-mode failures */
+    }
+}
+
+function restoreViewState() {
+    let stored;
+    try {
+        stored = JSON.parse(sessionStorage.getItem(VIEW_STORE_KEY));
+    } catch {
+        return;
+    }
+    if (!stored || stored.v !== VIEW_STORE_VERSION) return;
+
+    if (Number.isFinite(stored.zoom)) zoom = stored.zoom;
+    if (Number.isFinite(stored.rotation)) rotation = stored.rotation;
+    if (Array.isArray(stored.drag) && stored.drag.length === 16 && stored.drag.every(Number.isFinite)) {
+        mat4.copy(dragRotation, stored.drag);
+    }
+    if (Number.isFinite(stored.equirectPanX)) equirectPanX = stored.equirectPanX;
+    if (Number.isFinite(stored.equirectPanY)) equirectPanY = stored.equirectPanY;
+    if (Number.isFinite(stored.equirectZoom)) equirectZoom = stored.equirectZoom;
+
+    const slider = document.getElementById('sphere-rotation');
+    if (slider && Number.isFinite(stored.rotation)) slider.value = String(stored.rotation);
+
+    if (stored.viewMode === 'equirect' || stored.viewMode === 'globe') {
+        viewMode = stored.viewMode;
+        syncViewModeDom();
+    }
+}
+
+function finishDraw() {
+    _draw_pending = false;
+    persistViewState();
+    if (!window.__PLANET_READY__) {
+        window.__PLANET_READY__ = true;
+    }
+}
+
 let _draw_pending = false;
 function _draw() {
+    regl.poll();
     regl.clear({ color: [0, 0, 0, 0], depth: 1 });
     let u_pointsize = 0.1 + 100 / Math.sqrt(N);
     let u_projection = mat4.create();
     mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5, 1]); // avoid clipping
     mat4.multiply(u_projection, u_projection, dragRotation);
-    mat4.rotate(u_projection, u_projection, -rotation, [0.1, 1, 0]);
-    mat4.rotate(u_projection, u_projection, -Math.PI/2+0.2, [1, 0, 0]);
-    mat4.rotate(u_projection, u_projection, previewYaw, [0, 0, 1]);
+    applyGlobeOrientation(u_projection);
+
+    if (viewMode === 'equirect') {
+        drawEquirect();
+        finishDraw();
+        return;
+    }
 
     function r_color_fn(r) {
         return [map.r_elevation[r], map.r_moisture[r], map.r_temperature[r]];
@@ -977,14 +1339,34 @@ function _draw() {
     //     a_xyz: map.r_xyz,
     //     count: mesh.numRegions,
     // });
-    _draw_pending = false;
-    if (!window.__PLANET_READY__) {
-        window.__PLANET_READY__ = true;
-    }
+    finishDraw();
 }
 
 window.exportPlanetPreview = function exportPlanetPreview() {
+    return exportPreview('globe');
+};
+
+window.exportEquirectPreview = function exportEquirectPreview(lon0) {
+    return exportPreview('equirect', {lon0});
+};
+
+window.exportPreview = exportPreview;
+
+function exportPreview(view, opts = {}) {
+    viewPersistSuspended = true;
+    try {
+        if (view === 'globe') return captureGlobePreview();
+        if (view === 'equirect') return captureEquirectPreview(opts.lon0);
+        throw new Error(`unknown preview view: ${view}`);
+    } finally {
+        viewPersistSuspended = false;
+    }
+}
+
+function captureGlobePreview() {
     const src = document.getElementById('output');
+    const savedMode = viewMode;
+    applyViewMode('globe');
     const cell = 512;
     const labelH = 28;
     const yaws = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2];
@@ -1018,9 +1400,31 @@ window.exportPlanetPreview = function exportPlanetPreview() {
     previewYaw = savedYaw;
     zoom = savedZoom;
     mat4.copy(dragRotation, savedDrag);
+    applyViewMode(savedMode);
     draw();
     return sheet.toDataURL('image/png');
-};
+}
+
+function captureEquirectPreview(lon0) {
+    const src = document.getElementById('output');
+    const savedMode = viewMode;
+    const savedPanX = equirectPanX;
+    const savedPanY = equirectPanY;
+    const savedZoom = equirectZoom;
+    applyViewMode('equirect');
+    const deg = Number(lon0);
+    equirectPanX = wrapPanX(Number.isFinite(deg) ? -(deg / 180) : 0);
+    equirectPanY = 0;
+    equirectZoom = 1;
+    _draw();
+    regl._gl.finish();
+    const dataUrl = src.toDataURL('image/png');
+    equirectPanX = savedPanX;
+    equirectPanY = savedPanY;
+    equirectZoom = savedZoom;
+    applyViewMode(savedMode);
+    return dataUrl;
+}
 
 function draw() {
     if (!_draw_pending) {
@@ -1048,6 +1452,24 @@ function setupDragRotation() {
         return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
     }
 
+    function clampEquirectPanY() {
+        const maxPan = Math.max(0, 1 - 1 / equirectZoom);
+        equirectPanY = Math.min(maxPan, Math.max(-maxPan, equirectPanY));
+    }
+
+    function currentZoom() {
+        return viewMode === 'equirect' ? equirectZoom : zoom;
+    }
+
+    function setCurrentZoom(value) {
+        if (viewMode === 'equirect') {
+            equirectZoom = clampZoom(value);
+            clampEquirectPanY();
+        } else {
+            zoom = clampZoom(value);
+        }
+    }
+
     function pointerDistance() {
         const pts = Array.from(pointers.values());
         return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
@@ -1060,7 +1482,7 @@ function setupDragRotation() {
             dragging = false;
             canvas.style.cursor = 'grab';
             pinchStartDist = pointerDistance();
-            pinchStartZoom = zoom;
+            pinchStartZoom = currentZoom();
             return;
         }
         if (event.button !== 0) return;
@@ -1077,21 +1499,31 @@ function setupDragRotation() {
             pointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
         }
         if (pointers.size === 2 && pinchStartDist > 0) {
-            zoom = clampZoom(pinchStartZoom * (pointerDistance() / pinchStartDist));
+            setCurrentZoom(pinchStartZoom * (pointerDistance() / pinchStartDist));
             draw();
             return;
         }
         if (!dragging) return;
         const rect = canvas.getBoundingClientRect();
-        const size = Math.max(rect.width, rect.height);
-        const dx = (event.clientX - lastX) / size * Math.PI * 2;
-        const dy = (event.clientY - lastY) / size * Math.PI * 2;
+        const dx = event.clientX - lastX;
+        const dy = event.clientY - lastY;
         lastX = event.clientX;
         lastY = event.clientY;
 
+        if (viewMode === 'equirect') {
+            equirectPanX = wrapPanX(equirectPanX + (dx / rect.width) * 2 / equirectZoom);
+            equirectPanY += (-dy / rect.height) * 2 / equirectZoom;
+            clampEquirectPanY();
+            draw();
+            return;
+        }
+
+        const size = Math.max(rect.width, rect.height);
+        const rx = dx / size * Math.PI * 2;
+        const ry = dy / size * Math.PI * 2;
         const delta = mat4.create();
-        mat4.rotateX(delta, delta, -dy);
-        mat4.rotateY(delta, delta, -dx);
+        mat4.rotateX(delta, delta, -ry);
+        mat4.rotateY(delta, delta, -rx);
         mat4.multiply(dragRotation, delta, dragRotation);
         draw();
     });
@@ -1116,7 +1548,7 @@ function setupDragRotation() {
 
     canvas.addEventListener('wheel', (event) => {
         event.preventDefault();
-        zoom = clampZoom(zoom * Math.exp(-event.deltaY * 0.002));
+        setCurrentZoom(currentZoom() * Math.exp(-event.deltaY * 0.002));
         draw();
     }, {passive: false});
 }
@@ -1124,4 +1556,8 @@ function setupDragRotation() {
 setupDragRotation();
 document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
 document.querySelector('.view-reset')?.addEventListener('click', resetView);
+document.querySelector('.view-mode-toggle')?.addEventListener('click', () => {
+    applyViewMode(viewMode === 'globe' ? 'equirect' : 'globe');
+});
+restoreViewState();
 generateMesh();

@@ -1,16 +1,23 @@
 ---
-description: Capture and read a planet PNG after visual changes so the agent can iterate on how the globe looks.
+description: Capture and read globe and equirect PNGs after visual changes. Default is both views; pick the one that can show the thing you are judging.
 alwaysApply: true
 ---
 
 # Visual iteration
 
-The globe is a WebGL canvas. You cannot see it until you capture a PNG.
+The planet is a WebGL canvas. You cannot see it until you capture a PNG.
 
-After any change that affects how the planet looks (shaders, colors, terrain, rivers, plates, camera, mesh, colormap):
+After any change that affects how the planet looks (shaders, colors, terrain, climate, plates, camera, mesh, colormap):
 
-1. Run `bun run preview`
-2. Read `preview/compare.png` if it exists (before | after). Otherwise read `preview/planet.png`.
-3. Judge the image, then change the code and repeat
+1. Run `bun run preview` (captures **globe and equirect**). Use `bun run preview globe` or `bun run preview equirect` only when iterating on that projection. Shift the map with `bun run preview equirect --lon=90`.
+2. Read the compare sheet if it exists, otherwise the latest capture.
+3. Judge the image, then change the code and repeat.
 
-Do not finish visual work from code alone. Each globe is a 2x2 of four longitudes: 0, 90, 180, and 270 degrees. `preview/planet.png` is always the latest capture; older ones are in `preview/planet-before.png` and `preview/history/`.
+| View | Read | Use when |
+| --- | --- | --- |
+| globe | `preview/compare.png` or `preview/planet.png` | 3D relief, lighting, land on the sphere, polar caps, mesh/camera. 2×2 of longitudes 0° / 90° / 180° / 270°. |
+| equirect | `preview/equirect-compare.png` or `preview/equirect.png` | Whole-world layout, continent arrangement, wrap, climate belts, ice bands, land/ocean fraction. |
+
+Read **both** after geography, climate, or colormap changes. Globe hides the far side; equirect hides how it reads as a planet. History: `preview/history/`, plus `preview/planet-before.png` and `preview/equirect-before.png`.
+
+Do not finish visual work from code alone. Do not open the interactive app in any built-in agent browser. Leave that to the user (`bun run dev` at `http://localhost:3000`).
