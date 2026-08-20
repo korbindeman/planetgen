@@ -9,7 +9,6 @@
 const SEED = 123;
 
 const SimplexNoise = require('simplex-noise');
-const FlatQueue = require('flatqueue');
 const colormap = require('./colormap');
 const {vec3, mat4} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
@@ -38,7 +37,7 @@ let dragRotation = mat4.create();
 let zoom = 1;
 let northHeadingAngle = 0;
 let northAnimId = 0;
-let drawMode = 'centroid';
+let drawMode = 'quads';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
 let previewYaw = 0;
@@ -220,7 +219,7 @@ void main() {
         u_c: 0.15,
         u_slope: 6,
         u_flat: 2.5,
-        u_outline_strength: 5,
+        u_outline_strength: 0,
     },
 
     elements: regl.prop('elements'),
@@ -307,7 +306,7 @@ class QuadGeometry {
         this.tm = new Float32Array(2 * (numRegions + numTriangles));
     }
 
-    setMap(mesh, {r_xyz, t_xyz, r_color_fn, s_flow, r_elevation, t_elevation, r_moisture, t_moisture}) {
+    setMap(mesh, {r_xyz, t_xyz, r_elevation, t_elevation, r_moisture, t_moisture}) {
         const V = 0.95;
         const {numSides, numRegions, numTriangles} = mesh;
         const {xyz, tm, I} = this;
@@ -327,7 +326,6 @@ class QuadGeometry {
         }
 
         let i = 0, count_valley = 0, count_ridge = 0;
-        let {_halfedges, _triangles} = mesh;
         for (let s = 0; s < numSides; s++) {
             let opposite_s = mesh.s_opposite_s(s),
                 r1 = mesh.s_begin_r(s),
@@ -341,12 +339,10 @@ class QuadGeometry {
             // case it's a feature. See the explanation here
             // https://www.redblobgames.com/x/1725-procedural-elevation/#rendering
             let coast = r_elevation[r1] < 0.0 || r_elevation[r2] < 0.0;
-            if (coast || s_flow[s] > 0 || s_flow[opposite_s] > 0) {
-                // It's a coastal or river edge, forming a valley
+            if (coast) {
                 I[i++] = r1; I[i++] = numRegions+t2; I[i++] = numRegions+t1;
                 count_valley++;
             } else {
-                // It's a ridge
                 I[i++] = r1; I[i++] = r2; I[i++] = numRegions+t1;
                 count_ridge++;
             }
@@ -497,7 +493,7 @@ function findCollisions(mesh, r_xyz, plate_is_ocean, r_plate, plate_vec) {
             let current_plate = r_plate[current_r],
                 best_plate = r_plate[best_r];
             if (plate_is_ocean.has(current_plate) && plate_is_ocean.has(best_plate)) {
-                (collided? coastline_r : ocean_r).add(current_r);
+                ocean_r.add(current_r);
             } else if (!plate_is_ocean.has(current_plate) && !plate_is_ocean.has(best_plate)) {
                 if (collided) mountain_r.add(current_plate);
             } else {
@@ -543,13 +539,59 @@ function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec,
         }
         r_elevation[r] += 0.1 * fbm_noise(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
     }
+
+    flattenOceanBathymetry(mesh, {r_xyz, r_plate, plate_is_ocean, r_elevation, mountain_r});
 }
 
 
+const ABYSS = -0.4;
+const SHELF_WIDTH = 8;
 
-/**********************************************************************
- * Rivers - from mapgen4
- */
+function flattenOceanBathymetry(mesh, {r_xyz, r_plate, plate_is_ocean, r_elevation, mountain_r}) {
+    const {numRegions} = mesh;
+    const land_r = new Set();
+    for (let r = 0; r < numRegions; r++) {
+        const oceanPlate = plate_is_ocean.has(r_plate[r]);
+        if (r_elevation[r] >= 0 && (!oceanPlate || mountain_r.has(r))) {
+            land_r.add(r);
+        }
+    }
+    if (land_r.size === 0) return;
+
+    const r_dist = assignDistanceField(mesh, land_r, new Set());
+    for (let r = 0; r < numRegions; r++) {
+        if (land_r.has(r)) continue;
+        const d = r_dist[r];
+        let t = (d === Infinity) ? 1 : Math.min(1, d / SHELF_WIDTH);
+        t = t * t * (3 - 2 * t);
+        const n = 0.02 * _randomNoise.noise3D(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
+        r_elevation[r] = ABYSS * t + n;
+        if (r_elevation[r] >= 0) r_elevation[r] = -0.02;
+    }
+}
+
+
+function smoothField(mesh, values, land, iterations) {
+    const {numRegions} = mesh;
+    const next = new Float32Array(numRegions);
+    const neighbors = [];
+    for (let iter = 0; iter < iterations; iter++) {
+        for (let r = 0; r < numRegions; r++) {
+            mesh.r_circulate_r(neighbors, r);
+            let sum = values[r];
+            let count = 1;
+            for (let n of neighbors) {
+                if (land[n] === land[r]) {
+                    sum += values[n];
+                    count++;
+                }
+            }
+            next[r] = sum / count;
+        }
+        values.set(next);
+    }
+}
+
 
 function assignTriangleValues(mesh, {r_elevation, r_moisture, /* out */ t_elevation, t_moisture}) {
     const {numTriangles} = mesh;
@@ -560,72 +602,6 @@ function assignTriangleValues(mesh, {r_elevation, r_moisture, /* out */ t_elevat
             r3 = mesh.s_begin_r(s0+2);
         t_elevation[t] = 1/3 * (r_elevation[r1] + r_elevation[r2] + r_elevation[r3]);
         t_moisture[t] = 1/3 * (r_moisture[r1] + r_moisture[r2] + r_moisture[r3]);
-    }
-}
-
-
-let _queue = new FlatQueue();
-function assignDownflow(mesh, {t_elevation, /* out */ t_downflow_s, /* out */ order_t}) {
-    /* Use a priority queue, starting with the ocean triangles and
-     * moving upwards using elevation as the priority, to visit all
-     * the land triangles */
-    let {numTriangles} = mesh,
-        queue_in = 0;
-    t_downflow_s.fill(-999);
-    /* Part 1: ocean triangles get downslope assigned to the lowest neighbor */
-    for (let t = 0; t < numTriangles; t++) {
-        if (t_elevation[t] < 0) {
-            let best_s = -1, best_e = t_elevation[t];
-            for (let j = 0; j < 3; j++) {
-                let s = 3 * t + j,
-                    e = t_elevation[mesh.s_outer_t(s)];
-                if (e < best_e) {
-                    best_e = e;
-                    best_s = s;
-                }
-            }
-            order_t[queue_in++] = t;
-            t_downflow_s[t] = best_s;
-            _queue.push(t, t_elevation[t]);
-        }
-    }
-    /* Part 2: land triangles get visited in elevation priority */
-    for (let queue_out = 0; queue_out < numTriangles; queue_out++) {
-        let current_t = _queue.pop();
-        for (let j = 0; j < 3; j++) {
-            let s = 3 * current_t + j;
-            let neighbor_t = mesh.s_outer_t(s); // uphill from current_t
-            if (t_downflow_s[neighbor_t] === -999 && t_elevation[neighbor_t] >= 0.0) {
-                t_downflow_s[neighbor_t] = mesh.s_opposite_s(s);
-                order_t[queue_in++] = neighbor_t;
-                _queue.push(neighbor_t, t_elevation[neighbor_t]);
-            }
-        }
-    }
-}
-
-
-function assignFlow(mesh, {order_t, t_elevation, t_moisture, t_downflow_s, /* out */ t_flow, /* out */ s_flow}) {
-    let {numTriangles, _halfedges} = mesh;
-    s_flow.fill(0);
-    for (let t = 0; t < numTriangles; t++) {
-        if (t_elevation[t] >= 0.0) {
-            t_flow[t] = 0.5 * t_moisture[t] * t_moisture[t];
-        } else {
-            t_flow[t] = 0;
-        }
-    }
-    for (let i = order_t.length-1; i >= 0; i--) {
-        let tributary_t = order_t[i];
-        let flow_s = t_downflow_s[tributary_t];
-        let trunk_t = (_halfedges[flow_s] / 3) | 0;
-        if (flow_s >= 0) {
-            t_flow[trunk_t] += t_flow[tributary_t];
-            s_flow[flow_s] += t_flow[tributary_t]; // TODO: isn't s_flow[flow_s] === t_flow[?]
-            if (t_elevation[trunk_t] > t_elevation[tributary_t]) {
-                t_elevation[trunk_t] = t_elevation[tributary_t];
-            }
-        }
     }
 }
 
@@ -649,10 +625,6 @@ function generateMesh() {
     map.t_elevation = new Float32Array(mesh.numTriangles);
     map.r_moisture = new Float32Array(mesh.numRegions);
     map.t_moisture = new Float32Array(mesh.numTriangles);
-    map.t_downflow_s = new Int32Array(mesh.numTriangles);
-    map.order_t = new Int32Array(mesh.numTriangles);
-    map.t_flow = new Float32Array(mesh.numTriangles);
-    map.s_flow = new Float32Array(mesh.numSides);
 
     map.r_xyz = result.r_xyz;
     map.t_xyz = generateTriangleCenters(mesh, map);
@@ -668,7 +640,6 @@ function generateMap() {
     for (let r of map.plate_r) {
         if (makeRandInt(r)(10) < 5) {
             map.plate_is_ocean.add(r);
-            // TODO: either make tiny plates non-ocean, or make sure tiny plates don't create seeds for rivers
         }
     }
     assignRegionElevation(mesh, map);
@@ -676,9 +647,12 @@ function generateMap() {
     for (let r = 0; r < mesh.numRegions; r++) {
         map.r_moisture[r] = (map.r_plate[r] % 10) / 10.0;
     }
+    const land = new Uint8Array(mesh.numRegions);
+    for (let r = 0; r < mesh.numRegions; r++) {
+        land[r] = map.r_elevation[r] >= 0 ? 1 : 0;
+    }
+    smoothField(mesh, map.r_moisture, land, 4);
     assignTriangleValues(mesh, map);
-    assignDownflow(mesh, map);
-    assignFlow(mesh, map);
 
     quadGeometry.setMap(mesh, map);
     draw();
@@ -824,31 +798,6 @@ function reorientNorth() {
 
 window.reorientNorth = reorientNorth;
 
-function drawRivers(u_projection, mesh, {t_xyz, s_flow}) {
-    let line_xyz = [], line_rgba = [];
-
-    for (let s = 0; s < mesh.numSides; s++) {
-        if (s_flow[s] > 1) {
-            let flow = 0.1 * Math.sqrt(s_flow[s]);
-            let inner_t = mesh.s_inner_t(s),
-                outer_t = mesh.s_outer_t(s);
-            line_xyz.push(t_xyz.slice(3 * inner_t, 3 * inner_t + 3),
-                          t_xyz.slice(3 * outer_t, 3 * outer_t + 3));
-            if (flow > 1) flow = 1;
-            let rgba_premultiplied = [0.2 * flow, 0.5 * flow, 0.7 * flow, flow];
-            line_rgba.push(rgba_premultiplied, rgba_premultiplied);
-        }
-    }
-    renderLines({
-        u_projection,
-        u_multiply_rgba: [1, 1, 1, 1],
-        u_add_rgba: [0, 0, 0, 0],
-        a_xyz: line_xyz,
-        a_rgba: line_rgba,
-        count: line_xyz.length,
-    });
-}
-
 let _draw_pending = false;
 function _draw() {
     regl.clear({ color: [0, 0, 0, 0], depth: 1 });
@@ -883,7 +832,6 @@ function _draw() {
         });
     }
 
-    drawRivers(u_projection, mesh, map);
     drawNorthPole(u_projection);
     
     if (draw_plateVectors) {
