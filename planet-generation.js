@@ -306,7 +306,7 @@ class QuadGeometry {
         this.tm = new Float32Array(2 * (numRegions + numTriangles));
     }
 
-    setMap(mesh, {r_xyz, t_xyz, r_elevation, t_elevation, r_moisture, t_moisture}) {
+    setMap(mesh, {r_xyz, t_xyz, r_elevation, t_elevation, r_moisture, t_moisture, r_temperature, t_temperature}) {
         const V = 0.95;
         const {numSides, numRegions, numTriangles} = mesh;
         const {xyz, tm, I} = this;
@@ -317,12 +317,14 @@ class QuadGeometry {
 
         let p = 0;
         for (let r = 0; r < numRegions; r++) {
-            tm[p++] = r_elevation[r];
-            tm[p++] = r_moisture[r];
+            const color = climateColor(r_elevation[r], r_moisture[r], r_temperature[r]);
+            tm[p++] = color[0];
+            tm[p++] = color[1];
         }
         for (let t = 0; t < numTriangles; t++) {
-            tm[p++] = t_elevation[t];
-            tm[p++] = t_moisture[t];
+            const color = climateColor(t_elevation[t], t_moisture[t], t_temperature[t]);
+            tm[p++] = color[0];
+            tm[p++] = color[1];
         }
 
         let i = 0, count_valley = 0, count_ridge = 0;
@@ -581,7 +583,7 @@ function smoothField(mesh, values, land, iterations) {
             let sum = values[r];
             let count = 1;
             for (let n of neighbors) {
-                if (land[n] === land[r]) {
+                if (!land || land[n] === land[r]) {
                     sum += values[n];
                     count++;
                 }
@@ -593,7 +595,90 @@ function smoothField(mesh, values, land, iterations) {
 }
 
 
-function assignTriangleValues(mesh, {r_elevation, r_moisture, /* out */ t_elevation, t_moisture}) {
+const LAND_ICE = 0.28;
+const SEA_ICE = 0.18;
+const LAPSE = 0.55;
+const INLAND_SCALE = 16;
+
+function clamp01(x) {
+    return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+function climateColor(e, m, temp) {
+    if (temp < SEA_ICE && e < 0) return [0.9, 0.12];
+    if (temp < LAND_ICE && e >= 0) return [Math.max(e, 0.88), 0.18];
+    return [e, m];
+}
+
+function latitudeMoisture(lat) {
+    const deg = Math.abs(lat) * 180 / Math.PI;
+    const tropics = Math.exp(-((deg / 10) ** 2));
+    const mid = 0.7 * Math.exp(-(((deg - 52) / 14) ** 2));
+    return Math.min(1, 0.08 + 0.95 * tropics + mid);
+}
+
+function upwindFrom(px, py, pz) {
+    const deg = Math.abs(Math.asin(Math.max(-1, Math.min(1, pz)))) * 180 / Math.PI;
+    let ex = -py, ey = px;
+    const len = Math.hypot(ex, ey);
+    if (len < 1e-6) return [0, 0, 0];
+    ex /= len;
+    ey /= len;
+    if (deg >= 30 && deg < 60) return [-ex, -ey, 0];
+    return [ex, ey, 0];
+}
+
+function assignClimate(mesh, {r_xyz, r_elevation, /* out */ r_moisture, r_temperature}) {
+    const {numRegions} = mesh;
+    const ocean_r = new Set();
+    for (let r = 0; r < numRegions; r++) {
+        if (r_elevation[r] < 0) ocean_r.add(r);
+    }
+    const r_dist_ocean = assignDistanceField(mesh, ocean_r, new Set());
+    const neighbors = [];
+
+    for (let r = 0; r < numRegions; r++) {
+        const px = r_xyz[3 * r], py = r_xyz[3 * r + 1], pz = r_xyz[3 * r + 2];
+        const lat = Math.asin(Math.max(-1, Math.min(1, pz)));
+        const e = r_elevation[r];
+        r_temperature[r] = Math.cos(lat) - LAPSE * Math.max(0, e)
+            + 0.1 * fbm_noise(px, py, pz);
+
+        if (e < 0) {
+            r_moisture[r] = 1;
+            continue;
+        }
+
+        let m = latitudeMoisture(lat);
+        const inland = Math.min(1, r_dist_ocean[r] / INLAND_SCALE);
+        m *= 0.38 + 0.62 * (1 - inland * inland);
+
+        const wind = upwindFrom(px, py, pz);
+        mesh.r_circulate_r(neighbors, r);
+        let best = r, bestDot = -Infinity;
+        for (const n of neighbors) {
+            const dx = r_xyz[3 * n] - px;
+            const dy = r_xyz[3 * n + 1] - py;
+            const dz = r_xyz[3 * n + 2] - pz;
+            const dot = dx * wind[0] + dy * wind[1] + dz * wind[2];
+            if (dot > bestDot) {
+                bestDot = dot;
+                best = n;
+            }
+        }
+        if (best !== r) {
+            m += 0.32 * Math.max(-1, Math.min(1, (e - r_elevation[best]) * 2.2));
+        }
+
+        m += 0.06 * fbm_noise(px, py, pz);
+        r_moisture[r] = clamp01(m);
+    }
+
+    smoothField(mesh, r_moisture, null, 2);
+}
+
+
+function assignTriangleValues(mesh, {r_elevation, r_moisture, r_temperature, /* out */ t_elevation, t_moisture, t_temperature}) {
     const {numTriangles} = mesh;
     for (let t = 0; t < numTriangles; t++) {
         let s0 = 3*t;
@@ -602,6 +687,7 @@ function assignTriangleValues(mesh, {r_elevation, r_moisture, /* out */ t_elevat
             r3 = mesh.s_begin_r(s0+2);
         t_elevation[t] = 1/3 * (r_elevation[r1] + r_elevation[r2] + r_elevation[r3]);
         t_moisture[t] = 1/3 * (r_moisture[r1] + r_moisture[r2] + r_moisture[r3]);
+        t_temperature[t] = 1/3 * (r_temperature[r1] + r_temperature[r2] + r_temperature[r3]);
     }
 }
 
@@ -625,6 +711,8 @@ function generateMesh() {
     map.t_elevation = new Float32Array(mesh.numTriangles);
     map.r_moisture = new Float32Array(mesh.numRegions);
     map.t_moisture = new Float32Array(mesh.numTriangles);
+    map.r_temperature = new Float32Array(mesh.numRegions);
+    map.t_temperature = new Float32Array(mesh.numTriangles);
 
     map.r_xyz = result.r_xyz;
     map.t_xyz = generateTriangleCenters(mesh, map);
@@ -643,15 +731,7 @@ function generateMap() {
         }
     }
     assignRegionElevation(mesh, map);
-    // TODO: assign region moisture in a better way!
-    for (let r = 0; r < mesh.numRegions; r++) {
-        map.r_moisture[r] = (map.r_plate[r] % 10) / 10.0;
-    }
-    const land = new Uint8Array(mesh.numRegions);
-    for (let r = 0; r < mesh.numRegions; r++) {
-        land[r] = map.r_elevation[r] >= 0 ? 1 : 0;
-    }
-    smoothField(mesh, map.r_moisture, land, 4);
+    assignClimate(mesh, map);
     assignTriangleValues(mesh, map);
 
     quadGeometry.setMap(mesh, map);
@@ -810,9 +890,7 @@ function _draw() {
     mat4.rotate(u_projection, u_projection, previewYaw, [0, 0, 1]);
 
     function r_color_fn(r) {
-        let m = map.r_moisture[r];
-        let e = map.r_elevation[r];
-        return [e, m];
+        return climateColor(map.r_elevation[r], map.r_moisture[r], map.r_temperature[r]);
     }
 
     if (drawMode === 'centroid') {
