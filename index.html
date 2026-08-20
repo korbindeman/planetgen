@@ -5,30 +5,57 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Procedural Planet Generation</title>
     <style>
-      canvas { max-width: 100%; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        height: 100dvh;
+        overflow: hidden;
+      }
+      .controls {
+        flex: 0 0 14rem;
+        padding: 0.75rem 1rem;
+        overflow: auto;
+      }
+      .controls p { margin: 0; }
+      .controls input[type="range"] { width: 100%; }
+      figure {
+        flex: 1;
+        margin: 0;
+        min-width: 0;
+        min-height: 0;
+        container-type: size;
+        display: grid;
+        place-items: center;
+      }
+      canvas {
+        max-width: 100cqw;
+        max-height: 100cqh;
+      }
     </style>
   </head>
   <body>
-    <p>
-      Draw:
-      <button onclick="setDrawMode('quads')">Quads</button>
-      <button onclick="setDrawMode('centroid')">Flat</button>
-      <br>
-      <label><input type="checkbox" oninput="setDrawPlateVectors(this.checked)">Plate vectors</label>
-      <label><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)">Plate boundaries</label>
-      <br>
-      Number of regions:
-      <input type="range" min="2" max="5" step="0.001" value="4" oninput="setN(Math.pow(10, this.valueAsNumber) | 0)" style="width: 50ex">
-      <br>
-      Number of plates:
-      <input type="range" min="5" max="100" value="20" oninput="setP(this.valueAsNumber)" style="width: 50ex">
-      <br>
-      Jitter:
-      <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)" style="width: 50ex">
-      <br>
-      Sphere rotation:
-      <input type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)" style="width: 50ex">
-    </p>
+    <div class="controls">
+      <p>
+        Draw:
+        <button onclick="setDrawMode('quads')">Quads</button>
+        <button onclick="setDrawMode('centroid')">Flat</button>
+        <br>
+        <label><input type="checkbox" oninput="setDrawPlateVectors(this.checked)">Plate vectors</label>
+        <label><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)">Plate boundaries</label>
+        <br>
+        Number of regions:
+        <input type="range" min="2" max="5" step="0.001" value="4" oninput="setN(Math.pow(10, this.valueAsNumber) | 0)">
+        <br>
+        Number of plates:
+        <input type="range" min="5" max="100" value="20" oninput="setP(this.valueAsNumber)">
+        <br>
+        Jitter:
+        <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)">
+        <br>
+        Sphere rotation:
+        <input type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)">
+      </p>
+    </div>
 
     <figure>
       <canvas id="output" width="1024" height="1024"></canvas>
