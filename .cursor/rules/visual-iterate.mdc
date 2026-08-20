@@ -1,0 +1,16 @@
+---
+description: Capture and read a planet PNG after visual changes so the agent can iterate on how the globe looks.
+alwaysApply: true
+---
+
+# Visual iteration
+
+The globe is a WebGL canvas. You cannot see it until you capture a PNG.
+
+After any change that affects how the planet looks (shaders, colors, terrain, rivers, plates, camera, mesh, colormap):
+
+1. Run `bun run preview`
+2. Read `preview/planet.png`
+3. Judge the image, then change the code and repeat
+
+Do not finish visual work from code alone. The PNG is a 2x2 of four longitudes: 0, 90, 180, and 270 degrees.

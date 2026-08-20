@@ -41,6 +41,9 @@ let northAnimId = 0;
 let drawMode = 'centroid';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
+let previewYaw = 0;
+
+window.__PLANET_READY__ = false;
 
 window.setN = newN => { N = newN; generateMesh(); };
 window.setP = newP => { P = newP; generateMap(); };
@@ -848,12 +851,14 @@ function drawRivers(u_projection, mesh, {t_xyz, s_flow}) {
 
 let _draw_pending = false;
 function _draw() {
+    regl.clear({ color: [0, 0, 0, 0], depth: 1 });
     let u_pointsize = 0.1 + 100 / Math.sqrt(N);
     let u_projection = mat4.create();
     mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5, 1]); // avoid clipping
     mat4.multiply(u_projection, u_projection, dragRotation);
     mat4.rotate(u_projection, u_projection, -rotation, [0.1, 1, 0]);
     mat4.rotate(u_projection, u_projection, -Math.PI/2+0.2, [1, 0, 0]);
+    mat4.rotate(u_projection, u_projection, previewYaw, [0, 0, 1]);
 
     function r_color_fn(r) {
         let m = map.r_moisture[r];
@@ -900,7 +905,49 @@ function _draw() {
     //     count: mesh.numRegions,
     // });
     _draw_pending = false;
+    if (!window.__PLANET_READY__) {
+        window.__PLANET_READY__ = true;
+    }
 }
+
+window.exportPlanetPreview = function exportPlanetPreview() {
+    const src = document.getElementById('output');
+    const cell = 512;
+    const labelH = 28;
+    const yaws = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2];
+    const labels = ['0', '90', '180', '270'];
+    const sheet = document.createElement('canvas');
+    sheet.width = cell * 2;
+    sheet.height = (cell + labelH) * 2;
+    const ctx = sheet.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, sheet.width, sheet.height);
+    ctx.fillStyle = '#111111';
+    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+
+    const savedYaw = previewYaw;
+    const savedZoom = zoom;
+    const savedDrag = mat4.clone(dragRotation);
+    mat4.identity(dragRotation);
+    zoom = 1;
+
+    for (let i = 0; i < yaws.length; i++) {
+        previewYaw = yaws[i];
+        _draw();
+        regl._gl.finish();
+        const x = (i % 2) * cell;
+        const y = Math.floor(i / 2) * (cell + labelH);
+        ctx.fillText(`${labels[i]} deg`, x + 10, y + labelH / 2);
+        ctx.drawImage(src, x, y + labelH, cell, cell);
+    }
+
+    previewYaw = savedYaw;
+    zoom = savedZoom;
+    mat4.copy(dragRotation, savedDrag);
+    draw();
+    return sheet.toDataURL('image/png');
+};
 
 function draw() {
     if (!_draw_pending) {
