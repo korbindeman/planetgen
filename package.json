@@ -3,14 +3,19 @@
     "version": "1.0.0",
     "private": true,
     "license": "Apache-2.0",
+    "packageManager": "bun@1.3.14",
+    "scripts": {
+        "dev": "bun --hot ./index.html",
+        "build": "bun build ./planet-generation.js --target=browser --minify --sourcemap=linked --outdir=build --entry-naming=_bundle.[ext]"
+    },
     "dependencies": {
         "@redblobgames/dual-mesh": "https://github.com/redblobgames/dual-mesh",
         "@redblobgames/prng": "https://github.com/redblobgames/prng",
         "delaunator": "^3.0",
-        "flatqueue": "*",
-        "gl-matrix": "*",
-        "hash-int": "*",
-        "regl": "*",
+        "flatqueue": "1.1.0",
+        "gl-matrix": "2.8.1",
+        "hash-int": "1.0.0",
+        "regl": "1.3.7",
         "simplex-noise": "^2"
     }
 }

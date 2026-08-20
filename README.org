@@ -18,4 +18,13 @@ This was a 9 day (2.5hr/day) experiment to learn how to procedurally generate ma
 
 ** Installation
 
-To build, run =./build.sh= . Then visit embed.html .
+Install the dependencies with =bun install=, then start the development server:
+
+#+begin_src sh
+bun run dev
+#+end_src
+
+Open =http://localhost:3000=. The browser reloads when the HTML or JavaScript
+changes.
+
+To create the production bundle used by =embed.html=, run =bun run build=.
