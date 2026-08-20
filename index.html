@@ -55,10 +55,15 @@
       canvas:active {
         cursor: grabbing;
       }
-      .north-compass {
+      .globe-hud {
         position: absolute;
         right: 0.7rem;
         bottom: 0.7rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .globe-hud-btn {
         width: 48px;
         height: 48px;
         padding: 0;
@@ -75,14 +80,20 @@
         transition-duration: 150ms;
         transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
       }
-      .north-compass:hover {
+      .globe-hud-btn:hover {
         box-shadow:
           0 0 0 1px rgba(0, 0, 0, 0.1),
           0 2px 4px rgba(0, 0, 0, 0.12),
           0 8px 20px rgba(0, 0, 0, 0.16);
       }
-      .north-compass:active {
+      .globe-hud-btn:active {
         transform: scale(0.96);
+      }
+      .view-reset-icon {
+        display: block;
+        width: 22px;
+        height: 22px;
+        margin: 12.5px auto 13.5px;
       }
       .north-compass-rose {
         display: block;
@@ -93,7 +104,7 @@
         will-change: transform;
       }
       @media (prefers-color-scheme: dark) {
-        .north-compass { filter: invert(1); }
+        .globe-hud { filter: invert(1); }
       }
     </style>
   </head>
@@ -124,13 +135,20 @@
     <figure>
       <div class="globe">
         <canvas id="output" width="1024" height="1024"></canvas>
-        <button type="button" class="north-compass" title="Click to reorient north" aria-label="Reorient north">
-          <svg class="north-compass-rose" viewBox="0 0 48 48" aria-hidden="true">
-            <polygon points="24,26 19.5,36 24,45 28.5,36" fill="#c5c9d1"/>
-            <polygon points="24,3 19.5,20 24,26 28.5,20" fill="#e23d2b"/>
-            <text x="24" y="17.5" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="system-ui, sans-serif">N</text>
-          </svg>
-        </button>
+        <div class="globe-hud">
+          <button type="button" class="globe-hud-btn view-reset" title="Reset view" aria-label="Reset view">
+            <svg class="view-reset-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="#2a2e36" d="M12 3.6 3.2 11.2h3.1v8.2h5.1v-5.4h4.2v5.4h5.1v-8.2h3.1L12 3.6z"/>
+            </svg>
+          </button>
+          <button type="button" class="globe-hud-btn north-compass" title="Click to reorient north" aria-label="Reorient north">
+            <svg class="north-compass-rose" viewBox="0 0 48 48" aria-hidden="true">
+              <polygon points="24,26 19.5,36 24,45 28.5,36" fill="#c5c9d1"/>
+              <polygon points="24,3 19.5,20 24,26 28.5,20" fill="#e23d2b"/>
+              <text x="24" y="17.5" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="system-ui, sans-serif">N</text>
+            </svg>
+          </button>
+        </div>
       </div>
     </figure>
     <script type="module" src="./planet-generation.js"></script>

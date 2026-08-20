@@ -7,10 +7,14 @@
  */
 
 const SEED = 123;
+const LAND_ICE = 0.28;
+const SEA_ICE = 0.18;
+const LAPSE = 0.55;
+const INLAND_SCALE = 16;
 
 const SimplexNoise = require('simplex-noise');
 const colormap = require('./colormap');
-const {vec3, mat4} = require('gl-matrix');
+const {vec3, mat4, quat} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
 
@@ -27,6 +31,30 @@ const u_colormap = regl.texture({
     wrapT: 'clamp'
 });
 
+const SURFACE_GLSL = `
+vec3 surfaceAlbedo(sampler2D colormap, vec3 tm, float seaIce, float landIce) {
+  float e = tm.x;
+  float m = clamp(tm.y, 0.0, 1.0);
+  float temp = tm.z;
+  vec3 snow = texture2D(colormap, vec2(0.51, 0.92)).rgb;
+  if (e < 0.0) {
+    vec3 ocean = texture2D(colormap, vec2(0.5 * (e + 1.0), m)).rgb;
+    float ice = smoothstep(seaIce + 0.06, seaIce - 0.08, temp);
+    return mix(ocean, snow, ice);
+  }
+  float t = clamp(temp, 0.0, 1.0);
+  float elev = clamp(e, 0.0, 1.0);
+  float moisture = m * (1.0 - 0.5 * elev);
+  vec3 biome = texture2D(colormap, vec2(0.51 + 0.48 * t, moisture)).rgb;
+  vec3 rock = vec3(0.45, 0.40, 0.34);
+  float alpine = smoothstep(0.32, 0.78, elev);
+  biome = mix(biome, rock, alpine * t * 0.5);
+  biome = mix(biome, snow, alpine * (1.0 - t) * 0.85);
+  float ice = smoothstep(landIce + 0.07, landIce - 0.07, temp);
+  return mix(biome, snow, ice);
+}
+`;
+
 
 /* UI parameters */
 let N = 10000;
@@ -36,7 +64,7 @@ let rotation = -1;
 let dragRotation = mat4.create();
 let zoom = 1;
 let northHeadingAngle = 0;
-let northAnimId = 0;
+let viewAnimId = 0;
 let drawMode = 'quads';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
@@ -143,10 +171,11 @@ const renderTriangles = regl({
     frag: `
 precision mediump float;
 uniform sampler2D u_colormap;
-varying vec2 v_tm;
+uniform float u_sea_ice, u_land_ice;
+varying vec3 v_tm;
+${SURFACE_GLSL}
 void main() {
-   float e = v_tm.x > 0.0? 0.5 * (v_tm.x * v_tm.x + 1.0) : 0.5 * (v_tm.x + 1.0);
-   gl_FragColor = texture2D(u_colormap, vec2(e, v_tm.y));
+   gl_FragColor = vec4(surfaceAlbedo(u_colormap, v_tm, u_sea_ice, u_land_ice), 1);
 }
 `,
 
@@ -154,8 +183,8 @@ void main() {
 precision mediump float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
-attribute vec2 a_tm;
-varying vec2 v_tm;
+attribute vec3 a_tm;
+varying vec3 v_tm;
 void main() {
   v_tm = a_tm;
   gl_Position = u_projection * vec4(a_xyz, 1);
@@ -165,6 +194,8 @@ void main() {
     uniforms: {
         u_colormap: u_colormap,
         u_projection: regl.prop('u_projection'),
+        u_sea_ice: SEA_ICE,
+        u_land_ice: LAND_ICE,
     },
 
     count: regl.prop('count'),
@@ -184,17 +215,19 @@ precision mediump float;
 uniform sampler2D u_colormap;
 uniform vec2 u_light_angle;
 uniform float u_inverse_texture_size, u_slope, u_flat, u_c, u_d, u_outline_strength;
+uniform float u_sea_ice, u_land_ice;
 
-varying vec2 v_tm;
+varying vec3 v_tm;
+${SURFACE_GLSL}
 void main() {
-   float e = v_tm.x > 0.0? 0.5 * (v_tm.x * v_tm.x + 1.0) : 0.5 * (v_tm.x + 1.0);
    float dedx = dFdx(v_tm.x);
    float dedy = dFdy(v_tm.x);
    vec3 slope_vector = normalize(vec3(dedy, dedx, u_d * 2.0 * u_inverse_texture_size));
    vec3 light_vector = normalize(vec3(u_light_angle, mix(u_slope, u_flat, slope_vector.z)));
    float light = u_c + max(0.0, dot(light_vector, slope_vector));
    float outline = 1.0 + u_outline_strength * max(dedx,dedy);
-   gl_FragColor = vec4(texture2D(u_colormap, vec2(e, v_tm.y)).rgb * light / outline, 1);
+   vec3 albedo = surfaceAlbedo(u_colormap, v_tm, u_sea_ice, u_land_ice);
+   gl_FragColor = vec4(albedo * light / outline, 1);
 }
 `,
 
@@ -202,8 +235,8 @@ void main() {
 precision mediump float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
-attribute vec2 a_tm;
-varying vec2 v_tm;
+attribute vec3 a_tm;
+varying vec3 v_tm;
 void main() {
   v_tm = a_tm;
   gl_Position = u_projection * vec4(a_xyz, 1);
@@ -220,6 +253,8 @@ void main() {
         u_slope: 6,
         u_flat: 2.5,
         u_outline_strength: 0,
+        u_sea_ice: SEA_ICE,
+        u_land_ice: LAND_ICE,
     },
 
     elements: regl.prop('elements'),
@@ -268,7 +303,7 @@ function generateTriangleCenters(mesh, {r_xyz}) {
 function generateVoronoiGeometry(mesh, {r_xyz, t_xyz}, r_color_fn) {
     const {numSides} = mesh;
     let xyz = new Float32Array(3 * 3 * numSides),
-        tm = new Float32Array(3 * 2 * numSides);
+        tm = new Float32Array(3 * 3 * numSides);
 
     for (let s = 0; s < numSides; s++) {
         let inner_t = mesh.s_inner_t(s),
@@ -285,8 +320,8 @@ function generateVoronoiGeometry(mesh, {r_xyz, t_xyz}, r_color_fn) {
             xyz[9 * s + 6 + i] = r_xyz[3 * begin_r + i];
         }
         for (let j = 0; j < 3; j++) {
-            for (let i = 0; i < 2; i++) {
-                tm[6 * s + 2 * j + i] = rgb[i];
+            for (let i = 0; i < 3; i++) {
+                tm[9 * s + 3 * j + i] = rgb[i];
             }
         }
     }
@@ -296,14 +331,14 @@ function generateVoronoiGeometry(mesh, {r_xyz, t_xyz}, r_color_fn) {
 class QuadGeometry {
     constructor () {
         /* xyz = position in 3-space;
-           tm = temperature, moisture
+           tm = elevation, moisture, temperature
            I = indices for indexed drawing mode */
     }
 
     setMesh({numSides, numRegions, numTriangles}) {
         this.I = new Int32Array(3 * numSides);
         this.xyz = new Float32Array(3 * (numRegions + numTriangles));
-        this.tm = new Float32Array(2 * (numRegions + numTriangles));
+        this.tm = new Float32Array(3 * (numRegions + numTriangles));
     }
 
     setMap(mesh, {r_xyz, t_xyz, r_elevation, t_elevation, r_moisture, t_moisture, r_temperature, t_temperature}) {
@@ -317,14 +352,14 @@ class QuadGeometry {
 
         let p = 0;
         for (let r = 0; r < numRegions; r++) {
-            const color = climateColor(r_elevation[r], r_moisture[r], r_temperature[r]);
-            tm[p++] = color[0];
-            tm[p++] = color[1];
+            tm[p++] = r_elevation[r];
+            tm[p++] = r_moisture[r];
+            tm[p++] = r_temperature[r];
         }
         for (let t = 0; t < numTriangles; t++) {
-            const color = climateColor(t_elevation[t], t_moisture[t], t_temperature[t]);
-            tm[p++] = color[0];
-            tm[p++] = color[1];
+            tm[p++] = t_elevation[t];
+            tm[p++] = t_moisture[t];
+            tm[p++] = t_temperature[t];
         }
 
         let i = 0, count_valley = 0, count_ridge = 0;
@@ -595,19 +630,8 @@ function smoothField(mesh, values, land, iterations) {
 }
 
 
-const LAND_ICE = 0.28;
-const SEA_ICE = 0.18;
-const LAPSE = 0.55;
-const INLAND_SCALE = 16;
-
 function clamp01(x) {
     return x < 0 ? 0 : x > 1 ? 1 : x;
-}
-
-function climateColor(e, m, temp) {
-    if (temp < SEA_ICE && e < 0) return [0.9, 0.12];
-    if (temp < LAND_ICE && e >= 0) return [Math.max(e, 0.88), 0.18];
-    return [e, m];
 }
 
 function latitudeMoisture(lat) {
@@ -854,29 +878,52 @@ function drawNorthPole(u_projection) {
     });
 }
 
-function reorientNorth() {
-    const heading = northHeading();
-    if (!isFinite(heading) || Math.abs(heading) < 1e-3) return;
-
-    const animId = ++northAnimId;
-    const startDrag = mat4.clone(dragRotation);
+function animateView(apply) {
+    const animId = ++viewAnimId;
     const startedAt = performance.now();
     const duration = 420;
 
     function step(now) {
-        if (animId !== northAnimId) return;
+        if (animId !== viewAnimId) return;
         const t = Math.min(1, (now - startedAt) / duration);
-        const eased = 1 - (1 - t) ** 3;
-        const delta = mat4.create();
-        mat4.rotateZ(delta, delta, heading * eased);
-        mat4.multiply(dragRotation, delta, startDrag);
+        apply(1 - (1 - t) ** 3);
         draw();
         if (t < 1) requestAnimationFrame(step);
     }
     requestAnimationFrame(step);
 }
 
+function reorientNorth() {
+    const heading = northHeading();
+    if (!isFinite(heading) || Math.abs(heading) < 1e-3) return;
+
+    const startDrag = mat4.clone(dragRotation);
+    animateView((eased) => {
+        const delta = mat4.create();
+        mat4.rotateZ(delta, delta, heading * eased);
+        mat4.multiply(dragRotation, delta, startDrag);
+    });
+}
+
+function resetView() {
+    const startDrag = mat4.clone(dragRotation);
+    const startQuat = mat4.getRotation(quat.create(), startDrag);
+    const endQuat = quat.create();
+    const startZoom = zoom;
+    const alreadyHome =
+        Math.abs(startZoom - 1) < 1e-3 &&
+        Math.hypot(startQuat[0], startQuat[1], startQuat[2]) < 1e-3 &&
+        Math.abs(Math.abs(startQuat[3]) - 1) < 1e-3;
+    if (alreadyHome) return;
+
+    animateView((eased) => {
+        mat4.fromQuat(dragRotation, quat.slerp(quat.create(), startQuat, endQuat, eased));
+        zoom = startZoom + (1 - startZoom) * eased;
+    });
+}
+
 window.reorientNorth = reorientNorth;
+window.resetView = resetView;
 
 let _draw_pending = false;
 function _draw() {
@@ -890,7 +937,7 @@ function _draw() {
     mat4.rotate(u_projection, u_projection, previewYaw, [0, 0, 1]);
 
     function r_color_fn(r) {
-        return climateColor(map.r_elevation[r], map.r_moisture[r], map.r_temperature[r]);
+        return [map.r_elevation[r], map.r_moisture[r], map.r_temperature[r]];
     }
 
     if (drawMode === 'centroid') {
@@ -1007,7 +1054,7 @@ function setupDragRotation() {
     }
 
     canvas.addEventListener('pointerdown', (event) => {
-        northAnimId += 1;
+        viewAnimId += 1;
         pointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
         if (pointers.size === 2) {
             dragging = false;
@@ -1076,4 +1123,5 @@ function setupDragRotation() {
 
 setupDragRotation();
 document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
+document.querySelector('.view-reset')?.addEventListener('click', resetView);
 generateMesh();
