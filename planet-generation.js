@@ -6,7 +6,17 @@
  * Adapting mapgen4 code for a sphere. Quick & dirty, for procjam2018
  */
 
-const SEED = 123;
+function seedFromUrl() {
+    try {
+        const q = new URLSearchParams(location.search).get('seed');
+        if (q == null || q === '') return 88;
+        const n = Number(q);
+        return Number.isFinite(n) ? (n | 0) : 88;
+    } catch (_) {
+        return 88;
+    }
+}
+let seed = seedFromUrl();
 const LAND_ICE = 0.28;
 const SEA_ICE = 0.18;
 const LAPSE = 0.55;
@@ -47,9 +57,9 @@ vec3 surfaceAlbedo(sampler2D colormap, vec3 tm, float seaIce, float landIce) {
   float moisture = m * (1.0 - 0.5 * elev);
   vec3 biome = texture2D(colormap, vec2(0.51 + 0.48 * t, moisture)).rgb;
   vec3 rock = vec3(0.45, 0.40, 0.34);
-  float alpine = smoothstep(0.32, 0.78, elev);
-  biome = mix(biome, rock, alpine * t * 0.5);
-  biome = mix(biome, snow, alpine * (1.0 - t) * 0.85);
+  float alpine = smoothstep(0.28, 0.72, elev);
+  biome = mix(biome, rock, alpine * (0.4 + 0.45 * t));
+  biome = mix(biome, snow, alpine * (1.0 - t) * 0.65);
   float ice = smoothstep(landIce + 0.07, landIce - 0.07, temp);
   return mix(biome, snow, ice);
 }
@@ -85,6 +95,7 @@ window.setDrawMode = newMode => { drawMode = newMode; draw(); };
 window.setViewMode = newMode => { applyViewMode(newMode); };
 window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
+window.getSeed = () => seed;
 
 const renderPoints = regl({
     frag: `
@@ -274,7 +285,63 @@ void main() {
  * Geometry
  */
 
-let _randomNoise = new SimplexNoise(makeRandFloat(SEED));
+let _randomNoise = new SimplexNoise(makeRandFloat(seed));
+
+function applySeed(next) {
+    seed = (next | 0);
+    if (seed === 0) seed = 1;
+    _randomNoise = new SimplexNoise(makeRandFloat(seed));
+    const label = document.getElementById('seed-label');
+    if (label) label.textContent = String(seed);
+}
+
+const SEED_HISTORY_MAX = 50;
+let seedHistory = [seed];
+let seedHistoryIndex = 0;
+
+function syncSeedHistoryButtons() {
+    const undo = document.getElementById('seed-undo');
+    const redo = document.getElementById('seed-redo');
+    if (undo) undo.disabled = seedHistoryIndex <= 0;
+    if (redo) redo.disabled = seedHistoryIndex >= seedHistory.length - 1;
+}
+
+function commitSeed(next) {
+    applySeed(next);
+    if (seedHistory[seedHistoryIndex] === seed) {
+        syncSeedHistoryButtons();
+        return;
+    }
+    seedHistory = seedHistory.slice(0, seedHistoryIndex + 1);
+    seedHistory.push(seed);
+    if (seedHistory.length > SEED_HISTORY_MAX) {
+        seedHistory = seedHistory.slice(seedHistory.length - SEED_HISTORY_MAX);
+    }
+    seedHistoryIndex = seedHistory.length - 1;
+    generateMesh();
+    syncSeedHistoryButtons();
+}
+
+window.setSeed = next => { commitSeed(next); };
+window.shuffleSeed = () => {
+    let next;
+    do { next = (Math.random() * 0x7fffffff) | 0; } while (next === seed);
+    commitSeed(next);
+};
+window.undoSeed = () => {
+    if (seedHistoryIndex <= 0) return;
+    seedHistoryIndex--;
+    applySeed(seedHistory[seedHistoryIndex]);
+    generateMesh();
+    syncSeedHistoryButtons();
+};
+window.redoSeed = () => {
+    if (seedHistoryIndex >= seedHistory.length - 1) return;
+    seedHistoryIndex++;
+    applySeed(seedHistory[seedHistoryIndex]);
+    generateMesh();
+    syncSeedHistoryButtons();
+};
 const persistence = 2/3;
 const amplitudes = Array.from({length: 5}, (_, octave) => Math.pow(persistence, octave));
 
@@ -412,11 +479,11 @@ function pickRandomRegions(mesh, N, randInt) {
 function generatePlates(mesh, r_xyz) {
     let r_plate = new Int32Array(mesh.numRegions);
     r_plate.fill(-1);
-    let plate_r = pickRandomRegions(mesh, Math.min(P, N), makeRandInt(SEED));
+    let plate_r = pickRandomRegions(mesh, Math.min(P, N), makeRandInt(seed));
     let queue = Array.from(plate_r);
     for (let r of queue) { r_plate[r] = r; }
     let out_r = [];
-    const randInt = makeRandInt(SEED);
+    const randInt = makeRandInt(seed);
 
     /* In Breadth First Search (BFS) the queue will be all elements in
        queue[queue_out ... queue.length-1]. Pushing onto the queue
@@ -444,23 +511,64 @@ function generatePlates(mesh, r_xyz) {
         }
     }
 
-    // Assign a random movement vector for each plate
+    return {plate_r, r_plate};
+}
+
+
+function assignPlateMotion(mesh, r_xyz, plate_r, r_plate, plate_is_ocean) {
+    const {numRegions} = mesh;
+    const centroid = [];
+    for (let center_r of plate_r) {
+        centroid[center_r] = [0, 0, 0];
+    }
+    for (let r = 0; r < numRegions; r++) {
+        let p = r_plate[r];
+        centroid[p][0] += r_xyz[3 * r];
+        centroid[p][1] += r_xyz[3 * r + 1];
+        centroid[p][2] += r_xyz[3 * r + 2];
+    }
+    for (let center_r of plate_r) {
+        vec3.normalize(centroid[center_r], centroid[center_r]);
+    }
+
+    const randFloat = makeRandFloat(seed + 19);
+    let oceanPole = vec3.normalize([], [
+        0.18 * (randFloat() - 0.5),
+        0.18 * (randFloat() - 0.5),
+        randFloat() < 0.5 ? 1 : -1
+    ]);
+
     let plate_vec = [];
     for (let center_r of plate_r) {
         let neighbor_r = mesh.r_circulate_r([], center_r)[0];
-        let p0 = r_xyz.slice(3 * center_r, 3 * center_r + 3),
-            p1 = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
-        plate_vec[center_r] = vec3.normalize([], vec3.subtract([], p1, p0));
-    }
+        let randomDir = vec3.normalize([], vec3.subtract([],
+            r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3),
+            r_xyz.slice(3 * center_r, 3 * center_r + 3)));
+        const c = centroid[center_r];
 
-    return {plate_r, r_plate, plate_vec};
+        if (plate_is_ocean.has(center_r)) {
+            plate_vec[center_r] = velocityAroundPole(oceanPole, c, randomDir);
+        } else {
+            let pole = vec3.normalize([], [randFloat() - 0.5, randFloat() - 0.5, randFloat() - 0.5]);
+            plate_vec[center_r] = vec3.scale([], velocityAroundPole(pole, c, randomDir), 0.4);
+        }
+    }
+    return {plate_vec, oceanPole};
+}
+
+
+function velocityAroundPole(pole, pos, fallback) {
+    let v = vec3.cross([], pole, pos);
+    let len = vec3.length(v);
+    if (len < 1e-8) return fallback;
+    return vec3.scale([], v, 1 / len);
 }
 
 
 /* Distance from any point in seeds_r to all other points, but 
  * don't go past any point in stop_r */
 function assignDistanceField(mesh, seeds_r, stop_r) {
-    const randInt = makeRandInt(SEED);
+    const randInt = makeRandInt(seed);
     let {numRegions} = mesh;
     let r_distance = new Float32Array(numRegions);
     r_distance.fill(Infinity);
@@ -492,68 +600,126 @@ function assignDistanceField(mesh, seeds_r, stop_r) {
 }
 
 
-/* Calculate the collision measure, which is the amount
- * that any neighbor's plate vector is pushing against 
- * the current plate vector. */
-const COLLISION_THRESHOLD = 0.75;
-function findCollisions(mesh, r_xyz, plate_is_ocean, r_plate, plate_vec) {
-    const deltaTime = 1e-2; // simulate movement
+/* Coastal ranges where ocean lithosphere runs into a continent (Andes).
+ * Continent-continent orogeny is rare: keep only the strongest suture. */
+const COLLIDE_CO = 0.8;
+const ANDES_WIDTH = 1;
+const SUTURE_WIDTH = 1;
+const CC_MIN_CELLS = 20;
+const CC_KEEP = 36;
+function findCollisions(mesh, r_xyz, plate_is_ocean, r_plate, plate_vec, oceanPole) {
+    const deltaTime = 1e-2;
     let {numRegions} = mesh;
-    let mountain_r = new Set(),
+    let andes_r = new Set(),
         coastline_r = new Set(),
         ocean_r = new Set();
+    let ccRegions = new Map();
+    let ccScore = new Map();
     let r_out = [];
-    /* For each region, I want to know how much it's being compressed
-       into an adjacent region. The "compression" is the change in
-       distance as the two regions move. I'm looking for the adjacent
-       region from a different plate that pushes most into this one*/
     for (let current_r = 0; current_r < numRegions; current_r++) {
-        let bestCompression = Infinity, best_r = -1;
+        let bestCompression = -Infinity, best_r = -1;
+        let bestIncoming = -Infinity;
         mesh.r_circulate_r(r_out, current_r);
+        let current_pos = r_xyz.slice(3 * current_r, 3 * current_r + 3);
+        let current_plate = r_plate[current_r];
+        let currentOcean = plate_is_ocean.has(current_plate);
         for (let neighbor_r of r_out) {
-            if (r_plate[current_r] !== r_plate[neighbor_r]) {
-                /* sometimes I regret storing xyz in a compact array... */
-                let current_pos = r_xyz.slice(3 * current_r, 3 * current_r + 3),
-                    neighbor_pos = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
-                /* simulate movement for deltaTime seconds */
-                let distanceBefore = vec3.distance(current_pos, neighbor_pos),
-                    distanceAfter = vec3.distance(vec3.add([], current_pos, vec3.scale([], plate_vec[r_plate[current_r]], deltaTime)),
-                                                  vec3.add([], neighbor_pos, vec3.scale([], plate_vec[r_plate[neighbor_r]], deltaTime)));
-                /* how much closer did these regions get to each other? */
-                let compression = distanceBefore - distanceAfter;
-                /* keep track of the adjacent region that gets closest */
-                // TODO: shouldn't this be > ? need to re-tune all the parameters for the page after changing this
-                if (compression < bestCompression) {
-                    best_r = neighbor_r;
-                    bestCompression = compression;
-                }
+            if (current_plate === r_plate[neighbor_r]) continue;
+            let neighbor_pos = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
+            let neighbor_plate = r_plate[neighbor_r];
+            let vCurrent = currentOcean
+                ? velocityAroundPole(oceanPole, current_pos, plate_vec[current_plate])
+                : plate_vec[current_plate];
+            let vNeighbor = plate_is_ocean.has(neighbor_plate)
+                ? velocityAroundPole(oceanPole, neighbor_pos, plate_vec[neighbor_plate])
+                : plate_vec[neighbor_plate];
+            let distanceBefore = vec3.distance(current_pos, neighbor_pos),
+                distanceAfter = vec3.distance(vec3.add([], current_pos, vec3.scale([], vCurrent, deltaTime)),
+                                              vec3.add([], neighbor_pos, vec3.scale([], vNeighbor, deltaTime)));
+            let compression = distanceBefore - distanceAfter;
+            if (compression > bestCompression) {
+                best_r = neighbor_r;
+                bestCompression = compression;
+            }
+            if (!currentOcean && plate_is_ocean.has(neighbor_plate)) {
+                let towardLand = vec3.normalize([], vec3.subtract([], current_pos, neighbor_pos));
+                let incoming = vec3.dot(vNeighbor, towardLand);
+                if (incoming > bestIncoming) bestIncoming = incoming;
             }
         }
-        if (best_r !== -1) {
-            /* at this point, bestCompression tells us how much closer
-               we are getting to the region that's pushing into us the most */
-            let collided = bestCompression > COLLISION_THRESHOLD * deltaTime;
-            let current_plate = r_plate[current_r],
-                best_plate = r_plate[best_r];
-            if (plate_is_ocean.has(current_plate) && plate_is_ocean.has(best_plate)) {
-                ocean_r.add(current_r);
-            } else if (!plate_is_ocean.has(current_plate) && !plate_is_ocean.has(best_plate)) {
-                if (collided) mountain_r.add(current_plate);
-            } else {
-                (collided? mountain_r : coastline_r).add(current_r);
+        if (best_r === -1) continue;
+        let best_plate = r_plate[best_r];
+        let neighborOcean = plate_is_ocean.has(best_plate);
+        if (currentOcean && neighborOcean) {
+            ocean_r.add(current_r);
+        } else if (!currentOcean && !neighborOcean) {
+            if (bestCompression > 0) {
+                let key = current_plate < best_plate
+                    ? current_plate + ':' + best_plate
+                    : best_plate + ':' + current_plate;
+                if (!ccRegions.has(key)) {
+                    ccRegions.set(key, []);
+                    ccScore.set(key, 0);
+                }
+                ccRegions.get(key).push({r: current_r, compression: bestCompression});
+                ccScore.set(key, ccScore.get(key) + bestCompression);
             }
+        } else if (!currentOcean) {
+            if (bestIncoming > COLLIDE_CO) andes_r.add(current_r);
+            else coastline_r.add(current_r);
+        } else {
+            coastline_r.add(current_r);
         }
     }
-    return {mountain_r, coastline_r, ocean_r};
+
+    let suture_r = new Set();
+    let bestKey = null, bestScore = 0;
+    for (let [key, score] of ccScore) {
+        if (score > bestScore) {
+            bestScore = score;
+            bestKey = key;
+        }
+    }
+    if (bestKey && ccRegions.get(bestKey).length >= CC_MIN_CELLS) {
+        let cells = ccRegions.get(bestKey).slice().sort((a, b) => b.compression - a.compression);
+        let keep = Math.min(CC_KEEP, cells.length);
+        for (let i = 0; i < keep; i++) suture_r.add(cells[i].r);
+    }
+    return {andes_r, suture_r, coastline_r, ocean_r};
 }
 
 
-function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec, /* out */ r_elevation}) {
+function expandOnContinent(mesh, seeds, r_plate, plate_is_ocean, hops) {
+    let out_r = new Set(seeds);
+    let r_out = [];
+    let frontier = Array.from(seeds);
+    for (let h = 0; h < hops; h++) {
+        let next = [];
+        for (let r of frontier) {
+            mesh.r_circulate_r(r_out, r);
+            for (let n of r_out) {
+                if (out_r.has(n) || plate_is_ocean.has(r_plate[n])) continue;
+                out_r.add(n);
+                next.push(n);
+            }
+        }
+        frontier = next;
+    }
+    return out_r;
+}
+
+
+function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec, oceanPole, /* out */ r_elevation}) {
     const epsilon = 1e-3;
     let {numRegions} = mesh;
 
-    let {mountain_r, coastline_r, ocean_r} = findCollisions(
-        mesh, r_xyz, plate_is_ocean, r_plate, plate_vec);
+    let {andes_r, suture_r, coastline_r, ocean_r} = findCollisions(
+        mesh, r_xyz, plate_is_ocean, r_plate, plate_vec, oceanPole);
+    andes_r = expandOnContinent(mesh, andes_r, r_plate, plate_is_ocean, ANDES_WIDTH);
+    suture_r = expandOnContinent(mesh, suture_r, r_plate, plate_is_ocean, SUTURE_WIDTH);
+
+    let mountain_r = new Set(andes_r);
+    for (let r of suture_r) mountain_r.add(r);
 
     for (let r = 0; r < numRegions; r++) {
         if (r_plate[r] === r) {
@@ -566,21 +732,36 @@ function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec,
     for (let r of coastline_r) { stop_r.add(r); }
     for (let r of ocean_r) { stop_r.add(r); }
 
-    console.log('seeds mountain/coastline/ocean:', mountain_r.size, coastline_r.size, ocean_r.size, 'plate_is_ocean', plate_is_ocean.size,'/', P);
+    console.log('seeds andes/suture/coastline/ocean:', andes_r.size, suture_r.size, coastline_r.size, ocean_r.size, 'plate_is_ocean', plate_is_ocean.size,'/', P);
     let r_distance_a = assignDistanceField(mesh, mountain_r, ocean_r);
     let r_distance_b = assignDistanceField(mesh, ocean_r, coastline_r);
     let r_distance_c = assignDistanceField(mesh, coastline_r, stop_r);
+    let r_distance_suture = assignDistanceField(mesh, suture_r, ocean_r);
 
     for (let r = 0; r < numRegions; r++) {
-        let a = r_distance_a[r] + epsilon,
+        let da = r_distance_a[r];
+        let a = Math.pow((da === Infinity ? 80 : da) + epsilon, 2.25),
             b = r_distance_b[r] + epsilon,
             c = r_distance_c[r] + epsilon;
-        if (a === Infinity && b === Infinity) {
+        if (da === Infinity && r_distance_b[r] === Infinity) {
             r_elevation[r] = 0.1;
         } else {
             r_elevation[r] = (1/a - 1/b) / (1/a + 1/b + 1/c);
+            if (da !== Infinity) {
+                r_elevation[r] += 0.16 * Math.exp(-(da * da) / 5.5);
+            }
         }
-        r_elevation[r] += 0.1 * fbm_noise(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
+        let ds = r_distance_suture[r];
+        if (ds !== Infinity) {
+            r_elevation[r] += 0.12 * Math.exp(-(ds * ds) / 6.5);
+        }
+        if (r_elevation[r] > 0.62) {
+            r_elevation[r] = 0.62 + 0.28 * (r_elevation[r] - 0.62);
+        }
+        if (!plate_is_ocean.has(r_plate[r])) {
+            r_elevation[r] = Math.max(r_elevation[r], 0.15);
+        }
+        r_elevation[r] += 0.06 * fbm_noise(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
     }
 
     flattenOceanBathymetry(mesh, {r_xyz, r_plate, plate_is_ocean, r_elevation, mountain_r});
@@ -733,7 +914,7 @@ var mesh, map = {};
 var quadGeometry = new QuadGeometry();
 
 function generateMesh() {
-    let result = SphereMesh.makeSphere(N, jitter, makeRandFloat(SEED));
+    let result = SphereMesh.makeSphere(N, jitter, makeRandFloat(seed));
     mesh = result.mesh;
     quadGeometry.setMesh(mesh);
     
@@ -753,13 +934,15 @@ function generateMap() {
     let result = generatePlates(mesh, map.r_xyz);
     map.plate_r = result.plate_r;
     map.r_plate = result.r_plate;
-    map.plate_vec = result.plate_vec;
     map.plate_is_ocean = new Set();
     for (let r of map.plate_r) {
         if (makeRandInt(r)(10) < 5) {
             map.plate_is_ocean.add(r);
         }
     }
+    let motion = assignPlateMotion(mesh, map.r_xyz, map.plate_r, map.r_plate, map.plate_is_ocean);
+    map.plate_vec = motion.plate_vec;
+    map.oceanPole = motion.oceanPole;
     assignRegionElevation(mesh, map);
     assignClimate(mesh, map);
     assignTriangleValues(mesh, map);
@@ -1560,4 +1743,19 @@ document.querySelector('.view-mode-toggle')?.addEventListener('click', () => {
     applyViewMode(viewMode === 'globe' ? 'equirect' : 'globe');
 });
 restoreViewState();
+applySeed(seed);
+syncSeedHistoryButtons();
 generateMesh();
+document.addEventListener('keydown', event => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    const key = event.key.toLowerCase();
+    if (key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) window.redoSeed();
+        else window.undoSeed();
+    } else if (key === 'y' && !event.shiftKey) {
+        event.preventDefault();
+        window.redoSeed();
+    }
+});

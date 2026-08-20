@@ -7,6 +7,7 @@
  *   bun run preview globe
  *   bun run preview equirect
  *   bun run preview equirect --lon=90
+ *   bun run preview --seed=42
  *
  * Each view keeps preview/<name>.png, <name>-before.png, <name>-compare.png
  * (globe files are planet.png / compare.png), plus preview/history/.
@@ -39,7 +40,7 @@ const VIEWS = {
   },
 };
 
-const { views, lon0 } = parseArgs(process.argv.slice(2));
+const { views, lon0, seed } = parseArgs(process.argv.slice(2));
 
 const server = Bun.spawn(["bun", "--port", String(port), "index.html"], {
   cwd: root,
@@ -59,7 +60,8 @@ try {
     viewport: { width: 1280, height: 1024 },
     deviceScaleFactor: 1,
   });
-  await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  const pageUrl = seed == null ? origin : `${origin}/?seed=${seed}`;
+  await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForFunction(() => window.__PLANET_READY__ === true, null, {
     timeout: 60_000,
   });
@@ -106,8 +108,9 @@ try {
       await Bun.write(comparePath, Buffer.from(compareUrl.split(",")[1], "base64"));
       console.log(comparePath);
     }
-    console.log(outPath);
-  }
+      console.log(outPath);
+    }
+    if (seed != null) console.log(`seed ${seed}`);
 } finally {
   await browser?.close();
   server.kill();
@@ -116,6 +119,7 @@ try {
 function parseArgs(argv) {
   const views = [];
   let lon0 = 0;
+  let seed;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "all") {
@@ -131,16 +135,28 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--lon=") || arg.startsWith("--lon0=")) {
       lon0 = Number(arg.slice(arg.indexOf("=") + 1));
       if (Number.isNaN(lon0)) throw new Error(`invalid ${arg}`);
+    } else if (arg === "--seed") {
+      const next = argv[++i];
+      if (next == null || Number.isNaN(Number(next))) {
+        throw new Error(`${arg} needs a number`);
+      }
+      seed = Number(next) | 0;
+    } else if (arg.startsWith("--seed=")) {
+      seed = Number(arg.slice("--seed=".length)) | 0;
+      if (Number.isNaN(Number(arg.slice("--seed=".length)))) {
+        throw new Error(`invalid ${arg}`);
+      }
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all] [--lon=degrees]",
+          "usage: bun run preview [globe|equirect|all] [--lon=degrees] [--seed=n]",
       );
     }
   }
   return {
     views: views.length ? [...new Set(views)] : ["globe", "equirect"],
     lon0,
+    seed,
   };
 }
 

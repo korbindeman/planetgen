@@ -29,6 +29,10 @@
       }
       .controls p { margin: 0; }
       .controls input[type="range"] { width: 100%; }
+      .controls button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
       figure {
         flex: 1;
         margin: 0;
@@ -142,6 +146,11 @@
         <br>
         Jitter:
         <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)">
+        <br>
+        Seed: <span id="seed-label">88</span>
+        <button type="button" onclick="shuffleSeed()">Shuffle</button>
+        <button type="button" id="seed-undo" onclick="undoSeed()" disabled title="Undo seed (⌘Z)">Undo</button>
+        <button type="button" id="seed-redo" onclick="redoSeed()" disabled title="Redo seed (⌘⇧Z)">Redo</button>
         <span class="globe-only">
         <br>
         Sphere rotation:
