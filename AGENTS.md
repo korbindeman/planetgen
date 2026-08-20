@@ -31,7 +31,7 @@ The globe is a WebGL canvas. After any change that affects how the planet looks:
 bun run preview
 ```
 
-Then read `preview/planet.png`. It is a 2x2 of longitudes 0°, 90°, 180°, and 270°. Do not finish visual work from code alone.
+Then read `preview/compare.png` if it exists (before | after), otherwise `preview/planet.png`. Each globe is a 2x2 of longitudes 0°, 90°, 180°, and 270°. Previous shots live in `preview/planet-before.png` and `preview/history/`. Do not finish visual work from code alone.
 
 ```
 bun run dev
