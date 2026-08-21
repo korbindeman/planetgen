@@ -337,15 +337,21 @@ const CRUST_OCEANIC = 0, CRUST_CONTINENTAL = 1;
 const DEFAULTS = {
     steps: 20,
     stepMyr: 10,                  // 200 Myr of history
-    crustSmoothing: 2,            // smoothing of the crust-type field before thresholding
-    continentFraction: 0.45,      // Earth: continental crust is ~41% of the
+    cratons: 6,                   // continental nuclei; Earth has about this many blocks
+    cratonSigma: 0.55,            // spread of craton sizes, so they are not all alike
+    cratonWarp: 0.68,             // how ragged the edge of a craton is
+    cratonClustering: 0.62,       // chance a craton huddles against the others
+    cratonMinSeparation: 0.55,    // radians; stops two cratons landing on each other
+    crustSmoothing: 1,            // smoothing of the craton edge warp
+    continentFraction: 0.52,      // Earth: continental crust is ~41% of the
                                   // surface, of which ~29% is dry land
-    crustReferenceKm: 34,         // thickness undisturbed continental crust relaxes towards
+    crustReferenceKm: 31,         // thickness undisturbed continental crust relaxes towards
     seaLevelThicknessKm: 26,      // thickness that floats exactly at sea level
     crustOceanKm: 7,
     crustMinKm: 22,               // fully rifted margin
     crustMaxKm: 68,               // Tibet
-    crustInitialPeakKm: 41,
+    crustInitialPeakKm: 33,       // craton cores; Earth's interiors are a few hundred
+                                  // metres up, not the kilometres a thicker core implies
     shelfThinningKm: 0.15,         // per step, at a rifting margin
     collisionThickenKm: 0.9,      // per step, continent against continent
     collisionThrust: 0.34,        // share of an overridden column thrust onto the winner
@@ -387,11 +393,65 @@ function makeFbm(noise, octaves, persistence = 2 / 3) {
 /* Continental crust as a noise field thresholded to the target area, with
  * thickness tapering towards the edges so margins start as shelves rather
  * than cliffs. Deliberately independent of the plate partition. */
+/* Where the continents start.
+ *
+ * Thresholding a noise field looks like the obvious way to do this, and it is
+ * what this used to do. It does not work: at the ~40% coverage continental
+ * crust needs, a thresholded isotropic field sits right at the percolation
+ * threshold, and that regime produces stringy maze-like land spread evenly
+ * over the whole sphere. No seed escapes it.
+ *
+ * Earth's continents are not a noise threshold. They are a handful of compact
+ * cratons, unequal in size, clustered into one hemisphere — which is why the
+ * Pacific is a third of the planet with nothing in it. So place cratons and
+ * grow them, and use noise only to make their edges irregular.
+ */
+function placeCratons(mesh, r_xyz, count, randFloat, opts) {
+    const centres = [];
+    const angle = (a, b) => Math.acos(Math.max(-1, Math.min(1, vec3.dot(a, b))));
+
+    for (let k = 0; k < count; k++) {
+        if (centres.length === 0) { centres.push(randomUnitVector(randFloat)); continue; }
+        /* Candidates far enough out not to sit on top of an existing craton.
+         * Then either hug the existing group or strike out on its own: the
+         * clustering bias is what leaves one big empty ocean instead of
+         * spreading the land evenly around the sphere. */
+        const candidates = [];
+        for (let attempt = 0; attempt < 64 && candidates.length < 12; attempt++) {
+            const c = randomUnitVector(randFloat);
+            let nearest = Infinity;
+            for (const o of centres) nearest = Math.min(nearest, angle(c, o));
+            if (nearest < opts.cratonMinSeparation) continue;
+            candidates.push({c, nearest});
+        }
+        if (candidates.length === 0) { centres.push(randomUnitVector(randFloat)); continue; }
+        const huddle = randFloat() < opts.cratonClustering;
+        candidates.sort((a, b) => huddle ? a.nearest - b.nearest : b.nearest - a.nearest);
+        centres.push(candidates[0].c);
+    }
+
+    /* Unequal sizes, the way Eurasia dwarfs Australia. */
+    const gauss = () => {
+        const u1 = Math.max(1e-9, randFloat()), u2 = randFloat();
+        return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    };
+    const weights = centres.map(() => Math.exp(opts.cratonSigma * gauss()));
+    const total = weights.reduce((a, b) => a + b, 0) || 1;
+
+    /* Radius of a spherical cap holding this craton's share of the target
+     * continental area: cap fraction = (1 - cos R) / 2. */
+    const radii = weights.map(w => {
+        const share = opts.continentFraction * w / total;
+        return Math.acos(Math.max(-1, 1 - 2 * share));
+    });
+    return {centres, radii};
+}
+
+
 function initCrust(mesh, r_xyz, seed, opts) {
     const {numRegions} = mesh;
-    /* Few octaves and a fast falloff, so continents come out as a handful of
-     * large masses rather than a scatter of islands. */
-    const fbm = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x2545f491)), 3, 0.42);
+    const randFloat = makeRandFloat(seed ^ 0x2545f491);
+    const warpNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x27d4eb2f)), 4, 0.55);
 
     const r_crust_type = new Uint8Array(numRegions);
     const r_crust_age = new Float32Array(numRegions);
@@ -399,35 +459,61 @@ function initCrust(mesh, r_xyz, seed, opts) {
     const r_orogeny = new Float32Array(numRegions);
     const r_arc = new Float32Array(numRegions);
 
-    const field = new Float32Array(numRegions);
-    for (let r = 0; r < numRegions; r++) {
-        field[r] = fbm(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
-    }
-    /* smooth before thresholding so the coast is not peppered with specks */
-    smoothField(mesh, field, null, opts.crustSmoothing);
-    /* threshold at the quantile that hits the target continental area */
-    const sorted = Float32Array.from(field).sort();
-    const cutoff = sorted[Math.floor((1 - opts.continentFraction) * (numRegions - 1))];
+    const {centres, radii} = placeCratons(mesh, r_xyz, opts.cratons, randFloat, opts);
 
-    const continental = [];
+    /* Distance to the nearest craton centre, in units of that craton's radius,
+     * warped by noise so the coastline is ragged rather than circular.
+     * Below 1 is continental crust; 0 is the deep interior. */
+    const depth = new Float32Array(numRegions);
+    const warp = new Float32Array(numRegions);
     for (let r = 0; r < numRegions; r++) {
-        if (field[r] > cutoff) { r_crust_type[r] = CRUST_CONTINENTAL; continental.push(r); }
-        else { r_crust_type[r] = CRUST_OCEANIC; r_thickness[r] = opts.crustOceanKm; }
+        warp[r] = 1 + opts.cratonWarp * warpNoise(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
     }
+    smoothField(mesh, warp, null, opts.crustSmoothing);
 
-    /* Thickness follows the noise field's rank rather than its raw value, so
-     * the share of continental crust that starts above sea level is a direct
-     * dial rather than a side effect of the noise distribution. Rank 0 is the
-     * outermost margin, rank 1 the deepest interior; the reference thickness
-     * (sea level) sits at 1 - emergentFraction. */
-    continental.sort((a, b) => field[a] - field[b]);
-    const breakpoint = 1 - opts.emergentFraction;
-    for (let i = 0; i < continental.length; i++) {
-        const rank = continental.length > 1 ? i / (continental.length - 1) : 1;
-        r_thickness[continental[i]] = rank < breakpoint
-            ? opts.crustMinKm + (opts.crustReferenceKm - opts.crustMinKm) * (rank / breakpoint)
-            : opts.crustReferenceKm + (opts.crustInitialPeakKm - opts.crustReferenceKm) *
-              Math.pow((rank - breakpoint) / (1 - breakpoint), 0.8);
+    const p = [0, 0, 0];
+    const measure = (scale) => {
+        let inside = 0;
+        for (let r = 0; r < numRegions; r++) {
+            p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
+            let best = Infinity;
+            for (let k = 0; k < centres.length; k++) {
+                const a = Math.acos(Math.max(-1, Math.min(1, vec3.dot(p, centres[k]))));
+                best = Math.min(best, a / (radii[k] * scale));
+            }
+            depth[r] = best * warp[r];
+            if (depth[r] < 1) inside++;
+        }
+        return inside / numRegions;
+    };
+
+    /* Warping changes how much area the cratons actually cover, so bisect a
+     * global scale on the radii until the continental fraction comes out
+     * where it was asked for. */
+    let lo = 0.4, hi = 2.2;
+    for (let iter = 0; iter < 18; iter++) {
+        const mid = (lo + hi) / 2;
+        if (measure(mid) < opts.continentFraction) lo = mid; else hi = mid;
+    }
+    measure((lo + hi) / 2);
+
+    /* Sea level sits at the radius enclosing `emergentFraction` of a craton's
+     * area. Area grows as the square of the radius, hence the square root. */
+    const shore = Math.sqrt(clamp01(opts.emergentFraction));
+    for (let r = 0; r < numRegions; r++) {
+        const d = depth[r];
+        if (d >= 1) {
+            r_crust_type[r] = CRUST_OCEANIC;
+            r_thickness[r] = opts.crustOceanKm;
+            continue;
+        }
+        r_crust_type[r] = CRUST_CONTINENTAL;
+        r_thickness[r] = d < shore
+            /* interior: thickest at the craton's core, thinning outward */
+            ? opts.seaLevelThicknessKm + (opts.crustInitialPeakKm - opts.seaLevelThicknessKm) *
+              Math.pow(1 - d / shore, 0.7)
+            /* the shelf, between the shoreline and the edge of the craton */
+            : opts.crustMinKm + (opts.seaLevelThicknessKm - opts.crustMinKm) * (1 - d) / (1 - shore);
     }
     return {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_arc};
 }

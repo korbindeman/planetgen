@@ -7,9 +7,14 @@ The tectonic model lives in `tectonics.js`, kept free of WebGL and DOM so it can
 ```
 bun run stats                                # compares the model against Earth
 bun run stats --seeds=1,2,3 --steps=30       # any --option overrides a tectonics DEFAULTS key
+bun run sheet                                # 12 seeds in one contact sheet, preview/seed-sheet.png
+bun run sheet --count=9 --view=globe --overlay=plates
 ```
 
-Run it before judging pictures. Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
+Run `stats` before judging pictures and `sheet` when judging how the planets
+*look* — a failure mode that hits every seed reads as a bad roll if you only
+ever capture one. Continents are seeded as cratons, not a noise threshold.
+Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
 
 ## Downstream
 

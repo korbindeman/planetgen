@@ -19,13 +19,17 @@ traced plate boundaries.
 
 Today the coastline is the sea-level contour of a continuous elevation field
 built from crustal thickness and sea-floor age, relaxed across the margin
-(`coastBlend`). Crust type is seeded from a noise field that knows nothing
-about the plate partition, so a plate can carry a continent and an ocean at
-once. Keep it that way.
+(`coastBlend`). Crust type is seeded from cratons placed independently of the
+plate partition, so a plate can carry a continent and an ocean at once. Keep
+it that way.
 
 Do not:
 
 - Grow continents as blobs on plates, or derive crust type from plate id
+- Go back to thresholding a noise field for crust type. At the ~40% coverage
+  continental crust needs, a thresholded isotropic field sits at the
+  percolation threshold, which produces stringy maze-like land spread evenly
+  over the sphere. No seed escapes it; this was measured, not guessed.
 - Floor continental plates or flatten ocean basins to a constant depth
 - `Math.max(elevation, …)` on a plate or a cell
 - Widen `coastBlend`: a wide blend averages a margin against the abyssal plain
@@ -48,7 +52,20 @@ Three layers, each measurable:
    classified convergent / divergent / transform from the relative velocity
    against the boundary normal, and sub-classified by crust pair.
 
-3. **Simulation.** The crust is the state: type, age, thickness, orogeny, arc.
+3. **Continents.** A handful of cratons, unequal in size and biased to cluster
+   into one hemisphere — which is what leaves a Pacific-sized ocean opposite
+   instead of spreading land evenly. Each is a spherical cap whose radius is
+   warped by noise (`cratonWarp`) to give it a ragged coast; a global bisection
+   on the radii hits the target continental area. Crust thickens towards each
+   craton's core, with sea level at the radius enclosing `emergentFraction` of
+   its area.
+
+   Craton cores should sit a few hundred metres above sea level, not
+   kilometres: `crustInitialPeakKm` minus `seaLevelThicknessKm`, times 145 m,
+   is that height. Set it too high and every continent renders as bare rock
+   plateau, because the shader mixes high ground towards rock.
+
+4. **Simulation.** The crust is the state: type, age, thickness, orogeny, arc.
    Each step the plates rotate and carry their crust with them (semi-Lagrangian,
    by back-rotating each cell and asking which plate covers it). Gaps at
    divergent margins stretch the neighbouring margin thin and then break to new
@@ -61,6 +78,8 @@ Elevation is read off the crust: ocean depth from half-space cooling
 (`5650 - 3050·exp(-age/62.8)` metres), land height from Airy isostasy on
 thickness (145 m per km, relative to `seaLevelThicknessKm`).
 
+`continentFraction` is the crust the planet *starts* with; the simulation
+consumes some at sutures, so it sits well above the final figure.
 `seaLevelThicknessKm` is the land-fraction dial — it stands for how much water
 the planet has, and is deliberately separate from `crustReferenceKm`, the
 thickness undisturbed crust relaxes towards.
@@ -85,10 +104,16 @@ worked:
 
 ```
 bun run stats                         # numbers first
+bun run sheet                         # many seeds at once - judge the batch, not one lucky seed
+bun run sheet --view=globe
 bun run preview                       # globe + equirect
 bun run preview plates                # plate shapes, sizes, motion
 bun run preview crust                 # sea-floor age, orogeny, boundary types
 ```
+
+Judge aesthetics from `bun run sheet`, never from a single capture: a failure
+mode that affects every seed is easy to mistake for a bad roll, and a good roll
+is easy to mistake for a fix.
 
 `crust` is the view that shows what the simulation is actually doing: ridges
 with young pale crust beside them fading to dark old crust, trenches, and

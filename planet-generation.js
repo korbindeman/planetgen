@@ -21,6 +21,7 @@ const LAND_ICE = 0.28;
 const SEA_ICE = 0.18;
 const LAPSE = 0.55;
 const INLAND_SCALE = 16;
+const CONTINENTALITY_FLOOR = 0.68;   // moisture left in the deepest interior
 
 const SimplexNoise = require('simplex-noise');
 const colormap = require('./colormap');
@@ -123,6 +124,28 @@ window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
 window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
 window.setSimSteps = steps => { sim_steps = Math.max(0, steps | 0); generateMap(); };
 window.getSeed = () => seed;
+/* Quantiles of the climate fields over land, so the climate can be tuned
+ * against numbers the way the tectonics can. Biome colour only reads as
+ * vegetated above roughly 0.5 moisture, so that is the number to watch. */
+window.climateStats = () => {
+    const moisture = [], temperature = [];
+    for (let r = 0; r < mesh.numRegions; r++) {
+        if (map.r_elevation[r] <= 0) continue;
+        moisture.push(map.r_moisture[r]);
+        temperature.push(map.r_temperature[r]);
+    }
+    moisture.sort((a, b) => a - b);
+    temperature.sort((a, b) => a - b);
+    const q = (arr, p) => arr.length ? arr[Math.floor(p * (arr.length - 1))] : NaN;
+    const share = (arr, threshold) => arr.filter(v => v > threshold).length / Math.max(1, arr.length);
+    return {
+        land: moisture.length / mesh.numRegions,
+        moisture: [0.1, 0.25, 0.5, 0.75, 0.9].map(p => q(moisture, p)),
+        vegetated: share(moisture, 0.5),
+        lush: share(moisture, 0.8),
+        temperature: [0.1, 0.5, 0.9].map(p => q(temperature, p)),
+    };
+};
 
 const renderPoints = regl({
     frag: `
@@ -1086,11 +1109,16 @@ function connectWorldOcean(mesh, r_elevation) {
 /* Shared with the tectonics model, which needs them outside the browser. */
 const {smoothField, clamp01} = Tectonics;
 
+/* Wet at the equator, dry through the subtropics, wet again in the
+ * mid-latitude storm track. The bands used to be narrow enough that
+ * everything between 15 and 35 degrees fell to near zero; Earth's
+ * subtropics are dry but not that dry, and the belt is interrupted rather
+ * than a clean girdle. */
 function latitudeMoisture(lat) {
     const deg = Math.abs(lat) * 180 / Math.PI;
-    const tropics = Math.exp(-((deg / 10) ** 2));
-    const mid = 0.7 * Math.exp(-(((deg - 52) / 14) ** 2));
-    return Math.min(1, 0.08 + 0.95 * tropics + mid);
+    const tropics = Math.exp(-((deg / 14) ** 2));
+    const mid = 0.7 * Math.exp(-(((deg - 50) / 20) ** 2));
+    return Math.min(1, 0.10 + 0.95 * tropics + mid);
 }
 
 function upwindFrom(px, py, pz) {
@@ -1126,8 +1154,11 @@ function assignClimate(mesh, {r_xyz, r_elevation, /* out */ r_moisture, r_temper
         }
 
         let m = latitudeMoisture(lat);
+        /* Continental interiors are drier than coasts, but the floor here
+         * matters more than it looks: with compact continents rather than
+         * stringy ones, far more land sits at the far end of this ramp. */
         const inland = Math.min(1, r_dist_ocean[r] / INLAND_SCALE);
-        m *= 0.38 + 0.62 * (1 - inland * inland);
+        m *= CONTINENTALITY_FLOOR + (1 - CONTINENTALITY_FLOOR) * (1 - inland * inland);
 
         const wind = upwindFrom(px, py, pz);
         mesh.r_circulate_r(neighbors, r);

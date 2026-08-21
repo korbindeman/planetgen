@@ -34,7 +34,7 @@ if (args.steps !== undefined) OPTIONS.steps = Number(args.steps);
 for (const key of ['continentFraction', 'crustMinKm', 'crustInitialPeakKm', 'crustReferenceKm', 'seaLevelThicknessKm',
                    'collisionThickenKm', 'collisionThrust', 'shelfThinningKm', 'rootRelax',
                    'coastBlend', 'riftChance', 'riftStretchShare', 'crustBreakKm',
-                   'emergentFraction', 'weldThreshold', 'orogenyDecay', 'orogenyReliefM', 'detailNoise']) {
+                   'emergentFraction', 'cratons', 'cratonSigma', 'cratonWarp', 'cratonClustering', 'weldThreshold', 'orogenyDecay', 'orogenyReliefM', 'detailNoise']) {
     if (args[key] !== undefined) OPTIONS[key] = Number(args[key]);
 }
 
