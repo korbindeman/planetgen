@@ -9,9 +9,15 @@ bun run stats                                # compares the model against Earth
 bun run stats --seeds=1,2,3 --steps=30       # any --option overrides a tectonics DEFAULTS key
 bun run sheet                                # 12 seeds in one contact sheet, preview/seed-sheet.png
 bun run sheet --count=9 --view=globe --overlay=plates
+bun run climate                              # compares the climate model against Earth
 ```
 
-Run `stats` before judging pictures and `sheet` when judging how the planets
+The climate model lives in `climate.js`, also browser-free. Moisture is
+carried downwind from the sea rather than painted on by latitude, which is
+what gives continents a wet and a dry coast instead of one dry girdle; see
+`.cursor/rules/climate.mdc`.
+
+Run `stats` and `climate` before judging pictures, and `sheet` when judging how the planets
 *look* — a failure mode that hits every seed reads as a bad roll if you only
 ever capture one. Continents are seeded as cratons, not a noise threshold.
 Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
@@ -52,6 +58,7 @@ bun run preview equirect --lon=90
 bun run preview plates          # plates + motion arrows (globe and equirect)
 bun run preview plates equirect
 bun run preview crust           # sea-floor age, orogeny, boundary types
+bun run preview climate         # the moisture field on its own
 bun run preview --no-tectonics  # the 1843 blend, for comparison
 ```
 
@@ -63,6 +70,7 @@ Then read the **compare** sheet for that view if it exists, otherwise the latest
 | **equirect** | `preview/equirect.png`, `preview/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
 | **plates** | `preview/plates.png`, `preview/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, numbered yellow arrows = motion | Plate size and shape, mixed land/ocean on a plate, relative motion |
 | **crust** | `preview/crust.png`, `preview/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
+| **climate** | `preview/climate.png`, `preview/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
 
 After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, run `bun run stats` first, then also read `bun run preview crust`. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian.
 

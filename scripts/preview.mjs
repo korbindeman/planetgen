@@ -11,6 +11,7 @@
  *   bun run preview plates          globe + equirect with plates and motion arrows
  *   bun run preview plates equirect
  *   bun run preview crust           sea-floor age, orogeny and boundary types
+ *   bun run preview climate         the moisture field on its own
  *   bun run preview --no-tectonics  the original 1843 distance-field blend, for comparison
  *
  * Each view keeps preview/<name>.png, <name>-before.png, <name>-compare.png
@@ -75,8 +76,25 @@ const CRUST = {
   },
 };
 
+const CLIMATE = {
+  globe: {
+    file: "climate.png",
+    before: "climate-before.png",
+    compare: "climate-compare.png",
+    historyPrefix: "climate",
+  },
+  equirect: {
+    file: "equirect-climate.png",
+    before: "equirect-climate-before.png",
+    compare: "equirect-climate-compare.png",
+    historyPrefix: "equirect-climate",
+  },
+};
+
+const OVERLAY_VIEWS = { plates: PLATES, crust: CRUST, climate: CLIMATE };
+
 const { views, lon0, seed, overlay, connectOceans, noTectonics } = parseArgs(process.argv.slice(2));
-const VIEWS = overlay === "plates" ? PLATES : overlay === "crust" ? CRUST : GEOGRAPHY;
+const VIEWS = OVERLAY_VIEWS[overlay] ?? GEOGRAPHY;
 
 const server = Bun.spawn(["bun", "--port", String(port), "index.html"], {
   cwd: root,
@@ -196,6 +214,8 @@ function parseArgs(argv) {
       overlay = "plates";
     } else if (arg === "crust" || arg === "--crust") {
       overlay = "crust";
+    } else if (arg === "climate" || arg === "--climate") {
+      overlay = "climate";
     } else if (arg === "--connect-oceans") {
       connectOceans = true;
     } else if (arg === "--no-tectonics") {
@@ -203,7 +223,7 @@ function parseArgs(argv) {
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all|plates|crust] [--lon=degrees] [--seed=n] [--connect-oceans] [--no-tectonics]",
+          "usage: bun run preview [globe|equirect|all|plates|crust|climate] [--lon=degrees] [--seed=n] [--connect-oceans] [--no-tectonics]",
       );
     }
   }

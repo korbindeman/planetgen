@@ -19,10 +19,16 @@ function lerp3(a, b, t) {
     return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 }
 
-/* Rows are moisture 0, 0.5, 1. Columns are temperature 0, 1/3, 2/3, 1. */
+/* Rows are moisture 0, 0.5, 1. Columns are temperature 0, 1/3, 2/3, 1.
+ *
+ * The two warm entries in the middle row are savanna and tropical
+ * grassland. They used to be yellow-dominant, close enough to the desert
+ * row above them that any land of middling moisture read as sand — which
+ * hid what the moisture model was doing. Real savanna is olive: green
+ * slightly ahead of red, and clearly apart from true desert. */
 const BIOME = [
     [[176, 172, 164], [198, 176, 124], [210, 185, 139], [196, 154, 102]],
-    [[142, 144, 128], [108, 122, 78], [148, 140, 72], [128, 122, 48]],
+    [[142, 144, 128], [108, 122, 78], [126, 136, 74], [110, 130, 60]],
     [[214, 222, 230], [64, 96, 70], [48, 96, 52], [28, 74, 38]],
 ];
 

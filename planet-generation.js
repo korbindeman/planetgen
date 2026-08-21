@@ -19,9 +19,6 @@ function seedFromUrl() {
 let seed = seedFromUrl();
 const LAND_ICE = 0.28;
 const SEA_ICE = 0.18;
-const LAPSE = 0.55;
-const INLAND_SCALE = 16;
-const CONTINENTALITY_FLOOR = 0.68;   // moisture left in the deepest interior
 
 const SimplexNoise = require('simplex-noise');
 const colormap = require('./colormap');
@@ -29,6 +26,7 @@ const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
 const Tectonics = require('./tectonics');
+const Climate = require('./climate');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 
 const regl = require('regl')({
@@ -86,14 +84,14 @@ let merge_ocean_plates = false;
 let connect_oceans = false;
 let simulate_tectonics = true;
 let sim_steps = Tectonics.DEFAULTS.steps;
-let previewOverlay = null;   // null | 'plates' | 'crust'
+let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate'
 let previewYaw = 0;
 
 /* Which per-region overlay the surface is painted with, if any. */
 function overlayMode() {
     if (viewPersistSuspended) return previewOverlay;
     if (previewOverlay) return previewOverlay;
-    return (drawMode === 'plates' || drawMode === 'crust') ? drawMode : null;
+    return ['plates', 'crust', 'climate'].indexOf(drawMode) !== -1 ? drawMode : null;
 }
 
 function usePlateOverlay() {
@@ -112,7 +110,7 @@ window.setP = newP => { P = newP; generateMap(); };
 window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
 window.setDrawMode = newMode => {
-    if (['quads', 'centroid', 'plates', 'crust'].indexOf(newMode) === -1) return;
+    if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(newMode) === -1) return;
     drawMode = newMode;
     draw();
 };
@@ -124,28 +122,6 @@ window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
 window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
 window.setSimSteps = steps => { sim_steps = Math.max(0, steps | 0); generateMap(); };
 window.getSeed = () => seed;
-/* Quantiles of the climate fields over land, so the climate can be tuned
- * against numbers the way the tectonics can. Biome colour only reads as
- * vegetated above roughly 0.5 moisture, so that is the number to watch. */
-window.climateStats = () => {
-    const moisture = [], temperature = [];
-    for (let r = 0; r < mesh.numRegions; r++) {
-        if (map.r_elevation[r] <= 0) continue;
-        moisture.push(map.r_moisture[r]);
-        temperature.push(map.r_temperature[r]);
-    }
-    moisture.sort((a, b) => a - b);
-    temperature.sort((a, b) => a - b);
-    const q = (arr, p) => arr.length ? arr[Math.floor(p * (arr.length - 1))] : NaN;
-    const share = (arr, threshold) => arr.filter(v => v > threshold).length / Math.max(1, arr.length);
-    return {
-        land: moisture.length / mesh.numRegions,
-        moisture: [0.1, 0.25, 0.5, 0.75, 0.9].map(p => q(moisture, p)),
-        vegetated: share(moisture, 0.5),
-        lush: share(moisture, 0.8),
-        temperature: [0.1, 0.5, 0.9].map(p => q(temperature, p)),
-    };
-};
 
 const renderPoints = regl({
     frag: `
@@ -1106,82 +1082,13 @@ function connectWorldOcean(mesh, r_elevation) {
 }
 
 
-/* Shared with the tectonics model, which needs them outside the browser. */
-const {smoothField, clamp01} = Tectonics;
+/* Shared with the models, which need it outside the browser. */
+const {clamp01} = Tectonics;
 
-/* Wet at the equator, dry through the subtropics, wet again in the
- * mid-latitude storm track. The bands used to be narrow enough that
- * everything between 15 and 35 degrees fell to near zero; Earth's
- * subtropics are dry but not that dry, and the belt is interrupted rather
- * than a clean girdle. */
-function latitudeMoisture(lat) {
-    const deg = Math.abs(lat) * 180 / Math.PI;
-    const tropics = Math.exp(-((deg / 14) ** 2));
-    const mid = 0.7 * Math.exp(-(((deg - 50) / 20) ** 2));
-    return Math.min(1, 0.10 + 0.95 * tropics + mid);
-}
-
-function upwindFrom(px, py, pz) {
-    const deg = Math.abs(Math.asin(Math.max(-1, Math.min(1, pz)))) * 180 / Math.PI;
-    let ex = -py, ey = px;
-    const len = Math.hypot(ex, ey);
-    if (len < 1e-6) return [0, 0, 0];
-    ex /= len;
-    ey /= len;
-    if (deg >= 30 && deg < 60) return [-ex, -ey, 0];
-    return [ex, ey, 0];
-}
-
-function assignClimate(mesh, {r_xyz, r_elevation, /* out */ r_moisture, r_temperature}) {
-    const {numRegions} = mesh;
-    const ocean_r = new Set();
-    for (let r = 0; r < numRegions; r++) {
-        if (r_elevation[r] < 0) ocean_r.add(r);
-    }
-    const r_dist_ocean = assignDistanceField(mesh, ocean_r, new Set());
-    const neighbors = [];
-
-    for (let r = 0; r < numRegions; r++) {
-        const px = r_xyz[3 * r], py = r_xyz[3 * r + 1], pz = r_xyz[3 * r + 2];
-        const lat = Math.asin(Math.max(-1, Math.min(1, pz)));
-        const e = r_elevation[r];
-        r_temperature[r] = Math.cos(lat) - LAPSE * Math.max(0, e)
-            + 0.1 * fbm_noise(px, py, pz);
-
-        if (e < 0) {
-            r_moisture[r] = 1;
-            continue;
-        }
-
-        let m = latitudeMoisture(lat);
-        /* Continental interiors are drier than coasts, but the floor here
-         * matters more than it looks: with compact continents rather than
-         * stringy ones, far more land sits at the far end of this ramp. */
-        const inland = Math.min(1, r_dist_ocean[r] / INLAND_SCALE);
-        m *= CONTINENTALITY_FLOOR + (1 - CONTINENTALITY_FLOOR) * (1 - inland * inland);
-
-        const wind = upwindFrom(px, py, pz);
-        mesh.r_circulate_r(neighbors, r);
-        let best = r, bestDot = -Infinity;
-        for (const n of neighbors) {
-            const dx = r_xyz[3 * n] - px;
-            const dy = r_xyz[3 * n + 1] - py;
-            const dz = r_xyz[3 * n + 2] - pz;
-            const dot = dx * wind[0] + dy * wind[1] + dz * wind[2];
-            if (dot > bestDot) {
-                bestDot = dot;
-                best = n;
-            }
-        }
-        if (best !== r) {
-            m += 0.32 * Math.max(-1, Math.min(1, (e - r_elevation[best]) * 2.2));
-        }
-
-        m += 0.06 * fbm_noise(px, py, pz);
-        r_moisture[r] = clamp01(m);
-    }
-
-    smoothField(mesh, r_moisture, null, 2);
+/* Winds, moisture advection and temperature all live in ./climate.js so they
+ * can be run and measured outside the browser. */
+function assignClimate(mesh, map) {
+    Climate.assignClimate(mesh, map, seed);
 }
 
 
@@ -1330,7 +1237,10 @@ function plateColorForRegion(r) {
 }
 
 function overlayColorForRegion(r) {
-    return overlayMode() === 'crust' ? crustColorForRegion(r, map) : plateColorForRegion(r);
+    const mode = overlayMode();
+    if (mode === 'crust') return crustColorForRegion(r, map);
+    if (mode === 'climate') return climateColorForRegion(r, map);
+    return plateColorForRegion(r);
 }
 
 /* Sea floor by age, land by how recently it was built up: the fields the
@@ -1351,14 +1261,40 @@ function crustColorForRegion(r, map) {
 }
 
 
+/* The moisture field on its own, with none of the biome table's
+ * interpretation in the way. Rendering the finished colours and reasoning
+ * backwards about what moisture must have been is how you end up tuning the
+ * wrong thing. */
+function climateColorForRegion(r, map) {
+    if (map.r_elevation[r] <= 0) return [0.13, 0.15, 0.2];
+    const m = clamp01(map.r_moisture[r]);
+    /* dry sand -> steppe -> forest -> saturated */
+    const stops = [
+        [0.00, [0.85, 0.72, 0.42]],
+        [0.35, [0.76, 0.70, 0.34]],
+        [0.55, [0.55, 0.68, 0.30]],
+        [0.75, [0.24, 0.56, 0.28]],
+        [1.00, [0.05, 0.32, 0.45]],
+    ];
+    for (let i = 1; i < stops.length; i++) {
+        if (m <= stops[i][0] || i === stops.length - 1) {
+            const [a, ca] = stops[i - 1], [b, cb] = stops[i];
+            const t = clamp01((m - a) / (b - a));
+            return [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t];
+        }
+    }
+    return stops[stops.length - 1][1];
+}
+
+
 function buildOverlayColorTm(mesh, map, mode) {
     const {r_plate, r_elevation, plate_index} = map;
     const {numRegions, numTriangles} = mesh;
     const rgb = new Float32Array(3 * (numRegions + numTriangles));
     const regionColor = [];
     for (let r = 0; r < numRegions; r++) {
-        const c = mode === 'crust'
-            ? crustColorForRegion(r, map)
+        const c = mode === 'crust' ? crustColorForRegion(r, map)
+            : mode === 'climate' ? climateColorForRegion(r, map)
             : colorForPlate(plate_index.get(r_plate[r]) || 0, r_elevation[r] < 0);
         regionColor[r] = c;
         rgb[3 * r] = c[0];
@@ -2596,6 +2532,7 @@ const OVERLAY_LEGEND = {
     plates: 'color = plate   dark = underwater   arrow = motion',
     crust: 'sea floor: pale = young, dark = old   land: red = orogeny   ' +
            'orange = ridge   cyan = trench   yellow = transform',
+    climate: 'moisture only: sand = arid   olive = steppe   green = forest   teal = saturated',
 };
 
 function projectGlobePoint(xyz, projection) {
