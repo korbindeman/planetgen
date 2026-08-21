@@ -5,7 +5,7 @@ This repo generates a coarse planetary **base**: tectonic plates, a heightmap, a
 ## Downstream
 
 1. **Hydrology** — rivers, erosion, drainage. Lives in a later sim, not this generator.
-2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. Export Azgaar-style conditioning GeoTIFFs with `bun run export:td` (regional `crop-*` folders). Do not run `tiff-export` on the whole-world raster.
+2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. Export Azgaar-style conditioning GeoTIFFs with `bun run export:td` (regional `crop-*` folders). Do not run `tiff-export` on the whole-world raster. What the model expects, what works as a sketch, hydrology, and later passes: [`docs/preparing-for-diffusion.md`](docs/preparing-for-diffusion.md).
 
 Keep the base honest enough that those stages have something real to work with: continents from plates, mountain belts at collisions, and coasts that come from elevation interpolation rather than plate outlines. Leave river valleys, dendritic coasts, and eroded slopes to the later passes.
 
