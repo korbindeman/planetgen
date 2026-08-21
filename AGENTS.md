@@ -2,18 +2,29 @@
 
 This repo generates a coarse planetary **base**: tectonic plates, a heightmap, and climate. Later stages add detail. Do not try to make a finished Earth in here.
 
+The tectonic model lives in `tectonics.js`, kept free of WebGL and DOM so it can be measured without a browser:
+
+```
+bun run stats                                # compares the model against Earth
+bun run stats --seeds=1,2,3 --steps=30       # any --option overrides a tectonics DEFAULTS key
+```
+
+Run it before judging pictures. Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
+
 ## Downstream
 
 1. **Hydrology** — rivers, erosion, drainage. Lives in a later sim, not this generator.
 2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. Export Azgaar-style conditioning GeoTIFFs with `bun run export:td` (regional `crop-*` folders). Do not run `tiff-export` on the whole-world raster.
 
-Keep the base honest enough that those stages have something real to work with: continents from plates, mountain belts at collisions, and coasts that come from elevation interpolation rather than plate outlines. Leave river valleys, dendritic coasts, and eroded slopes to the later passes.
+Keep the base honest enough that those stages have something real to work with: continents carried by plates, mountain belts at collisions, ocean floor that deepens away from its ridge, and coasts that come from elevation interpolation rather than plate outlines. Leave river valleys, dendritic coasts, and eroded slopes to the later passes.
 
-Do not flatten ocean basins, floor continental plates, or grow land as blobs that fill a plate. That is what made coasts snap to plate edges. Merging adjacent ocean plates, and connecting all water into one world ocean, are optional UI toggles (off by default).
+Do not flatten ocean basins, floor continental plates, or grow land as blobs that fill a plate. That is what made coasts snap to plate edges. Crust type is seeded from noise, independent of the plate partition, so a plate can carry a continent and an ocean at once.
+
+The original 1843 distance-field blend is still available for comparison: the **Simulate tectonics** toggle, or `bun run preview --no-tectonics`. Merging adjacent ocean plates and connecting all water into one world ocean are optional UI toggles (off by default).
 
 ## In scope
 
-- Tectonic plates and plate motion
+- Tectonic plates, plate motion, and the tectonic history that shapes them
 - Elevation (land relief, ocean bathymetry)
 - Climate (temperature, moisture, biomes) as fields on the sphere
 - A globe view that shows those fields clearly
@@ -35,6 +46,8 @@ bun run preview equirect
 bun run preview equirect --lon=90
 bun run preview plates          # plates + motion arrows (globe and equirect)
 bun run preview plates equirect
+bun run preview crust           # sea-floor age, orogeny, boundary types
+bun run preview --no-tectonics  # the 1843 blend, for comparison
 ```
 
 Then read the **compare** sheet for that view if it exists, otherwise the latest capture.
@@ -44,8 +57,9 @@ Then read the **compare** sheet for that view if it exists, otherwise the latest
 | **globe** | `preview/planet.png`, `preview/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
 | **equirect** | `preview/equirect.png`, `preview/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
 | **plates** | `preview/plates.png`, `preview/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, numbered yellow arrows = motion | Plate size and shape, mixed land/ocean on a plate, relative motion |
+| **crust** | `preview/crust.png`, `preview/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
 
-After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian.
+After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, run `bun run stats` first, then also read `bun run preview crust`. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian.
 
 Previous shots: `preview/planet-before.png`, `preview/equirect-before.png`, `preview/plates-before.png`, `preview/equirect-plates-before.png`, `preview/history/`.
 

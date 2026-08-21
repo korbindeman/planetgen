@@ -1,27 +1,95 @@
 ---
-description: Do not regress the restored 1843 plate and elevation pipeline.
+description: How plates, crust and elevation fit together. Keep coasts interpolated, never stamped from plate outlines.
 alwaysApply: true
 ---
 
-# Plates and elevation
+# Plates, crust and elevation
 
-Elevation comes from the original 1843 distance-field blend (`assignRegionElevation` + `findCollisions`). Coasts are irregular because that blend can go above or below sea level on either plate type. Do not replace that with per-cell crust, a land floor, or flattened basins.
+The generator simulates tectonics. `tectonics.js` holds the whole model and is
+free of WebGL and DOM so it can be measured headlessly with `bun run stats`.
+Run that after any change to the model and check the numbers against Earth
+before judging the pictures.
 
-Keep:
+## The rule that matters
 
-- Random-fill plates and random neighbor motion vectors
-- The original collision table and the `<` compression pick (parameters are tuned to that bug)
-- Plate-center ocean/coastline seeds
-- `0.1` simplex on elevation
-- Optional merge of adjacent ocean-tagged plates (`mergeOceanPlates`, UI toggle, **off by default**). Off = original 1843, including ocean–ocean boundary seeds. On = those plates become one, and absorbed ocean-plate centers stay as extra abyss seeds.
-- Optional connected world ocean (`connectWorldOcean`, UI toggle, **off by default**). Off = 1843 water as interpolated. On = fill tiny inland seas and punch a shallow strait through the lowest saddle so all remaining ocean is one below-sea-level component. Does not merge plates.
+**Coasts come from interpolation over a continuous field, never from plate
+outlines.** This is the one thing that must not regress. The generator once
+grew land as blobs that filled a plate, and the result was coastlines that
+traced plate boundaries.
+
+Today the coastline is the sea-level contour of a continuous elevation field
+built from crustal thickness and sea-floor age, relaxed across the margin
+(`coastBlend`). Crust type is seeded from a noise field that knows nothing
+about the plate partition, so a plate can carry a continent and an ocean at
+once. Keep it that way.
 
 Do not:
 
-- `flattenOceanBathymetry` or shelf-then-abyss overwrites
-- `Math.max(elevation, …)` on continental plates or cells
-- Growing continents as blobs on plates (`assignCrust` / `r_ocean`)
-- Euler poles or shared ocean drift for the heightmap
-- Dropping ocean-ocean coastline seeds unless the merge-ocean-plates toggle is on
+- Grow continents as blobs on plates, or derive crust type from plate id
+- Floor continental plates or flatten ocean basins to a constant depth
+- `Math.max(elevation, …)` on a plate or a cell
+- Widen `coastBlend`: a wide blend averages a margin against the abyssal plain
+  and drowns it
 
-Climate, equirect, and the seed UI sit on top of this heightmap. After plate or elevation changes, capture globe, equirect, **and** `bun run preview plates`.
+## The model
+
+Three layers, each measurable:
+
+1. **Plate geometry.** Weighted competitive growth, with plate areas drawn from
+   two populations — a few majors holding ~90% of the surface, then a
+   microplate tail. Tuned to Earth: top-1 18% (Earth 20%), top-3 49% (49%),
+   top-7 89% (90%). A uniform flood fill gives every plate the same expected
+   area and reads as interchangeable blobs.
+
+2. **Motion.** Rigid rotation about an Euler pole, `omega x r`, in a
+   no-net-rotation frame. Not one constant vector per plate: a single 3D vector
+   is tangent at one point only, and on 20 plates it puts >30% of the velocity
+   into the radial direction across a third of the surface. Boundaries are
+   classified convergent / divergent / transform from the relative velocity
+   against the boundary normal, and sub-classified by crust pair.
+
+3. **Simulation.** The crust is the state: type, age, thickness, orogeny, arc.
+   Each step the plates rotate and carry their crust with them (semi-Lagrangian,
+   by back-rotating each cell and asking which plate covers it). Gaps at
+   divergent margins stretch the neighbouring margin thin and then break to new
+   sea floor at age zero; convergence subducts the denser side and records an
+   arc or thickens the crust; sustained continental collision welds plates.
+   `healPlates` keeps ownership coherent — without it, twenty steps of cell-wise
+   advection shred the map into interpenetrating slivers.
+
+Elevation is read off the crust: ocean depth from half-space cooling
+(`5650 - 3050·exp(-age/62.8)` metres), land height from Airy isostasy on
+thickness (145 m per km, relative to `seaLevelThicknessKm`).
+
+`seaLevelThicknessKm` is the land-fraction dial — it stands for how much water
+the planet has, and is deliberately separate from `crustReferenceKm`, the
+thickness undisturbed crust relaxes towards.
+
+## The 1843 path
+
+The original distance-field blend (`findCollisions` + `assignRegionElevation`)
+is still there behind the **Simulate tectonics** toggle, off means 1843, and
+`bun run preview --no-tectonics`. Keep it working as a comparison. It is no
+longer bit-identical to the original: it is fed plate velocities taken at each
+plate's centroid rather than the old random neighbour-direction vectors, so
+that the codebase has one motion model. Its `<` compression pick and collision
+table are otherwise untouched.
+
+`mergeOceanPlates` and `connectWorldOcean` remain UI toggles, both off by
+default. `mergeOceanPlates` only applies on the 1843 path.
+
+## After a change
+
+Capture and **read** the images — code alone does not tell you whether it
+worked:
+
+```
+bun run stats                         # numbers first
+bun run preview                       # globe + equirect
+bun run preview plates                # plate shapes, sizes, motion
+bun run preview crust                 # sea-floor age, orogeny, boundary types
+```
+
+`crust` is the view that shows what the simulation is actually doing: ridges
+with young pale crust beside them fading to dark old crust, trenches, and
+transform segments.

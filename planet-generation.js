@@ -27,6 +27,8 @@ const colormap = require('./colormap');
 const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
+const Tectonics = require('./tectonics');
+const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 
 const regl = require('regl')({
     canvas: "#output",
@@ -81,12 +83,20 @@ let draw_plateVectors = false;
 let draw_plateBoundaries = false;
 let merge_ocean_plates = false;
 let connect_oceans = false;
-let previewPlateOverlay = false;
+let simulate_tectonics = true;
+let sim_steps = Tectonics.DEFAULTS.steps;
+let previewOverlay = null;   // null | 'plates' | 'crust'
 let previewYaw = 0;
 
+/* Which per-region overlay the surface is painted with, if any. */
+function overlayMode() {
+    if (viewPersistSuspended) return previewOverlay;
+    if (previewOverlay) return previewOverlay;
+    return (drawMode === 'plates' || drawMode === 'crust') ? drawMode : null;
+}
+
 function usePlateOverlay() {
-    if (viewPersistSuspended) return previewPlateOverlay;
-    return previewPlateOverlay || drawMode === 'plates';
+    return overlayMode() !== null;
 }
 
 let mapId = 0;
@@ -101,7 +111,7 @@ window.setP = newP => { P = newP; generateMap(); };
 window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
 window.setDrawMode = newMode => {
-    if (newMode !== 'quads' && newMode !== 'centroid' && newMode !== 'plates') return;
+    if (['quads', 'centroid', 'plates', 'crust'].indexOf(newMode) === -1) return;
     drawMode = newMode;
     draw();
 };
@@ -110,6 +120,8 @@ window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
 window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(); };
 window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
+window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
+window.setSimSteps = steps => { sim_steps = Math.max(0, steps | 0); generateMap(); };
 window.getSeed = () => seed;
 
 const renderPoints = regl({
@@ -701,61 +713,27 @@ class QuadGeometry {
  * Plates
  */
 
-function pickRandomRegions(mesh, N, randInt) {
-    let {numRegions} = mesh;
-    let chosen_r = new Set();
-    while (chosen_r.size < N && chosen_r.size < numRegions) {
-        chosen_r.add(randInt(numRegions));
-    }
-    return chosen_r;
+/* Plates, their Euler poles and their motion all live in ./tectonics.js so
+ * they can be run and measured outside the browser. */
+function generatePlates(mesh, r_xyz) {
+    const {plate_r, r_plate} = Tectonics.generatePlates(mesh, P, seed);
+    const {plate_pole, plate_omega} = Tectonics.assignPlateMotion(mesh, plate_r, r_plate, seed);
+    return {plate_r, r_plate, plate_pole, plate_omega};
 }
 
 
-function generatePlates(mesh, r_xyz) {
-    let r_plate = new Int32Array(mesh.numRegions);
-    r_plate.fill(-1);
-    let plate_r = pickRandomRegions(mesh, Math.min(P, N), makeRandInt(seed));
-    let queue = Array.from(plate_r);
-    for (let r of queue) { r_plate[r] = r; }
-    let out_r = [];
-    const randInt = makeRandInt(seed);
-
-    /* In Breadth First Search (BFS) the queue will be all elements in
-       queue[queue_out ... queue.length-1]. Pushing onto the queue
-       adds an element to the end, increasing queue.length. Popping
-       from the queue removes an element from the beginning by
-       increasing queue_out.
-
-       To add variety, use a random search instead of a breadth first
-       search. The frontier of elements to be expanded is still
-       queue[queue_out ... queue.length-1], but pick a random element
-       to pop instead of the earliest one. Do this by swapping
-       queue[pos] and queue[queue_out].
-    */
-    
-    for (let queue_out = 0; queue_out < queue.length; queue_out++) {
-        let pos = queue_out + randInt(queue.length - queue_out);
-        let current_r = queue[pos];
-        queue[pos] = queue[queue_out];
-        mesh.r_circulate_r(out_r, current_r);
-        for (let neighbor_r of out_r) {
-            if (r_plate[neighbor_r] === -1) {
-                r_plate[neighbor_r] = r_plate[current_r];
-                queue.push(neighbor_r);
-            }
-        }
+/* The 1843 collision test wants one vector per plate. Rigid rotation has no
+ * such thing, so hand it the velocity at each plate's centroid; that is the
+ * closest a single vector gets to describing the plate's motion. */
+function plateVectorsFromPoles(mesh, r_xyz, plate_r, r_plate, plate_pole, plate_omega) {
+    const centroid = plateCentroids(mesh, r_xyz, plate_r, r_plate);
+    const plate_vec = [];
+    for (const p of plate_r) {
+        plate_vec[p] = Tectonics.plateVelocity([], plate_pole[p], plate_omega[p], centroid[p]);
+        const speed = vec3.length(plate_vec[p]);
+        if (speed > 1e-12) vec3.scale(plate_vec[p], plate_vec[p], 1 / speed);
     }
-
-    // Assign a random movement vector for each plate
-    let plate_vec = [];
-    for (let center_r of plate_r) {
-        let neighbor_r = mesh.r_circulate_r([], center_r)[0];
-        let p0 = r_xyz.slice(3 * center_r, 3 * center_r + 3),
-            p1 = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
-        plate_vec[center_r] = vec3.normalize([], vec3.subtract([], p1, p0));
-    }
-
-    return {plate_r, r_plate, plate_vec};
+    return plate_vec;
 }
 
 
@@ -1105,31 +1083,8 @@ function connectWorldOcean(mesh, r_elevation) {
 }
 
 
-function smoothField(mesh, values, land, iterations) {
-    const {numRegions} = mesh;
-    const next = new Float32Array(numRegions);
-    const neighbors = [];
-    for (let iter = 0; iter < iterations; iter++) {
-        for (let r = 0; r < numRegions; r++) {
-            mesh.r_circulate_r(neighbors, r);
-            let sum = values[r];
-            let count = 1;
-            for (let n of neighbors) {
-                if (!land || land[n] === land[r]) {
-                    sum += values[n];
-                    count++;
-                }
-            }
-            next[r] = sum / count;
-        }
-        values.set(next);
-    }
-}
-
-
-function clamp01(x) {
-    return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+/* Shared with the tectonics model, which needs them outside the browser. */
+const {smoothField, clamp01} = Tectonics;
 
 function latitudeMoisture(lat) {
     const deg = Math.abs(lat) * 180 / Math.PI;
@@ -1244,23 +1199,37 @@ function generateMap() {
     let result = generatePlates(mesh, map.r_xyz);
     map.plate_r = result.plate_r;
     map.r_plate = result.r_plate;
-    map.plate_vec = result.plate_vec;
-    map.plate_is_ocean = new Set();
-    for (let r of map.plate_r) {
-        if (makeRandInt(r)(10) < 5) {
-            map.plate_is_ocean.add(r);
-        }
-    }
-    if (merge_ocean_plates) {
-        let merged = mergeOceanPlates(mesh, map.plate_r, map.r_plate, map.plate_is_ocean);
-        map.plate_r = merged.plate_r;
-        map.plate_is_ocean = merged.plate_is_ocean;
-        map.extra_ocean_seeds = merged.extraOceanSeeds;
-    } else {
+    map.plate_pole = result.plate_pole;
+    map.plate_omega = result.plate_omega;
+
+    if (simulate_tectonics) {
+        Tectonics.simulateTectonics(mesh, map, seed, {steps: sim_steps});
+        /* the simulation reshuffles plate membership, so anything derived
+           from it has to be recomputed afterwards */
+        map.plate_is_ocean = oceanicPlates(mesh, map);
         map.extra_ocean_seeds = [];
+    } else {
+        map.plate_is_ocean = new Set();
+        for (let r of map.plate_r) {
+            if (makeRandInt(r)(10) < 5) {
+                map.plate_is_ocean.add(r);
+            }
+        }
+        if (merge_ocean_plates) {
+            let merged = mergeOceanPlates(mesh, map.plate_r, map.r_plate, map.plate_is_ocean);
+            map.plate_r = merged.plate_r;
+            map.plate_is_ocean = merged.plate_is_ocean;
+            map.extra_ocean_seeds = merged.extraOceanSeeds;
+        } else {
+            map.extra_ocean_seeds = [];
+        }
+        map.plate_vec = plateVectorsFromPoles(mesh, map.r_xyz, map.plate_r, map.r_plate,
+                                              map.plate_pole, map.plate_omega);
+        assignRegionElevation(mesh, map);
+        map.r_boundary = null;
+        map.r_crust_age = null;
     }
     map.plate_centroid = plateCentroids(mesh, map.r_xyz, map.plate_r, map.r_plate);
-    assignRegionElevation(mesh, map);
     if (connect_oceans) connectWorldOcean(mesh, map.r_elevation);
     assignClimate(mesh, map);
     assignTriangleValues(mesh, map);
@@ -1269,13 +1238,32 @@ function generateMap() {
     const indexed = plateIndexOf(map.plate_r);
     map.plate_ids = indexed.ids;
     map.plate_index = indexed.indexOf;
-    plateColorTm = buildPlateColorTm(mesh, map);
+    overlayColorCache.clear();
     mapId++;
     equirectCache = null;
     draw();
 }
 
-let plateColorTm = null;
+/* A plate counts as oceanic when most of the crust it carries is oceanic.
+ * After the simulation this is a property of the crust, not a coin flip on
+ * the plate, so a plate can be mostly ocean and still carry a continent. */
+function oceanicPlates(mesh, {r_plate, r_crust_type, plate_r}) {
+    const total = new Map(), continental = new Map();
+    for (let r = 0; r < mesh.numRegions; r++) {
+        const p = r_plate[r];
+        total.set(p, (total.get(p) || 0) + 1);
+        if (r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) {
+            continental.set(p, (continental.get(p) || 0) + 1);
+        }
+    }
+    const ocean = new Set();
+    for (const p of plate_r) {
+        if ((continental.get(p) || 0) / Math.max(1, total.get(p) || 0) < 0.5) ocean.add(p);
+    }
+    return ocean;
+}
+
+
 
 function hsvRgb(h, s, v) {
     const i = Math.floor(h * 6);
@@ -1310,12 +1298,37 @@ function plateColorForRegion(r) {
     return colorForPlate(i, map.r_elevation[r] < 0);
 }
 
-function buildPlateColorTm(mesh, {r_plate, r_elevation, plate_index}) {
+function overlayColorForRegion(r) {
+    return overlayMode() === 'crust' ? crustColorForRegion(r, map) : plateColorForRegion(r);
+}
+
+/* Sea floor by age, land by how recently it was built up: the fields the
+ * simulation actually works in, so they can be judged directly rather than
+ * inferred from the finished relief. */
+function crustColorForRegion(r, map) {
+    const {r_crust_type, r_crust_age, r_orogeny, r_arc, r_boundary} = map;
+    if (r_boundary && r_boundary[r] === BOUNDARY_DIVERGENT) return [1.0, 0.35, 0.2];
+    if (r_boundary && r_boundary[r] === BOUNDARY_CONVERGENT) return [0.25, 0.9, 1.0];
+    if (r_boundary && r_boundary[r] === BOUNDARY_TRANSFORM) return [1.0, 0.95, 0.35];
+    if (r_crust_type && r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) {
+        const relief = clamp01(r_orogeny[r] * 0.7 + r_arc[r] * 0.3);
+        return [0.35 + 0.6 * relief, 0.5 - 0.18 * relief, 0.3 - 0.1 * relief];
+    }
+    /* young sea floor pale, old sea floor dark: the ridge-to-abyss gradient */
+    const young = 1 - clamp01((r_crust_age ? r_crust_age[r] : 0) / 200);
+    return [0.05 + 0.15 * young, 0.15 + 0.45 * young, 0.3 + 0.6 * young];
+}
+
+
+function buildOverlayColorTm(mesh, map, mode) {
+    const {r_plate, r_elevation, plate_index} = map;
     const {numRegions, numTriangles} = mesh;
     const rgb = new Float32Array(3 * (numRegions + numTriangles));
     const regionColor = [];
     for (let r = 0; r < numRegions; r++) {
-        const c = colorForPlate(plate_index.get(r_plate[r]) || 0, r_elevation[r] < 0);
+        const c = mode === 'crust'
+            ? crustColorForRegion(r, map)
+            : colorForPlate(plate_index.get(r_plate[r]) || 0, r_elevation[r] < 0);
         regionColor[r] = c;
         rgb[3 * r] = c[0];
         rgb[3 * r + 1] = c[1];
@@ -1335,14 +1348,35 @@ function buildPlateColorTm(mesh, {r_plate, r_elevation, plate_index}) {
 }
 
 
-function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_vec}) {
+const overlayColorCache = new Map();
+
+function overlayColorTm() {
+    const mode = overlayMode() || 'plates';
+    if (!overlayColorCache.has(mode)) {
+        overlayColorCache.set(mode, buildOverlayColorTm(mesh, map, mode));
+    }
+    return overlayColorCache.get(mode);
+}
+
+
+/* Velocity is a rotation, so it varies across a plate: the arrows have to
+ * be evaluated per region, not shared from one vector per plate. */
+/* Arrow length is proportional to speed, scaled so a plate rotating at the
+ * typical rate draws an arrow about one cell long. */
+const PLATE_ARROW_REFERENCE_OMEGA = 0.006;
+
+function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_pole, plate_omega}) {
     let line_xyz = [], line_rgba = [];
-    
+    const scale = (2 / Math.sqrt(N)) / PLATE_ARROW_REFERENCE_OMEGA;
+    const v = [0, 0, 0];
+
     for (let r = 0; r < mesh.numRegions; r++) {
-        line_xyz.push(r_xyz.slice(3 * r, 3 * r + 3));
+        const pos = r_xyz.slice(3 * r, 3 * r + 3);
+        const p = r_plate[r];
+        Tectonics.plateVelocity(v, plate_pole[p], plate_omega[p], pos);
+        line_xyz.push(pos);
         line_rgba.push([1, 1, 1, 1]);
-        line_xyz.push(vec3.add([], r_xyz.slice(3 * r, 3 * r + 3),
-                               vec3.scale([], plate_vec[r_plate[r]], 2 / Math.sqrt(N))));
+        line_xyz.push(vec3.scaleAndAdd([], pos, v, scale));
         line_rgba.push([1, 0, 0, 0]);
     }
 
@@ -1675,15 +1709,15 @@ function rColorFn(r) {
 function getEquirectSurfaceGeometry() {
     const overlay = usePlateOverlay();
     const meshMode = drawMode === 'centroid' ? 'centroid' : 'quads';
-    const key = `${meshMode}:${mapId}:${overlay ? 'plates' : 'surf'}`;
+    const key = `${meshMode}:${mapId}:${overlayMode() || 'surf'}`;
     if (equirectCache && equirectCache.key === key) return equirectCache.geo;
     let geo;
     if (overlay) {
         if (drawMode === 'centroid') {
-            const raw = generateVoronoiGeometry(mesh, map, plateColorForRegion);
+            const raw = generateVoronoiGeometry(mesh, map, overlayColorForRegion);
             geo = buildEquirectTriangles(raw.xyz, raw.tm, null);
         } else {
-            geo = buildEquirectTriangles(quadGeometry.xyz, plateColorTm, quadGeometry.I);
+            geo = buildEquirectTriangles(quadGeometry.xyz, overlayColorTm(), quadGeometry.I);
         }
     } else if (drawMode === 'centroid') {
         const raw = generateVoronoiGeometry(mesh, map, rColorFn);
@@ -1721,12 +1755,14 @@ function appendEquirectSegment(line_xyz, line_rgba, ax, ay, az, bx, by, bz, rgba
     }
 }
 
-function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_vec}) {
+function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_pole, plate_omega}) {
     let line_xyz = [], line_rgba = [];
-    const scale = 2 / Math.sqrt(N);
+    const scale = (2 / Math.sqrt(N)) / PLATE_ARROW_REFERENCE_OMEGA;
+    const v = [0, 0, 0];
     for (let r = 0; r < mesh.numRegions; r++) {
         const ax = r_xyz[3 * r], ay = r_xyz[3 * r + 1], az = r_xyz[3 * r + 2];
-        const v = plate_vec[r_plate[r]];
+        const p = r_plate[r];
+        Tectonics.plateVelocity(v, plate_pole[p], plate_omega[p], [ax, ay, az]);
         appendEquirectSegment(
             line_xyz, line_rgba,
             ax, ay, az,
@@ -1878,11 +1914,11 @@ function _draw() {
 
     const overlay = usePlateOverlay();
     if (drawMode === 'centroid') {
-        const colorFn = overlay ? plateColorForRegion : rColorFn;
+        const colorFn = overlay ? overlayColorForRegion : rColorFn;
         let triangleGeometry = generateVoronoiGeometry(mesh, map, colorFn);
         drawSurface(u_projection, triangleGeometry.xyz, triangleGeometry.tm, triangleGeometry.xyz.length / 3);
     } else {
-        const tm = overlay ? plateColorTm : quadGeometry.tm;
+        const tm = overlay ? overlayColorTm() : quadGeometry.tm;
         drawSurface(u_projection, quadGeometry.xyz, tm);
     }
 
@@ -1915,10 +1951,12 @@ function _draw() {
  * gigapixels after the 256× upsample.
  */
 
-const TD_LAND_PEAK_M = 5500;
-const TD_LAND_POWER = 1.35;
-const TD_OCEAN_DEPTH_M = 4200;
-const TD_OCEAN_POWER = 1.4;
+/* The elevation scale itself is defined in ./tectonics.js, which has to map
+ * metres back onto it. */
+const TD_LAND_PEAK_M = Tectonics.LAND_PEAK_M;
+const TD_LAND_POWER = Tectonics.LAND_POWER;
+const TD_OCEAN_DEPTH_M = Tectonics.OCEAN_DEPTH_M;
+const TD_OCEAN_POWER = Tectonics.OCEAN_POWER;
 const TD_TEMP_SCALE = 40;
 const TD_TEMP_OFFSET = -15;
 const TD_PRECIP_MIN = 60;
@@ -1926,10 +1964,7 @@ const TD_PRECIP_RANGE = 3400;
 const TD_PRECIP_POWER = 1.55;
 const TD_EARTH_KM = 40075.017;
 
-function elevationToMeters(e) {
-    if (e >= 0) return TD_LAND_PEAK_M * Math.pow(e, TD_LAND_POWER);
-    return -TD_OCEAN_DEPTH_M * Math.pow(-e, TD_OCEAN_POWER);
-}
+const {elevationToMeters} = Tectonics;
 
 function temperatureToC(t) {
     return Math.max(-40, Math.min(40, TD_TEMP_SCALE * t + TD_TEMP_OFFSET));
@@ -2506,26 +2541,31 @@ function exportPreview(view, opts = {}) {
     viewPersistSuspended = true;
     const savedBoundaries = draw_plateBoundaries;
     const savedVectors = draw_plateVectors;
-    const savedOverlay = previewPlateOverlay;
-    previewPlateOverlay = !!opts.plates;
-    if (opts.plates) {
+    const savedOverlay = previewOverlay;
+    const overlay = opts.overlay || (opts.plates ? 'plates' : null);
+    previewOverlay = overlay;
+    if (overlay) {
         draw_plateBoundaries = true;
         draw_plateVectors = false;
     }
     try {
-        if (view === 'globe') return captureGlobePreview(opts.plates);
-        if (view === 'equirect') return captureEquirectPreview(opts.lon0, opts.plates);
+        if (view === 'globe') return captureGlobePreview(overlay);
+        if (view === 'equirect') return captureEquirectPreview(opts.lon0, overlay);
         throw new Error(`unknown preview view: ${view}`);
     } finally {
         draw_plateBoundaries = savedBoundaries;
         draw_plateVectors = savedVectors;
-        previewPlateOverlay = savedOverlay;
+        previewOverlay = savedOverlay;
         viewPersistSuspended = false;
     }
 }
 
 const PLATE_ARROW_SCALE = 0.38;
-const PLATE_LEGEND = 'color = plate   dark = underwater   arrow = motion';
+const OVERLAY_LEGEND = {
+    plates: 'color = plate   dark = underwater   arrow = motion',
+    crust: 'sea floor: pale = young, dark = old   land: red = orogeny   ' +
+           'orange = ridge   cyan = trench   yellow = transform',
+};
 
 function projectGlobePoint(xyz, projection) {
     const p = vec4.transformMat4([], [xyz[0], xyz[1], xyz[2], 1], projection);
@@ -2592,8 +2632,11 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
     for (let i = 0; i < map.plate_ids.length; i++) {
         const p = map.plate_ids[i];
         const c = map.plate_centroid[p];
-        const v = map.plate_vec[p];
-        if (!c || !v) continue;
+        /* velocity at the plate's own centroid, so the arrow shows where
+           that plate is actually going and how fast */
+        if (!c || !map.plate_pole || !map.plate_pole[p]) continue;
+        const v = Tectonics.plateVelocity([], map.plate_pole[p], map.plate_omega[p], c);
+        vec3.scale(v, v, 1 / PLATE_ARROW_REFERENCE_OMEGA);
         const start = toCanvas(c);
         if (!Number.isFinite(start.x) || !Number.isFinite(start.y)) continue;
         if (mode === 'globe' && !start.front) continue;
@@ -2687,13 +2730,13 @@ function paintLivePlateOverlay() {
     }
 }
 
-function captureGlobePreview(plates) {
+function captureGlobePreview(overlay) {
     const src = document.getElementById('output');
     const savedMode = viewMode;
     applyViewMode('globe');
     const cell = 512;
     const labelH = 28;
-    const legendH = plates ? 30 : 0;
+    const legendH = overlay ? 30 : 0;
     const yaws = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2];
     const labels = ['0', '90', '180', '270'];
     const sheet = document.createElement('canvas');
@@ -2728,21 +2771,21 @@ function captureGlobePreview(plates) {
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
         ctx.fillText(`${labels[i]} deg`, x + 10, y + labelH / 2);
-        if (plates) {
+        if (overlay) {
             actx.clearRect(0, 0, annotated.width, annotated.height);
             actx.drawImage(src, 0, 0);
-            paintPlateAnnotations(actx, src.width, src.height, 'globe', globeProjectionMatrix());
+            if (overlay === 'plates') paintPlateAnnotations(actx, src.width, src.height, 'globe', globeProjectionMatrix());
             ctx.drawImage(annotated, x, y + labelH, cell, cell);
         } else {
             ctx.drawImage(src, x, y + labelH, cell, cell);
         }
     }
 
-    if (plates) {
+    if (overlay) {
         ctx.fillStyle = '#111111';
         ctx.font = '600 14px ui-sans-serif, system-ui, sans-serif';
         ctx.textBaseline = 'middle';
-        ctx.fillText(PLATE_LEGEND, 10, sheet.height - legendH / 2);
+        ctx.fillText(OVERLAY_LEGEND[overlay], 10, sheet.height - legendH / 2);
     }
 
     previewYaw = savedYaw;
@@ -2753,7 +2796,7 @@ function captureGlobePreview(plates) {
     return sheet.toDataURL('image/png');
 }
 
-function captureEquirectPreview(lon0, plates) {
+function captureEquirectPreview(lon0, overlay) {
     const src = document.getElementById('output');
     const savedMode = viewMode;
     const savedPanX = equirectPanX;
@@ -2768,16 +2811,16 @@ function captureEquirectPreview(lon0, plates) {
     regl._gl.finish();
 
     let dataUrl;
-    if (!plates) {
+    if (!overlay) {
         dataUrl = src.toDataURL('image/png');
     } else {
         const legendH = 32;
-        const overlay = document.createElement('canvas');
-        overlay.width = src.width;
-        overlay.height = src.height;
-        const octx = overlay.getContext('2d');
+        const annotated = document.createElement('canvas');
+        annotated.width = src.width;
+        annotated.height = src.height;
+        const octx = annotated.getContext('2d');
         octx.drawImage(src, 0, 0);
-        paintPlateAnnotations(octx, src.width, src.height, 'equirect');
+        if (overlay === 'plates') paintPlateAnnotations(octx, src.width, src.height, 'equirect');
 
         const out = document.createElement('canvas');
         out.width = src.width;
@@ -2788,8 +2831,8 @@ function captureEquirectPreview(lon0, plates) {
         ctx.fillStyle = '#111111';
         ctx.font = '600 14px ui-sans-serif, system-ui, sans-serif';
         ctx.textBaseline = 'middle';
-        ctx.fillText(PLATE_LEGEND, 10, legendH / 2);
-        ctx.drawImage(overlay, 0, legendH);
+        ctx.fillText(OVERLAY_LEGEND[overlay], 10, legendH / 2);
+        ctx.drawImage(annotated, 0, legendH);
         dataUrl = out.toDataURL('image/png');
     }
 

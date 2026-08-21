@@ -294,11 +294,17 @@
         <button onclick="setDrawMode('quads')">Quads</button>
         <button onclick="setDrawMode('centroid')">Flat</button>
         <button onclick="setDrawMode('plates')">Plates</button>
+        <button onclick="setDrawMode('crust')">Crust</button>
         <br>
         <label><input type="checkbox" oninput="setDrawPlateVectors(this.checked)">Plate vectors</label>
         <label><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)">Plate boundaries</label>
         <label><input type="checkbox" oninput="setMergeOceanPlates(this.checked)">Merge ocean plates</label>
         <label><input type="checkbox" oninput="setConnectOceans(this.checked)">Connect oceans</label>
+        <br>
+        <label><input type="checkbox" checked oninput="setSimulateTectonics(this.checked)">Simulate tectonics</label>
+        <br>
+        Tectonic history (<span id="sim-steps-label">200</span> Myr):
+        <input id="sim-steps" type="range" min="0" max="40" value="20" oninput="document.getElementById('sim-steps-label').textContent = this.valueAsNumber * 10; setSimSteps(this.valueAsNumber)">
         <br>
         Number of regions:
         <input type="range" min="2" max="5" step="0.001" value="4" oninput="setN(Math.pow(10, this.valueAsNumber) | 0)">

@@ -26,6 +26,32 @@ const BIOME = [
     [[214, 222, 230], [64, 96, 70], [48, 96, 52], [28, 74, 38]],
 ];
 
+/* Bathymetry, keyed to the depths half-space cooling actually produces:
+ * a shelf near the coast, ridge crests around -0.55, abyssal plains from
+ * -0.8, trenches at the bottom. A linear fade to black spent nearly all of
+ * its range above the ridge crest and rendered every ocean the same colour. */
+const OCEAN = [
+    [-1.00, [10, 24, 58]],    // trench
+    [-0.82, [18, 40, 84]],    // abyssal plain
+    [-0.62, [28, 58, 110]],   // ridge flank
+    [-0.50, [38, 76, 132]],   // ridge crest
+    [-0.22, [48, 96, 152]],   // continental slope
+    [0.00, [64, 122, 172]],   // shelf
+];
+
+function oceanColor(e) {
+    for (let i = 1; i < OCEAN.length; i++) {
+        if (e <= OCEAN[i][0] || i === OCEAN.length - 1) {
+            const [e0, c0] = OCEAN[i - 1];
+            const [e1, c1] = OCEAN[i];
+            const t = Math.max(0, Math.min(1, (e - e0) / (e1 - e0)));
+            return lerp3(c0, c1, t);
+        }
+    }
+    return OCEAN[OCEAN.length - 1][1];
+}
+
+
 function biomeColor(temp, moisture) {
     const t = Math.max(0, Math.min(1, temp)) * 3;
     const m = Math.max(0, Math.min(1, moisture)) * 2;
@@ -66,9 +92,10 @@ function colormap() {
                 b = 140;
             } else
             if (e < 0.0) {
-                r = 48 + 48*e;
-                g = 64 + 64*e;
-                b = 127 + 127*e;
+                const rgb = oceanColor(e);
+                r = rgb[0];
+                g = rgb[1];
+                b = rgb[2];
             } else {
                 const rgb = biomeColor(e, moisture);
                 r = rgb[0];
