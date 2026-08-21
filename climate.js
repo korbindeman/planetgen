@@ -51,7 +51,7 @@ const DEFAULTS = {
                                   // itself evaporated back
     evaporation: 0.55,            // ocean humidity at freezing
     evaporationWarm: 0.60,        // extra ocean humidity when warm
-    moistureGain: 1.45,           // maps delivered rain onto the 0..1 biome axis
+    moistureGain: 1.62,           // maps delivered rain onto the 0..1 biome axis
 
     seasonShift: 12,              // degrees the rain belt moves with the sun
     windSeasonShift: 3,           // how far the wind bands themselves move. Less than

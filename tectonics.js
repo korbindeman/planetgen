@@ -561,8 +561,12 @@ const DEFAULTS = {
     continentFraction: 0.44,      // Earth: continental crust is ~41% of the
                                   // surface, of which ~29% is dry land
     crustReferenceKm: 31,         // thickness undisturbed continental crust relaxes towards
-    seaLevelThicknessKm: 26,      // thickness that floats exactly at sea level
+    seaLevelThicknessKm: 29,      // thickness that floats exactly at sea level
     crustOceanKm: 7,
+    crustTypeKm: 18,              // thicker than this is continental crust. This is
+                                  // also where a stretched margin breaks: a single
+                                  // threshold, or the rift branch keeps crust the
+                                  // derived type then calls ocean
     crustMinKm: 22,               // fully rifted margin
     crustMaxKm: 68,               // Tibet
     crustInitialPeakKm: 33,       // craton cores; Earth's interiors are a few hundred
@@ -570,17 +574,17 @@ const DEFAULTS = {
     shelfThinningKm: 0.15,         // per step, at a rifting margin
     collisionThickenKm: 0.9,      // per step, continent against continent
     collisionThrust: 0.34,        // share of an overridden column thrust onto the winner
-    riftThinKm: 3.0,              // how much a margin thins per step of stretching.
+    riftThinKm: 0.6,              // how much a margin thins per step of stretching.
                                   // Thinning by a *fraction* instead halves a cell every
                                   // step it spends on a divergent boundary, which leaves
                                   // half the continental crust too thin to stand above
                                   // sea level
-    crustBreakKm: 9,              // thinner than this and the margin has broken: sea floor
     riftIntactShare: 0.80,        // only crust this fraction of reference thickness stretches
     emergentFraction: 0.71,       // share of continental crust starting above sea level
     orogenyDecay: 0.88,           // erosion between steps
     orogenyReliefM: 2200,         // extra relief at full orogeny, on top of isostasy
     rootRelax: 0.030,             // crustal roots relax back towards normal
+    arcUpliftM: 2400,             // how far a full-strength arc lifts the sea floor
     arcOceanic: 0.55,             // island arc over ocean-ocean subduction
     arcContinental: 0.85,         // Andean arc over ocean-continent
     orogenyAndean: 0.5,
@@ -743,6 +747,58 @@ function initCrust(mesh, r_xyz, seed, opts) {
 }
 
 
+/* Weights for reading a field at an arbitrary point, spread over the cell
+ * that contains it and that cell's neighbours.
+ *
+ * Snapping to the nearest cell centre instead puts up to half a cell of
+ * jitter into every step, and twenty steps of that random-walks a coastline
+ * until it breaks into specks: measured, the simulation turned 3 landmasses
+ * into 39, of which 24 were three cells or smaller. Nothing about the
+ * tectonics wanted that — it was the resampling.
+ */
+function sampleWeights(mesh, r_xyz, x, source_r, out_r, cells, weights) {
+    mesh.r_circulate_r(out_r, source_r);
+    cells.length = 0;
+    weights.length = 0;
+    /* A compact kernel: full weight at a cell centre, falling to nothing at
+     * the neighbouring centres. Inverse-distance weighting instead gives
+     * every neighbour a share however close the point is to one centre, and
+     * twenty steps of that averaging flattens the crust — it cost 11 points
+     * of land fraction before this was made local. */
+    let span = 0;
+    for (const n of out_r) {
+        const dx = r_xyz[3 * source_r] - r_xyz[3 * n];
+        const dy = r_xyz[3 * source_r + 1] - r_xyz[3 * n + 1];
+        const dz = r_xyz[3 * source_r + 2] - r_xyz[3 * n + 2];
+        span += Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    span = out_r.length ? span / out_r.length : 1;
+
+    let total = 0;
+    const push = (c) => {
+        const dx = x[0] - r_xyz[3 * c], dy = x[1] - r_xyz[3 * c + 1], dz = x[2] - r_xyz[3 * c + 2];
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const t = 1 - d / span;
+        if (t <= 0) return;
+        const w = t * t;
+        cells.push(c);
+        weights.push(w);
+        total += w;
+    };
+    push(source_r);
+    for (const n of out_r) push(n);
+    if (total <= 0) { cells.push(source_r); weights.push(1); return 1; }
+    for (let i = 0; i < weights.length; i++) weights[i] /= total;
+    return cells.length;
+}
+
+function sampleField(field, cells, weights) {
+    let sum = 0;
+    for (let i = 0; i < cells.length; i++) sum += weights[i] * field[cells[i]];
+    return sum;
+}
+
+
 /* One timestep.
  *
  * The plates turn about their poles, carrying their sites with them, and
@@ -782,7 +838,7 @@ function stepTectonics(mesh, map, opts) {
     const collisions = new Map();     // "a,b" -> cells of continent-continent contact
     const gained = new Int32Array(plates.length);
     const lost = new Int32Array(plates.length);
-    const out_r = [];
+    const out_r = [], cells = [], weights = [];
     const back = [0, 0, 0], x = [0, 0, 0];
 
     for (let r = 0; r < numRegions; r++) {
@@ -808,7 +864,7 @@ function stepTectonics(mesh, map, opts) {
              * flood. */
             const stretched = prevType[source_r] === CRUST_CONTINENTAL
                 ? prevThickness[source_r] - opts.riftThinKm : 0;
-            if (stretched > opts.crustBreakKm) {
+            if (stretched > opts.crustTypeKm) {
                 nextType[r] = CRUST_CONTINENTAL;
                 nextThickness[r] = stretched;
                 nextAge[r] = prevAge[source_r] + dtMyr;
@@ -823,12 +879,21 @@ function stepTectonics(mesh, map, opts) {
         }
 
         /* Everywhere else the crust simply travels with its plate. */
-        nextType[r] = prevType[source_r];
-        nextAge[r] = prevAge[source_r] + dtMyr;
-        nextThickness[r] = prevThickness[source_r];
-        nextOrogeny[r] = prevOrogeny[source_r] * opts.orogenyDecay;
-        nextArc[r] = prevArc[source_r] * opts.orogenyDecay;
+        sampleWeights(mesh, r_xyz, back, source_r, out_r, cells, weights);
+        nextAge[r] = sampleField(prevAge, cells, weights) + dtMyr;
+        nextThickness[r] = sampleField(prevThickness, cells, weights);
+        nextOrogeny[r] = sampleField(prevOrogeny, cells, weights) * opts.orogenyDecay;
+        nextArc[r] = sampleField(prevArc, cells, weights) * opts.orogenyDecay;
         if (r_boundary[r] === BOUNDARY_CONVERGENT) lost[nextPlate[r]]++;
+    }
+
+    /* Crust type follows from how thick the column is, rather than being
+     * carried along as its own label. Oceanic crust is a few kilometres
+     * thick and continental crust tens, so the two never overlap — and a
+     * derived type cannot be speckled by resampling the way a carried label
+     * can. */
+    for (let r = 0; r < numRegions; r++) {
+        nextType[r] = nextThickness[r] > opts.crustTypeKm ? CRUST_CONTINENTAL : CRUST_OCEANIC;
     }
 
     /* Arcs and belts are built along a margin for as long as it is
@@ -1209,7 +1274,12 @@ function crustToElevation(mesh, map, seed, opts) {
         } else {
             meters[r] = -oceanDepthMeters(r_crust_age[r]);
             /* volcanic arcs build islands out of the sea floor */
-            meters[r] += 3200 * r_arc[r];
+            /* An island arc is a narrow ridge; on Earth only its crest
+             * breaks the surface. At 226 km per cell the ridge itself is
+             * sub-resolution, so an arc that lifts freely puts an island in
+             * every cell along a subduction zone. Raise the sea floor, but
+             * make emerging take a strong, sustained arc. */
+            meters[r] += opts.arcUpliftM * r_arc[r] * r_arc[r];
             /* and the trench in front of one is the deepest thing on the planet */
             if (r_boundary && r_boundary[r] === BOUNDARY_CONVERGENT) {
                 meters[r] -= 1500 * (1 - clamp01(r_arc[r]));
