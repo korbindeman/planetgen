@@ -19,12 +19,44 @@ function lerp3(a, b, t) {
     return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 }
 
-/* Rows are moisture 0, 0.5, 1. Columns are temperature 0, 1/3, 2/3, 1. */
+/* Rows are moisture 0, 0.5, 1. Columns are temperature 0, 1/3, 2/3, 1.
+ *
+ * The two warm entries in the middle row are savanna and tropical
+ * grassland. They used to be yellow-dominant, close enough to the desert
+ * row above them that any land of middling moisture read as sand — which
+ * hid what the moisture model was doing. Real savanna is olive: green
+ * slightly ahead of red, and clearly apart from true desert. */
 const BIOME = [
     [[176, 172, 164], [198, 176, 124], [210, 185, 139], [196, 154, 102]],
-    [[142, 144, 128], [108, 122, 78], [148, 140, 72], [128, 122, 48]],
+    [[142, 144, 128], [108, 122, 78], [126, 136, 74], [110, 130, 60]],
     [[214, 222, 230], [64, 96, 70], [48, 96, 52], [28, 74, 38]],
 ];
+
+/* Bathymetry, keyed to the depths half-space cooling actually produces:
+ * a shelf near the coast, ridge crests around -0.55, abyssal plains from
+ * -0.8, trenches at the bottom. A linear fade to black spent nearly all of
+ * its range above the ridge crest and rendered every ocean the same colour. */
+const OCEAN = [
+    [-1.00, [10, 24, 58]],    // trench
+    [-0.82, [18, 40, 84]],    // abyssal plain
+    [-0.62, [28, 58, 110]],   // ridge flank
+    [-0.50, [38, 76, 132]],   // ridge crest
+    [-0.22, [48, 96, 152]],   // continental slope
+    [0.00, [64, 122, 172]],   // shelf
+];
+
+function oceanColor(e) {
+    for (let i = 1; i < OCEAN.length; i++) {
+        if (e <= OCEAN[i][0] || i === OCEAN.length - 1) {
+            const [e0, c0] = OCEAN[i - 1];
+            const [e1, c1] = OCEAN[i];
+            const t = Math.max(0, Math.min(1, (e - e0) / (e1 - e0)));
+            return lerp3(c0, c1, t);
+        }
+    }
+    return OCEAN[OCEAN.length - 1][1];
+}
+
 
 function biomeColor(temp, moisture) {
     const t = Math.max(0, Math.min(1, temp)) * 3;
@@ -66,9 +98,10 @@ function colormap() {
                 b = 140;
             } else
             if (e < 0.0) {
-                r = 48 + 48*e;
-                g = 64 + 64*e;
-                b = 127 + 127*e;
+                const rgb = oceanColor(e);
+                r = rgb[0];
+                g = rgb[1];
+                b = rgb[2];
             } else {
                 const rgb = biomeColor(e, moisture);
                 r = rgb[0];

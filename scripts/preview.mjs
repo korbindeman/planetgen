@@ -10,6 +10,9 @@
  *   bun run preview --seed=42
  *   bun run preview plates          globe + equirect with plates and motion arrows
  *   bun run preview plates equirect
+ *   bun run preview crust           sea-floor age, orogeny and boundary types
+ *   bun run preview climate         the moisture field on its own
+ *   bun run preview --no-tectonics  the original 1843 distance-field blend, for comparison
  *
  * Each view keeps preview/<name>.png, <name>-before.png, <name>-compare.png
  * (globe files are planet.png / compare.png; plate overlay is plates.png /
@@ -58,8 +61,40 @@ const PLATES = {
   },
 };
 
-const { views, lon0, seed, plates, connectOceans } = parseArgs(process.argv.slice(2));
-const VIEWS = plates ? PLATES : GEOGRAPHY;
+const CRUST = {
+  globe: {
+    file: "crust.png",
+    before: "crust-before.png",
+    compare: "crust-compare.png",
+    historyPrefix: "crust",
+  },
+  equirect: {
+    file: "equirect-crust.png",
+    before: "equirect-crust-before.png",
+    compare: "equirect-crust-compare.png",
+    historyPrefix: "equirect-crust",
+  },
+};
+
+const CLIMATE = {
+  globe: {
+    file: "climate.png",
+    before: "climate-before.png",
+    compare: "climate-compare.png",
+    historyPrefix: "climate",
+  },
+  equirect: {
+    file: "equirect-climate.png",
+    before: "equirect-climate-before.png",
+    compare: "equirect-climate-compare.png",
+    historyPrefix: "equirect-climate",
+  },
+};
+
+const OVERLAY_VIEWS = { plates: PLATES, crust: CRUST, climate: CLIMATE };
+
+const { views, lon0, seed, overlay, connectOceans, noTectonics } = parseArgs(process.argv.slice(2));
+const VIEWS = OVERLAY_VIEWS[overlay] ?? GEOGRAPHY;
 
 const server = Bun.spawn(["bun", "--port", String(port), "index.html"], {
   cwd: root,
@@ -84,6 +119,9 @@ try {
   await page.waitForFunction(() => window.__PLANET_READY__ === true, null, {
     timeout: 60_000,
   });
+  if (noTectonics) {
+    await page.evaluate(() => window.setSimulateTectonics(false));
+  }
   if (connectOceans) {
     await page.evaluate(() => window.setConnectOceans(true));
   }
@@ -94,8 +132,8 @@ try {
   for (const view of views) {
     const spec = VIEWS[view];
     const dataUrl = await page.evaluate(
-      ({ view, lon0, plates }) => window.exportPreview(view, { lon0, plates }),
-      { view, lon0, plates },
+      ({ view, lon0, overlay }) => window.exportPreview(view, { lon0, overlay }),
+      { view, lon0, overlay },
     );
     if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
       throw new Error(`exportPreview(${view}) did not return a PNG`);
@@ -132,7 +170,7 @@ try {
     }
       console.log(outPath);
     }
-    if (plates) console.log("plates overlay");
+    if (overlay) console.log(`${overlay} overlay`);
     if (seed != null) console.log(`seed ${seed}`);
 } finally {
   await browser?.close();
@@ -143,8 +181,9 @@ function parseArgs(argv) {
   const views = [];
   let lon0 = 0;
   let seed;
-  let plates = false;
+  let overlay = null;
   let connectOceans = false;
+  let noTectonics = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "all") {
@@ -172,13 +211,19 @@ function parseArgs(argv) {
         throw new Error(`invalid ${arg}`);
       }
     } else if (arg === "plates" || arg === "--plates") {
-      plates = true;
+      overlay = "plates";
+    } else if (arg === "crust" || arg === "--crust") {
+      overlay = "crust";
+    } else if (arg === "climate" || arg === "--climate") {
+      overlay = "climate";
     } else if (arg === "--connect-oceans") {
       connectOceans = true;
+    } else if (arg === "--no-tectonics") {
+      noTectonics = true;
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all|plates] [--lon=degrees] [--seed=n] [--connect-oceans]",
+          "usage: bun run preview [globe|equirect|all|plates|crust|climate] [--lon=degrees] [--seed=n] [--connect-oceans] [--no-tectonics]",
       );
     }
   }
@@ -186,8 +231,9 @@ function parseArgs(argv) {
     views: views.length ? [...new Set(views)] : ["globe", "equirect"],
     lon0,
     seed,
-    plates,
+    overlay,
     connectOceans,
+    noTectonics,
   };
 }
 

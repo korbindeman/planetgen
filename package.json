@@ -7,6 +7,9 @@
     "scripts": {
         "dev": "bun --hot ./index.html",
         "preview": "bun ./scripts/preview.mjs",
+        "stats": "bun ./scripts/tectonics-stats.mjs",
+        "sheet": "bun ./scripts/seed-sheet.mjs",
+        "climate": "bun ./scripts/climate-stats.mjs",
         "export:td": "bun ./scripts/export-td.mjs",
         "preview:install": "playwright-core install chromium",
         "build": "bun build ./planet-generation.js --target=browser --minify --sourcemap=linked --outdir=build --entry-naming=_bundle.[ext]"

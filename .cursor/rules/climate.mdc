@@ -1,0 +1,59 @@
+---
+description: Moisture is carried by the wind, not painted on by latitude. Keep it that way.
+alwaysApply: true
+---
+
+# Climate
+
+`climate.js` holds the whole model, free of WebGL and DOM so it can be
+measured with `bun run climate`. Run that before judging pictures.
+
+## The rule that matters
+
+**Moisture is advected, never painted on by latitude.** Air picks up water
+over the sea, travels downwind, rains some out at every step, and arrives
+inland already depleted. Latitude only sets how readily air rains out — the
+Hadley circulation — not how much water is there.
+
+This is not decoration. It is the only way to get the thing that most
+distinguishes Earth's climate map from a set of stripes: the subtropical dry
+belt is not a girdle. The Sahara and the Namib are dry while Florida and
+south-east China, at the same latitude, are wet. In the trade-wind belt the
+wind is easterly, so a continent's east coast gets fresh maritime air and its
+west coast gets air that has already crossed the land; under the westerlies
+it reverses. Rain shadows fall out of the same mechanism.
+
+`bun run climate` reports that asymmetry directly. A latitude-band model
+scores zero on both lines and cannot do otherwise. Current values:
+
+```
+trades 15-30 deg   east wetter by +0.12     Earth: east wetter
+westerlies 40-60   west wetter by +0.16     Earth: west wetter
+vegetated 67%  lush 29%                     Earth ~65% and ~30%
+```
+
+Do not:
+
+- Replace advection with a distance-to-ocean falloff, or add one on top
+- Drop `recycling`. Land returns about half its rain to the passing air —
+  half the Amazon's rainfall is water the forest itself evaporated. Without
+  it every continental interior becomes desert no matter what else is tuned.
+- Drop the two-season solve. A single fixed wind field leaves big landmasses
+  uniformly arid; averaging the two solstices is what a monsoon is.
+- Shift the wind bands as far as the rain belt. `windSeasonShift` is
+  deliberately smaller than `seasonShift`: Earth's ITCZ swings much further
+  than the trades do, and moving the wind bands the full amount averages a
+  subtropical cell over both trade and westerly regimes, cancelling the
+  asymmetry that is the whole point.
+
+## Reading the result
+
+`bun run preview climate` renders the moisture field on its own. Use it.
+Rendering the finished biome colours and reasoning backwards about what the
+moisture must have been is how you end up tuning the wrong subsystem — the
+biome table needs moisture well above 0.5 before land stops looking arid, so
+a real improvement in moisture can leave the finished map looking unchanged.
+
+`colormap.js` is part of this. Its middle row is savanna and tropical
+grassland; those entries have to stay clearly greener than the desert row
+above them or any land of middling moisture reads as sand.
