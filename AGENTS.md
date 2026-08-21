@@ -19,8 +19,11 @@ what gives continents a wet and a dry coast instead of one dry girdle; see
 
 Run `stats` and `climate` before judging pictures, and `sheet` when judging how the planets
 *look* — a failure mode that hits every seed reads as a bad roll if you only
-ever capture one. Continents are seeded as cratons, not a noise threshold.
-Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
+ever capture one. Continents are seeded as cratons, not a noise threshold. A plate is a rigid
+body made of sites that rotate with it, so its boundaries are arcs meeting at
+triple junctions and it stays one coherent body; each has a stable id, a
+generated name, a birth time and a parent, and keeps them through rifts and
+collisions. Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
 
 ## Downstream
 
@@ -68,7 +71,7 @@ Then read the **compare** sheet for that view if it exists, otherwise the latest
 | --- | --- | --- | --- |
 | **globe** | `preview/planet.png`, `preview/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
 | **equirect** | `preview/equirect.png`, `preview/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
-| **plates** | `preview/plates.png`, `preview/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, numbered yellow arrows = motion | Plate size and shape, mixed land/ocean on a plate, relative motion |
+| **plates** | `preview/plates.png`, `preview/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, named, with motion arrows and time since the plate formed | Plate size and shape, mixed land/ocean on a plate, relative motion |
 | **crust** | `preview/crust.png`, `preview/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
 | **climate** | `preview/climate.png`, `preview/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
 

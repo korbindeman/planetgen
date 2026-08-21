@@ -715,20 +715,18 @@ class QuadGeometry {
 /* Plates, their Euler poles and their motion all live in ./tectonics.js so
  * they can be run and measured outside the browser. */
 function generatePlates(mesh, r_xyz) {
-    const {plate_r, r_plate} = Tectonics.generatePlates(mesh, P, seed);
-    const {plate_pole, plate_omega} = Tectonics.assignPlateMotion(mesh, plate_r, r_plate, seed);
-    return {plate_r, r_plate, plate_pole, plate_omega};
+    return Tectonics.generatePlates(mesh, P, seed);
 }
 
 
 /* The 1843 collision test wants one vector per plate. Rigid rotation has no
  * such thing, so hand it the velocity at each plate's centroid; that is the
  * closest a single vector gets to describing the plate's motion. */
-function plateVectorsFromPoles(mesh, r_xyz, plate_r, r_plate, plate_pole, plate_omega) {
-    const centroid = plateCentroids(mesh, r_xyz, plate_r, r_plate);
+function plateVectorsFromPoles(mesh, r_xyz, plates, r_plate) {
+    const centroid = plateCentroids(mesh, r_xyz, plates, r_plate);
     const plate_vec = [];
-    for (const p of plate_r) {
-        plate_vec[p] = Tectonics.plateVelocity([], plate_pole[p], plate_omega[p], centroid[p]);
+    for (let p = 0; p < plates.length; p++) {
+        plate_vec[p] = Tectonics.plateVelocity([], plates[p].pole, plates[p].omega, centroid[p]);
         const speed = vec3.length(plate_vec[p]);
         if (speed > 1e-12) vec3.scale(plate_vec[p], plate_vec[p], 1 / speed);
     }
@@ -736,80 +734,42 @@ function plateVectorsFromPoles(mesh, r_xyz, plate_r, r_plate, plate_pole, plate_
 }
 
 
-/* Adjacent ocean plates become one plate so we don't get fake
- * ocean-ocean ridges/trenches. Land plates stay as they are. */
-function mergeOceanPlates(mesh, plate_r, r_plate, plate_is_ocean) {
-    const {numRegions} = mesh;
+/* Adjacent ocean plates become one plate so the 1843 path doesn't get fake
+ * ocean-ocean ridges and trenches. Land plates stay as they are. Only that
+ * path uses this; the simulation has no need of it. */
+function mergeOceanPlates(mesh, r_plate, plate_is_ocean) {
     const parent = new Map();
-    for (let p of plate_r) parent.set(p, p);
+    const find = (p) => { while (parent.has(p) && parent.get(p) !== p) p = parent.get(p); return p; };
+    for (const p of plate_is_ocean) parent.set(p, p);
 
-    function find(p) {
-        let r = parent.get(p);
-        if (r !== p) {
-            r = find(r);
-            parent.set(p, r);
-        }
-        return r;
-    }
-
-    const r_out = [];
-    for (let r = 0; r < numRegions; r++) {
+    const out_r = [];
+    for (let r = 0; r < mesh.numRegions; r++) {
         const p = r_plate[r];
         if (!plate_is_ocean.has(p)) continue;
-        mesh.r_circulate_r(r_out, r);
-        for (let n of r_out) {
+        mesh.r_circulate_r(out_r, r);
+        for (const n of out_r) {
             const q = r_plate[n];
             if (q === p || !plate_is_ocean.has(q)) continue;
             const a = find(p), b = find(q);
             if (a !== b) parent.set(b, a);
         }
     }
-
-    const size = new Map();
-    for (let r = 0; r < numRegions; r++) {
-        const p = r_plate[r];
-        size.set(p, (size.get(p) || 0) + 1);
+    for (let r = 0; r < mesh.numRegions; r++) {
+        if (plate_is_ocean.has(r_plate[r])) r_plate[r] = find(r_plate[r]);
     }
-    const survivor = new Map();
-    for (let p of plate_r) {
-        const root = find(p);
-        const prev = survivor.get(root);
-        if (prev == null || (size.get(p) || 0) > (size.get(prev) || 0)) {
-            survivor.set(root, p);
-        }
-    }
-
-    const remap = new Map();
-    for (let p of plate_r) remap.set(p, survivor.get(find(p)));
-    for (let r = 0; r < numRegions; r++) r_plate[r] = remap.get(r_plate[r]);
-
-    const nextPlates = new Set();
-    for (let p of plate_r) nextPlates.add(remap.get(p));
     const nextOcean = new Set();
-    const extraOceanSeeds = [];
-    for (let p of plate_r) {
-        if (!plate_is_ocean.has(p)) continue;
-        const keep = remap.get(p);
-        nextOcean.add(keep);
-        if (p !== keep) extraOceanSeeds.push(p);
-    }
-    return {plate_r: nextPlates, plate_is_ocean: nextOcean, extraOceanSeeds};
+    for (const p of plate_is_ocean) nextOcean.add(find(p));
+    return {plate_is_ocean: nextOcean};
 }
 
 
-function plateCentroids(mesh, r_xyz, plate_r, r_plate) {
-    const {numRegions} = mesh;
-    const centroid = [];
-    for (let p of plate_r) centroid[p] = [0, 0, 0];
-    for (let r = 0; r < numRegions; r++) {
-        const p = r_plate[r];
-        centroid[p][0] += r_xyz[3 * r];
-        centroid[p][1] += r_xyz[3 * r + 1];
-        centroid[p][2] += r_xyz[3 * r + 2];
+function plateCentroids(mesh, r_xyz, plates, r_plate) {
+    const centroid = plates.map(() => [0, 0, 0]);
+    for (let r = 0; r < mesh.numRegions; r++) {
+        const c = centroid[r_plate[r]];
+        c[0] += r_xyz[3 * r]; c[1] += r_xyz[3 * r + 1]; c[2] += r_xyz[3 * r + 2];
     }
-    for (let p of plate_r) {
-        vec3.normalize(centroid[p], centroid[p]);
-    }
+    for (const c of centroid) vec3.normalize(c, c);
     return centroid;
 }
 
@@ -1134,48 +1094,35 @@ function generateMesh() {
 }
 
 function generateMap() {
-    let result = generatePlates(mesh, map.r_xyz);
-    map.plate_r = result.plate_r;
-    map.r_plate = result.r_plate;
-    map.plate_pole = result.plate_pole;
-    map.plate_omega = result.plate_omega;
+    Object.assign(map, generatePlates(mesh, map.r_xyz));
 
     if (simulate_tectonics) {
         Tectonics.simulateTectonics(mesh, map, seed, {steps: sim_steps});
-        /* the simulation reshuffles plate membership, so anything derived
-           from it has to be recomputed afterwards */
         map.plate_is_ocean = oceanicPlates(mesh, map);
-        map.extra_ocean_seeds = [];
     } else {
+        /* The 1843 path wants a static partition and a coin flip for which
+         * plates are oceanic. */
+        map.boundaryWarp = Tectonics.makeBoundaryWarp(mesh, map.r_xyz, seed, Tectonics.DEFAULTS);
+        map.r_plate = Tectonics.assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp);
         map.plate_is_ocean = new Set();
-        for (let r of map.plate_r) {
-            if (makeRandInt(r)(10) < 5) {
-                map.plate_is_ocean.add(r);
-            }
+        for (let p = 0; p < map.plates.length; p++) {
+            if (makeRandInt(map.plates[p].id + 1)(10) < 5) map.plate_is_ocean.add(p);
         }
         if (merge_ocean_plates) {
-            let merged = mergeOceanPlates(mesh, map.plate_r, map.r_plate, map.plate_is_ocean);
-            map.plate_r = merged.plate_r;
-            map.plate_is_ocean = merged.plate_is_ocean;
-            map.extra_ocean_seeds = merged.extraOceanSeeds;
-        } else {
-            map.extra_ocean_seeds = [];
+            map.plate_is_ocean = mergeOceanPlates(mesh, map.r_plate, map.plate_is_ocean).plate_is_ocean;
         }
-        map.plate_vec = plateVectorsFromPoles(mesh, map.r_xyz, map.plate_r, map.r_plate,
-                                              map.plate_pole, map.plate_omega);
+        map.extra_ocean_seeds = [];
+        map.plate_vec = plateVectorsFromPoles(mesh, map.r_xyz, map.plates, map.r_plate);
         assignRegionElevation(mesh, map);
         map.r_boundary = null;
         map.r_crust_age = null;
     }
-    map.plate_centroid = plateCentroids(mesh, map.r_xyz, map.plate_r, map.r_plate);
+    map.plate_centroid = plateCentroids(mesh, map.r_xyz, map.plates, map.r_plate);
     if (connect_oceans) connectWorldOcean(mesh, map.r_elevation);
     assignClimate(mesh, map);
     assignTriangleValues(mesh, map);
 
     quadGeometry.setMap(mesh, map);
-    const indexed = plateIndexOf(map.plate_r);
-    map.plate_ids = indexed.ids;
-    map.plate_index = indexed.indexOf;
     overlayColorCache.clear();
     mapId++;
     equirectCache = null;
@@ -1185,18 +1132,16 @@ function generateMap() {
 /* A plate counts as oceanic when most of the crust it carries is oceanic.
  * After the simulation this is a property of the crust, not a coin flip on
  * the plate, so a plate can be mostly ocean and still carry a continent. */
-function oceanicPlates(mesh, {r_plate, r_crust_type, plate_r}) {
-    const total = new Map(), continental = new Map();
+function oceanicPlates(mesh, {r_plate, r_crust_type, plates}) {
+    const total = new Int32Array(plates.length);
+    const continental = new Int32Array(plates.length);
     for (let r = 0; r < mesh.numRegions; r++) {
-        const p = r_plate[r];
-        total.set(p, (total.get(p) || 0) + 1);
-        if (r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) {
-            continental.set(p, (continental.get(p) || 0) + 1);
-        }
+        total[r_plate[r]]++;
+        if (r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) continental[r_plate[r]]++;
     }
     const ocean = new Set();
-    for (const p of plate_r) {
-        if ((continental.get(p) || 0) / Math.max(1, total.get(p) || 0) < 0.5) ocean.add(p);
+    for (let p = 0; p < plates.length; p++) {
+        if (continental[p] / Math.max(1, total[p]) < 0.5) ocean.add(p);
     }
     return ocean;
 }
@@ -1219,21 +1164,15 @@ function hsvRgb(h, s, v) {
     }
 }
 
-function plateIndexOf(plate_r) {
-    const ids = Array.from(plate_r);
-    const indexOf = new Map();
-    for (let i = 0; i < ids.length; i++) indexOf.set(ids[i], i);
-    return {ids, indexOf};
-}
-
 function colorForPlate(index, ocean) {
     const h = (index * 0.618033988749895) % 1;
     return hsvRgb(h, ocean ? 0.5 : 0.58, ocean ? 0.48 : 0.94);
 }
 
 function plateColorForRegion(r) {
-    const i = map.plate_index.get(map.r_plate[r]) || 0;
-    return colorForPlate(i, map.r_elevation[r] < 0);
+    /* colour by the plate's permanent id, so a plate keeps its colour as
+       others come and go around it */
+    return colorForPlate(map.plates[map.r_plate[r]].id, map.r_elevation[r] < 0);
 }
 
 function overlayColorForRegion(r) {
@@ -1288,14 +1227,14 @@ function climateColorForRegion(r, map) {
 
 
 function buildOverlayColorTm(mesh, map, mode) {
-    const {r_plate, r_elevation, plate_index} = map;
+    const {r_plate, r_elevation} = map;
     const {numRegions, numTriangles} = mesh;
     const rgb = new Float32Array(3 * (numRegions + numTriangles));
     const regionColor = [];
     for (let r = 0; r < numRegions; r++) {
         const c = mode === 'crust' ? crustColorForRegion(r, map)
             : mode === 'climate' ? climateColorForRegion(r, map)
-            : colorForPlate(plate_index.get(r_plate[r]) || 0, r_elevation[r] < 0);
+            : colorForPlate(map.plates[r_plate[r]].id, r_elevation[r] < 0);
         regionColor[r] = c;
         rgb[3 * r] = c[0];
         rgb[3 * r + 1] = c[1];
@@ -1332,7 +1271,7 @@ function overlayColorTm() {
  * typical rate draws an arrow about one cell long. */
 const PLATE_ARROW_REFERENCE_OMEGA = 0.006;
 
-function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_pole, plate_omega}) {
+function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plates}) {
     let line_xyz = [], line_rgba = [];
     const scale = (2 / Math.sqrt(N)) / PLATE_ARROW_REFERENCE_OMEGA;
     const v = [0, 0, 0];
@@ -1340,7 +1279,7 @@ function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_pole, plate
     for (let r = 0; r < mesh.numRegions; r++) {
         const pos = r_xyz.slice(3 * r, 3 * r + 3);
         const p = r_plate[r];
-        Tectonics.plateVelocity(v, plate_pole[p], plate_omega[p], pos);
+        Tectonics.plateVelocity(v, plates[p].pole, plates[p].omega, pos);
         line_xyz.push(pos);
         line_rgba.push([1, 1, 1, 1]);
         line_xyz.push(vec3.scaleAndAdd([], pos, v, scale));
@@ -1722,14 +1661,14 @@ function appendEquirectSegment(line_xyz, line_rgba, ax, ay, az, bx, by, bz, rgba
     }
 }
 
-function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_pole, plate_omega}) {
+function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plates}) {
     let line_xyz = [], line_rgba = [];
     const scale = (2 / Math.sqrt(N)) / PLATE_ARROW_REFERENCE_OMEGA;
     const v = [0, 0, 0];
     for (let r = 0; r < mesh.numRegions; r++) {
         const ax = r_xyz[3 * r], ay = r_xyz[3 * r + 1], az = r_xyz[3 * r + 2];
         const p = r_plate[r];
-        Tectonics.plateVelocity(v, plate_pole[p], plate_omega[p], [ax, ay, az]);
+        Tectonics.plateVelocity(v, plates[p].pole, plates[p].omega, [ax, ay, az]);
         appendEquirectSegment(
             line_xyz, line_rgba,
             ax, ay, az,
@@ -2529,7 +2468,7 @@ function exportPreview(view, opts = {}) {
 
 const PLATE_ARROW_SCALE = 0.38;
 const OVERLAY_LEGEND = {
-    plates: 'color = plate   dark = underwater   arrow = motion',
+    plates: 'color = plate   dark = underwater   arrow = motion   age = time since the plate formed',
     crust: 'sea floor: pale = young, dark = old   land: red = orogeny   ' +
            'orange = ridge   cyan = trench   yellow = transform',
     climate: 'moisture only: sand = arid   olive = steppe   green = forest   teal = saturated',
@@ -2579,7 +2518,7 @@ function drawHaloLabel(ctx, text, x, y) {
 }
 
 function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0) {
-    if (!map.plate_ids || !map.plate_centroid) return;
+    if (!map.plates || !map.plate_centroid) return;
     ctx.save();
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -2597,13 +2536,17 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
         return clipToCanvas(clip, width, height);
     };
 
-    for (let i = 0; i < map.plate_ids.length; i++) {
-        const p = map.plate_ids[i];
+    /* Only label plates big enough for the name to belong to something. */
+    const area = new Int32Array(map.plates.length);
+    for (let r = 0; r < mesh.numRegions; r++) area[map.r_plate[r]]++;
+
+    for (let p = 0; p < map.plates.length; p++) {
+        const plate = map.plates[p];
         const c = map.plate_centroid[p];
+        if (!c || area[p] / mesh.numRegions < 0.012) continue;
         /* velocity at the plate's own centroid, so the arrow shows where
            that plate is actually going and how fast */
-        if (!c || !map.plate_pole || !map.plate_pole[p]) continue;
-        const v = Tectonics.plateVelocity([], map.plate_pole[p], map.plate_omega[p], c);
+        const v = Tectonics.plateVelocity([], plate.pole, plate.omega, c);
         vec3.scale(v, v, 1 / PLATE_ARROW_REFERENCE_OMEGA);
         const start = toCanvas(c);
         if (!Number.isFinite(start.x) || !Number.isFinite(start.y)) continue;
@@ -2646,7 +2589,13 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
         ctx.lineWidth = 4;
         ctx.strokeStyle = '#111111';
         ctx.fillStyle = '#ffffff';
-        drawHaloLabel(ctx, String(i + 1), start.x, start.y - 12);
+        drawHaloLabel(ctx, plate.name, start.x, start.y - 13);
+        /* how long this plate has existed, which is not the age of its crust */
+        if (plate.bornMyr > 0) {
+            ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+            drawHaloLabel(ctx, `${(map.elapsedMyr - plate.bornMyr).toFixed(0)} Myr`, start.x, start.y + 13);
+            ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+        }
     }
     ctx.restore();
 }

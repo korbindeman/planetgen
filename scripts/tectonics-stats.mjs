@@ -30,11 +30,9 @@ const P = Number(args.p ?? 20);
 const JITTER = 0.75;
 const SEEDS = (args.seeds ?? '123,42,7,2024,99').split(',').map(Number);
 const OPTIONS = {};
-if (args.steps !== undefined) OPTIONS.steps = Number(args.steps);
-for (const key of ['continentFraction', 'crustMinKm', 'crustInitialPeakKm', 'crustReferenceKm', 'seaLevelThicknessKm',
-                   'collisionThickenKm', 'collisionThrust', 'shelfThinningKm', 'rootRelax',
-                   'coastBlend', 'riftChance', 'riftStretchShare', 'crustBreakKm',
-                   'emergentFraction', 'cratons', 'cratonSigma', 'cratonWarp', 'cratonClustering', 'weldThreshold', 'orogenyDecay', 'orogenyReliefM', 'detailNoise']) {
+/* every key in DEFAULTS is overridable from the command line, so a sweep
+ * never silently does nothing because the list here fell behind */
+for (const key of Object.keys(Tectonics.DEFAULTS)) {
     if (args[key] !== undefined) OPTIONS[key] = Number(args[key]);
 }
 
@@ -46,16 +44,14 @@ function run(seed) {
     const started = Date.now();
     const { mesh, r_xyz } = SphereMesh.makeSphere(N, JITTER, makeRandFloat(seed));
     const map = { r_xyz, r_elevation: new Float32Array(mesh.numRegions) };
-    const { plate_r, r_plate } = Tectonics.generatePlates(mesh, P, seed);
-    const { plate_pole, plate_omega } = Tectonics.assignPlateMotion(mesh, plate_r, r_plate, seed);
-    Object.assign(map, { plate_r, r_plate, plate_pole, plate_omega });
+    Object.assign(map, Tectonics.generatePlates(mesh, P, seed));
     Tectonics.simulateTectonics(mesh, map, seed, OPTIONS);
     const ms = Date.now() - started;
 
     const n = mesh.numRegions;
-    const areaOf = new Map();
-    for (let r = 0; r < n; r++) areaOf.set(map.r_plate[r], (areaOf.get(map.r_plate[r]) || 0) + 1);
-    const areas = [...areaOf.values()].sort((a, b) => b - a).map(v => v / n * 100);
+    const areaOf = new Float64Array(map.plates.length);
+    for (let r = 0; r < n; r++) areaOf[map.r_plate[r]]++;
+    const areas = [...areaOf].sort((a, b) => b - a).map(v => v / n * 100);
 
     let land = 0, continental = 0, submergedContinental = 0, ages = [], depths = [];
     for (let r = 0; r < n; r++) {
@@ -80,6 +76,42 @@ function run(seed) {
     }
     const boundaryTotal = boundary.convergent + boundary.divergent + boundary.transform || 1;
 
+    /* Is each plate one coherent body with a boundary a sane length, or a
+     * scatter of pieces with an edge that wanders at cell scale? Raggedness
+     * compares a plate's boundary to the shortest one a body of that area
+     * could have. A perfect great-circle split of this mesh scores 1.42, so
+     * that is the floor here, not 1.0. */
+    const plateArea = new Int32Array(map.plates.length);
+    const platePerimeter = new Int32Array(map.plates.length);
+    const out_r = [];
+    for (let r = 0; r < n; r++) {
+        const p = map.r_plate[r];
+        plateArea[p]++;
+        mesh.r_circulate_r(out_r, r);
+        for (const nb of out_r) if (map.r_plate[nb] !== p) platePerimeter[p]++;
+    }
+    const comp = new Int32Array(n).fill(-1);
+    const fragments = new Int32Array(map.plates.length);
+    for (let r = 0; r < n; r++) {
+        if (comp[r] !== -1) continue;
+        const p = map.r_plate[r];
+        const queue = [r];
+        comp[r] = 1;
+        for (let h = 0; h < queue.length; h++) {
+            mesh.r_circulate_r(out_r, queue[h]);
+            for (const nb of out_r) if (comp[nb] === -1 && map.r_plate[nb] === p) { comp[nb] = 1; queue.push(nb); }
+        }
+        fragments[p]++;
+    }
+    let weight = 0, ragged = 0, pieces = 0;
+    for (let p = 0; p < map.plates.length; p++) {
+        const a = plateArea[p];
+        if (a < 60) continue;
+        ragged += a * (platePerimeter[p] / (2 * Math.sqrt(Math.PI * a) * 1.1));
+        pieces += a * fragments[p];
+        weight += a;
+    }
+
     /* how much of the surface is high ground, and is it in belts? */
     let mountains = 0;
     for (let r = 0; r < n; r++) if (Tectonics.elevationToMeters(map.r_elevation[r]) > 2000) mountains++;
@@ -92,6 +124,9 @@ function run(seed) {
         ageMedian: q(ages, 0.5), ageMax: q(ages, 1),
         depthP10: q(depths, 0.1), depthMedian: q(depths, 0.5), depthP90: q(depths, 0.9),
         mountains: mountains / n * 100,
+        raggedness: weight ? ragged / weight : NaN,
+        fragments: weight ? pieces / weight : NaN,
+        named: map.plates.filter(p => plateArea[map.plates.indexOf(p)] / n > 0.01).length,
         boundary: {
             convergent: boundary.convergent / boundaryTotal * 100,
             divergent: boundary.divergent / boundaryTotal * 100,
@@ -125,6 +160,8 @@ const rows = [
     ['ocean depth median m', mean(s => s.depthMedian), '~4000'],
     ['surface above 2000 m %', mean(s => s.mountains), '~5'],
     ['plate count', mean(s => s.plates), '~15 major+minor'],
+    ['boundary raggedness', mean(s => s.raggedness), '~1.2-1.5 (1.42 = a clean split on this mesh)'],
+    ['pieces per plate', mean(s => s.fragments), '1.0 - a plate is one body'],
     ['runtime ms', mean(s => s.ms), ''],
 ];
 for (const [label, value, earth] of rows) {

@@ -42,9 +42,7 @@ for (const key of Object.keys(Climate.DEFAULTS)) {
 function run(seed) {
     const { mesh, r_xyz } = SphereMesh.makeSphere(N, 0.75, makeRandFloat(seed));
     const map = { r_xyz, r_elevation: new Float32Array(mesh.numRegions) };
-    const { plate_r, r_plate } = Tectonics.generatePlates(mesh, P, seed);
-    const { plate_pole, plate_omega } = Tectonics.assignPlateMotion(mesh, plate_r, r_plate, seed);
-    Object.assign(map, { plate_r, r_plate, plate_pole, plate_omega });
+    Object.assign(map, Tectonics.generatePlates(mesh, P, seed));
     Tectonics.simulateTectonics(mesh, map, seed);
     const started = Date.now();
     const { r_moisture } = Climate.assignClimate(mesh, map, seed, OPTIONS);

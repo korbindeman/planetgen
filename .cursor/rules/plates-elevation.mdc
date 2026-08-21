@@ -39,18 +39,37 @@ Do not:
 
 Three layers, each measurable:
 
-1. **Plate geometry.** Weighted competitive growth, with plate areas drawn from
-   two populations — a few majors holding ~90% of the surface, then a
-   microplate tail. Tuned to Earth: top-1 18% (Earth 20%), top-3 49% (49%),
-   top-7 89% (90%). A uniform flood fill gives every plate the same expected
-   area and reads as interchangeable blobs.
+1. **Plate geometry.** A plate is a rigid body made of *sites* — points that
+   rotate with it. A cell belongs to whichever site is nearest, so a boundary
+   falls where two plates' nearest sites tie: a great-circle arc, and where
+   three meet, a triple junction. Several sites per plate rather than one is
+   what keeps shapes from being convex caps.
+
+   Ownership is grown outwards from the sites with a weighted Dijkstra, not
+   by testing every cell against every site. That matters: the all-pairs cost
+   caps how many sites a plate can have, and that cap is what broke the size
+   hierarchy, because the smallest plates in a heavy-tailed distribution want
+   less than one site each and end up with none.
+
+   Sites are handed to plates by a **capacity-constrained assignment** —
+   nearest pairs first, each plate taking exactly its quota. Do not go back
+   to adjusting per-nucleus scales to hit the areas: that does not converge.
+   Area is a steep function of the ratio between neighbouring scales, so the
+   correction overshoots; on one seed the worst error grew 2.0 to 4.6 while a
+   single plate swelled from 131 sites to 340.
 
 2. **Motion.** Rigid rotation about an Euler pole, `omega x r`, in a
-   no-net-rotation frame. Not one constant vector per plate: a single 3D vector
-   is tangent at one point only, and on 20 plates it puts >30% of the velocity
-   into the radial direction across a third of the surface. Boundaries are
-   classified convergent / divergent / transform from the relative velocity
-   against the boundary normal, and sub-classified by crust pair.
+   no-net-rotation frame. A single constant vector per plate is tangent at
+   one point only, and on 20 plates puts >30% of the velocity into the radial
+   direction across a third of the surface. Boundaries are classified
+   convergent / divergent / transform from relative velocity against the
+   boundary normal.
+
+   Plates grow at their ridges and shrink at their trenches, measured as a
+   share of the plate's *own* boundary. Counting raw cells makes the term
+   scale with plate size, so the biggest plate has the longest ridges, gains
+   most, and grows until it owns the map. The reversion term must stay
+   stronger than the growth term or there is no equilibrium at all.
 
 3. **Continents.** A handful of cratons, unequal in size and biased to cluster
    into one hemisphere — which is what leaves a Pacific-sized ocean opposite
@@ -66,13 +85,32 @@ Three layers, each measurable:
    plateau, because the shader mixes high ground towards rock.
 
 4. **Simulation.** The crust is the state: type, age, thickness, orogeny, arc.
-   Each step the plates rotate and carry their crust with them (semi-Lagrangian,
-   by back-rotating each cell and asking which plate covers it). Gaps at
-   divergent margins stretch the neighbouring margin thin and then break to new
-   sea floor at age zero; convergence subducts the denser side and records an
-   arc or thickens the crust; sustained continental collision welds plates.
-   `healPlates` keeps ownership coherent — without it, twenty steps of cell-wise
-   advection shred the map into interpenetrating slivers.
+   Each step the plates turn, ownership is rebuilt from the sites, and the
+   crust is advected by back-rotating each cell along its owning plate.
+
+   What happens to the crust keys off **what the boundary is doing, never off
+   whether a cell changed hands**. Ownership is also renumbered when plates
+   split, weld or absorb a scrap, and reading that bookkeeping as subduction
+   shreds the continents. Divergent margins thin the neighbouring crust by a
+   fixed amount per step and flood once it breaks; thinning by a *fraction*
+   instead halves a cell every step it touches a rift and leaves half the
+   continental crust too deep to be land.
+
+   Arcs and belts are raised along a margin for as long as it is converging,
+   not only in the step the boundary sweeps past. Ownership changes over a
+   band a cell or two wide per step, so tying mountain building to that band
+   alone leaves a planet with almost no relief.
+
+   A plate cut in two by its neighbours is not a bug to patch over: the main
+   body keeps the name, a piece big enough stands up as a new plate with its
+   own pole and birthday, and a scrap is absorbed. Nothing is left
+   disconnected.
+
+5. **Identity.** Plates have stable ids, procedurally generated names, a
+   birth time and a parent. A name survives every rift and collision the
+   plate survives; the absorbing plate in a weld keeps its own. Plate colour
+   keys off the permanent id, so a plate keeps its colour as others come and
+   go.
 
 Elevation is read off the crust: ocean depth from half-space cooling
 (`5650 - 3050·exp(-age/62.8)` metres), land height from Airy isostasy on
@@ -103,13 +141,19 @@ Capture and **read** the images — code alone does not tell you whether it
 worked:
 
 ```
-bun run stats                         # numbers first
+bun run stats                         # numbers first, including plate cohesion
 bun run sheet                         # many seeds at once - judge the batch, not one lucky seed
 bun run sheet --view=globe
 bun run preview                       # globe + equirect
 bun run preview plates                # plate shapes, sizes, motion
 bun run preview crust                 # sea-floor age, orogeny, boundary types
 ```
+
+`bun run stats` reports **boundary raggedness** (a plate's boundary against
+the shortest one a body of that area could have) and **pieces per plate**.
+A perfect great-circle split of this mesh scores 1.42, so that is the floor,
+not 1.0. Flood-filled plates scored 3.0 and rose to 3.5 over a run; that ratio
+is what "messy" meant, and it is the number to watch.
 
 Judge aesthetics from `bun run sheet`, never from a single capture: a failure
 mode that affects every seed is easy to mistake for a bad roll, and a good roll
