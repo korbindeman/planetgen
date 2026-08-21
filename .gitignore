@@ -1,4 +1,6 @@
 node_modules/
 build/
 preview/**/*.png
+preview/**/*.tif
+preview/terrain-diffusion/**
 .DS_Store

@@ -1,0 +1,27 @@
+---
+description: Do not regress the restored 1843 plate and elevation pipeline.
+alwaysApply: true
+---
+
+# Plates and elevation
+
+Elevation comes from the original 1843 distance-field blend (`assignRegionElevation` + `findCollisions`). Coasts are irregular because that blend can go above or below sea level on either plate type. Do not replace that with per-cell crust, a land floor, or flattened basins.
+
+Keep:
+
+- Random-fill plates and random neighbor motion vectors
+- The original collision table and the `<` compression pick (parameters are tuned to that bug)
+- Plate-center ocean/coastline seeds
+- `0.1` simplex on elevation
+- Optional merge of adjacent ocean-tagged plates (`mergeOceanPlates`, UI toggle, **off by default**). Off = original 1843, including ocean–ocean boundary seeds. On = those plates become one, and absorbed ocean-plate centers stay as extra abyss seeds.
+- Optional connected world ocean (`connectWorldOcean`, UI toggle, **off by default**). Off = 1843 water as interpolated. On = fill tiny inland seas and punch a shallow strait through the lowest saddle so all remaining ocean is one below-sea-level component. Does not merge plates.
+
+Do not:
+
+- `flattenOceanBathymetry` or shelf-then-abyss overwrites
+- `Math.max(elevation, …)` on continental plates or cells
+- Growing continents as blobs on plates (`assignCrust` / `r_ocean`)
+- Euler poles or shared ocean drift for the heightmap
+- Dropping ocean-ocean coastline seeds unless the merge-ocean-plates toggle is on
+
+Climate, equirect, and the seed UI sit on top of this heightmap. After plate or elevation changes, capture globe, equirect, **and** `bun run preview plates`.

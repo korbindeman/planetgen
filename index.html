@@ -29,9 +29,158 @@
       }
       .controls p { margin: 0; }
       .controls input[type="range"] { width: 100%; }
+      .controls #seed-input {
+        width: 8em;
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+      }
       .controls button:disabled {
         opacity: 0.35;
         cursor: default;
+      }
+      #saved-seeds-popover {
+        inset: auto;
+        margin: 0;
+        padding: 6px;
+        width: 17rem;
+        border: 0;
+        border-radius: 12px;
+        background: #fff;
+        color: #000;
+        font: inherit;
+        -webkit-font-smoothing: antialiased;
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.08),
+          0 1px 2px rgba(0, 0, 0, 0.12),
+          0 8px 24px rgba(0, 0, 0, 0.16);
+        transform-origin: 0 0;
+        opacity: 1;
+        transform: scale(1);
+        transition-property: opacity, transform, overlay, display;
+        transition-duration: 180ms;
+        transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+        transition-behavior: allow-discrete;
+      }
+      #saved-seeds-popover:not(:popover-open) {
+        opacity: 0;
+        transform: scale(0.96);
+      }
+      @starting-style {
+        #saved-seeds-popover:popover-open {
+          opacity: 0;
+          transform: scale(0.96);
+        }
+      }
+      .saved-seeds-title {
+        padding: 4px 6px 6px;
+        font-weight: 600;
+        font-size: 0.82rem;
+      }
+      #saved-seeds-form {
+        display: flex;
+        gap: 0.35rem;
+        padding: 0 2px 8px;
+        margin: 0 0 4px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      }
+      #saved-seed-name {
+        flex: 1;
+        min-width: 0;
+        width: 0;
+        font: inherit;
+      }
+      #saved-seeds-list {
+        max-height: min(20rem, 60vh);
+        overflow: auto;
+      }
+      .saved-seeds-empty {
+        padding: 0.7rem 0.5rem;
+        opacity: 0.5;
+        font-size: 0.9em;
+      }
+      .saved-seed-row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        border-radius: 6px;
+      }
+      .saved-seed-row.is-current {
+        background: rgba(0, 0, 0, 0.07);
+      }
+      .saved-seed-item {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 0.45rem;
+        margin: 0;
+        padding: 0.4rem 0.5rem;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .saved-seed-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .saved-seed-num {
+        flex: 0 0 auto;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.5;
+      }
+      .saved-seed-delete {
+        flex: 0 0 28px;
+        width: 28px;
+        height: 28px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        line-height: 1;
+        cursor: pointer;
+        opacity: 0.4;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .saved-seed-item:hover {
+          background: rgba(0, 0, 0, 0.06);
+        }
+        .saved-seed-delete:hover {
+          opacity: 1;
+          background: rgba(0, 0, 0, 0.08);
+        }
+      }
+      .saved-seed-item:active,
+      .saved-seed-delete:active {
+        transform: scale(0.96);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #saved-seeds-popover {
+          transform: none;
+          transition-property: opacity, overlay, display;
+          transition-duration: 120ms;
+        }
+        #saved-seeds-popover:not(:popover-open) {
+          transform: none;
+        }
+        @starting-style {
+          #saved-seeds-popover:popover-open {
+            transform: none;
+          }
+        }
+        .saved-seed-item:active,
+        .saved-seed-delete:active {
+          transform: none;
+        }
       }
       figure {
         flex: 1;
@@ -55,6 +204,16 @@
         cursor: grab;
         touch-action: none;
         user-select: none;
+      }
+      #plate-overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        max-height: none;
+        pointer-events: none;
+        display: none;
       }
       canvas:active {
         cursor: grabbing;
@@ -134,9 +293,12 @@
         Draw:
         <button onclick="setDrawMode('quads')">Quads</button>
         <button onclick="setDrawMode('centroid')">Flat</button>
+        <button onclick="setDrawMode('plates')">Plates</button>
         <br>
         <label><input type="checkbox" oninput="setDrawPlateVectors(this.checked)">Plate vectors</label>
         <label><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)">Plate boundaries</label>
+        <label><input type="checkbox" oninput="setMergeOceanPlates(this.checked)">Merge ocean plates</label>
+        <label><input type="checkbox" oninput="setConnectOceans(this.checked)">Connect oceans</label>
         <br>
         Number of regions:
         <input type="range" min="2" max="5" step="0.001" value="4" oninput="setN(Math.pow(10, this.valueAsNumber) | 0)">
@@ -147,10 +309,12 @@
         Jitter:
         <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)">
         <br>
-        Seed: <span id="seed-label">88</span>
+        Seed:
+        <input id="seed-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" value="88" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
         <button type="button" onclick="shuffleSeed()">Shuffle</button>
         <button type="button" id="seed-undo" onclick="undoSeed()" disabled title="Undo seed (⌘Z)">Undo</button>
         <button type="button" id="seed-redo" onclick="redoSeed()" disabled title="Redo seed (⌘⇧Z)">Redo</button>
+        <button type="button" id="saved-seeds-btn" popovertarget="saved-seeds-popover" aria-haspopup="dialog" aria-controls="saved-seeds-popover" aria-expanded="false" title="Saved seeds">Saved</button>
         <span class="globe-only">
         <br>
         Sphere rotation:
@@ -162,6 +326,7 @@
     <figure>
       <div class="globe">
         <canvas id="output" width="1024" height="1024"></canvas>
+        <canvas id="plate-overlay" width="1024" height="1024"></canvas>
         <div class="globe-hud">
           <button type="button" class="globe-hud-btn view-mode-toggle" title="Equirectangular map" aria-label="Equirectangular map">
             <svg class="view-reset-icon icon-to-map" viewBox="0 0 24 24" aria-hidden="true">
@@ -189,6 +354,14 @@
         </div>
       </div>
     </figure>
+    <div id="saved-seeds-popover" popover role="dialog" aria-labelledby="saved-seeds-title">
+      <div id="saved-seeds-title" class="saved-seeds-title">Saved seeds</div>
+      <form id="saved-seeds-form">
+        <input id="saved-seed-name" type="text" maxlength="48" placeholder="Name (optional)" autocomplete="off" spellcheck="false" aria-label="Seed name">
+        <button type="submit">Save</button>
+      </form>
+      <div id="saved-seeds-list"></div>
+    </div>
     <script type="module" src="./planet-generation.js"></script>
   </body>
 </html>

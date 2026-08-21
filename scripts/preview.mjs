@@ -8,9 +8,12 @@
  *   bun run preview equirect
  *   bun run preview equirect --lon=90
  *   bun run preview --seed=42
+ *   bun run preview plates          globe + equirect with plates and motion arrows
+ *   bun run preview plates equirect
  *
  * Each view keeps preview/<name>.png, <name>-before.png, <name>-compare.png
- * (globe files are planet.png / compare.png), plus preview/history/.
+ * (globe files are planet.png / compare.png; plate overlay is plates.png /
+ * equirect-plates.png), plus preview/history/.
  */
 import { chromium } from "playwright-core";
 import { copyFile, mkdir, readdir } from "node:fs/promises";
@@ -25,7 +28,7 @@ const historyDir = join(previewDir, "history");
 const port = 41000 + Math.floor(Math.random() * 1000);
 const origin = `http://localhost:${port}`;
 
-const VIEWS = {
+const GEOGRAPHY = {
   globe: {
     file: "planet.png",
     before: "planet-before.png",
@@ -40,7 +43,23 @@ const VIEWS = {
   },
 };
 
-const { views, lon0, seed } = parseArgs(process.argv.slice(2));
+const PLATES = {
+  globe: {
+    file: "plates.png",
+    before: "plates-before.png",
+    compare: "plates-compare.png",
+    historyPrefix: "plates",
+  },
+  equirect: {
+    file: "equirect-plates.png",
+    before: "equirect-plates-before.png",
+    compare: "equirect-plates-compare.png",
+    historyPrefix: "equirect-plates",
+  },
+};
+
+const { views, lon0, seed, plates, connectOceans } = parseArgs(process.argv.slice(2));
+const VIEWS = plates ? PLATES : GEOGRAPHY;
 
 const server = Bun.spawn(["bun", "--port", String(port), "index.html"], {
   cwd: root,
@@ -65,6 +84,9 @@ try {
   await page.waitForFunction(() => window.__PLANET_READY__ === true, null, {
     timeout: 60_000,
   });
+  if (connectOceans) {
+    await page.evaluate(() => window.setConnectOceans(true));
+  }
 
   await mkdir(historyDir, { recursive: true });
   const stamp = timestamp();
@@ -72,8 +94,8 @@ try {
   for (const view of views) {
     const spec = VIEWS[view];
     const dataUrl = await page.evaluate(
-      ({ view, lon0 }) => window.exportPreview(view, { lon0 }),
-      { view, lon0 },
+      ({ view, lon0, plates }) => window.exportPreview(view, { lon0, plates }),
+      { view, lon0, plates },
     );
     if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
       throw new Error(`exportPreview(${view}) did not return a PNG`);
@@ -110,6 +132,7 @@ try {
     }
       console.log(outPath);
     }
+    if (plates) console.log("plates overlay");
     if (seed != null) console.log(`seed ${seed}`);
 } finally {
   await browser?.close();
@@ -120,6 +143,8 @@ function parseArgs(argv) {
   const views = [];
   let lon0 = 0;
   let seed;
+  let plates = false;
+  let connectOceans = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "all") {
@@ -146,10 +171,14 @@ function parseArgs(argv) {
       if (Number.isNaN(Number(arg.slice("--seed=".length)))) {
         throw new Error(`invalid ${arg}`);
       }
+    } else if (arg === "plates" || arg === "--plates") {
+      plates = true;
+    } else if (arg === "--connect-oceans") {
+      connectOceans = true;
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all] [--lon=degrees] [--seed=n]",
+          "usage: bun run preview [globe|equirect|all|plates] [--lon=degrees] [--seed=n] [--connect-oceans]",
       );
     }
   }
@@ -157,6 +186,8 @@ function parseArgs(argv) {
     views: views.length ? [...new Set(views)] : ["globe", "equirect"],
     lon0,
     seed,
+    plates,
+    connectOceans,
   };
 }
 

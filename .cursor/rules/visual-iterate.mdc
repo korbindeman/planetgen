@@ -9,7 +9,7 @@ The planet is a WebGL canvas. You cannot see it until you capture a PNG.
 
 After any change that affects how the planet looks (shaders, colors, terrain, climate, plates, camera, mesh, colormap):
 
-1. Run `bun run preview` (captures **globe and equirect**). Use `bun run preview globe` or `bun run preview equirect` only when iterating on that projection. Shift the map with `bun run preview equirect --lon=90`.
+1. Run `bun run preview` (captures **globe and equirect**). Use `bun run preview globe` or `bun run preview equirect` only when iterating on that projection. Shift the map with `bun run preview equirect --lon=90`. For tectonics, run `bun run preview plates` (writes `preview/plates.png` and `preview/equirect-plates.png`).
 2. Read the compare sheet if it exists, otherwise the latest capture.
 3. Judge the image, then change the code and repeat.
 
@@ -17,7 +17,8 @@ After any change that affects how the planet looks (shaders, colors, terrain, cl
 | --- | --- | --- |
 | globe | `preview/compare.png` or `preview/planet.png` | 3D relief, lighting, land on the sphere, polar caps, mesh/camera. 2×2 of longitudes 0° / 90° / 180° / 270°. |
 | equirect | `preview/equirect-compare.png` or `preview/equirect.png` | Whole-world layout, continent arrangement, wrap, climate belts, ice bands, land/ocean fraction. |
+| plates | `preview/plates-compare.png` / `preview/plates.png` and `preview/equirect-plates-compare.png` / `preview/equirect-plates.png` | Plate shapes, mixed land/ocean on a plate (darker = underwater), numbered motion arrows. |
 
-Read **both** after geography, climate, or colormap changes. Globe hides the far side; equirect hides how it reads as a planet. History: `preview/history/`, plus `preview/planet-before.png` and `preview/equirect-before.png`.
+Read **both** after geography, climate, or colormap changes. After plate or plate-motion changes, read **both plate captures**. Globe hides the far side; equirect hides how it reads as a planet. History: `preview/history/`, plus `preview/planet-before.png`, `preview/equirect-before.png`, `preview/plates-before.png`, and `preview/equirect-plates-before.png`.
 
 Do not finish visual work from code alone. Do not open the interactive app in any built-in agent browser. Leave that to the user (`bun run dev` at `http://localhost:3000`).

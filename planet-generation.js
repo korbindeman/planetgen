@@ -24,7 +24,7 @@ const INLAND_SCALE = 16;
 
 const SimplexNoise = require('simplex-noise');
 const colormap = require('./colormap');
-const {vec3, mat4, quat} = require('gl-matrix');
+const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
 
@@ -79,7 +79,16 @@ let drawMode = 'quads';
 let viewMode = 'globe';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
+let merge_ocean_plates = false;
+let connect_oceans = false;
+let previewPlateOverlay = false;
 let previewYaw = 0;
+
+function usePlateOverlay() {
+    if (viewPersistSuspended) return previewPlateOverlay;
+    return previewPlateOverlay || drawMode === 'plates';
+}
+
 let mapId = 0;
 let equirectPanX = 0;
 let equirectPanY = 0;
@@ -91,10 +100,16 @@ window.setN = newN => { N = newN; generateMesh(); };
 window.setP = newP => { P = newP; generateMap(); };
 window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
-window.setDrawMode = newMode => { drawMode = newMode; draw(); };
+window.setDrawMode = newMode => {
+    if (newMode !== 'quads' && newMode !== 'centroid' && newMode !== 'plates') return;
+    drawMode = newMode;
+    draw();
+};
 window.setViewMode = newMode => { applyViewMode(newMode); };
 window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
+window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(); };
+window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
 window.getSeed = () => seed;
 
 const renderPoints = regl({
@@ -281,18 +296,83 @@ void main() {
     },
 });
 
+const renderFlatTriangles = regl({
+    frag: `
+precision mediump float;
+varying vec3 v_rgb;
+void main() {
+   gl_FragColor = vec4(v_rgb, 1);
+}
+`,
+    vert: `
+precision mediump float;
+uniform mat4 u_projection;
+attribute vec3 a_xyz;
+attribute vec3 a_tm;
+varying vec3 v_rgb;
+void main() {
+  v_rgb = a_tm;
+  gl_Position = u_projection * vec4(a_xyz, 1);
+}
+`,
+    uniforms: {
+        u_projection: regl.prop('u_projection'),
+    },
+    count: regl.prop('count'),
+    attributes: {
+        a_xyz: regl.prop('a_xyz'),
+        a_tm: regl.prop('a_tm'),
+    },
+});
+
+const renderFlatIndexed = regl({
+    frag: `
+precision mediump float;
+varying vec3 v_rgb;
+void main() {
+   gl_FragColor = vec4(v_rgb, 1);
+}
+`,
+    vert: `
+precision mediump float;
+uniform mat4 u_projection;
+attribute vec3 a_xyz;
+attribute vec3 a_tm;
+varying vec3 v_rgb;
+void main() {
+  v_rgb = a_tm;
+  gl_Position = u_projection * vec4(a_xyz, 1);
+}
+`,
+    uniforms: {
+        u_projection: regl.prop('u_projection'),
+    },
+    elements: regl.prop('elements'),
+    attributes: {
+        a_xyz: regl.prop('a_xyz'),
+        a_tm: regl.prop('a_tm'),
+    },
+});
+
 /**********************************************************************
  * Geometry
  */
 
 let _randomNoise = new SimplexNoise(makeRandFloat(seed));
 
+function parseSeed(raw) {
+    const n = Number(String(raw).trim());
+    if (!Number.isFinite(n)) return null;
+    return n | 0;
+}
+
 function applySeed(next) {
     seed = (next | 0);
     if (seed === 0) seed = 1;
     _randomNoise = new SimplexNoise(makeRandFloat(seed));
-    const label = document.getElementById('seed-label');
-    if (label) label.textContent = String(seed);
+    const input = document.getElementById('seed-input');
+    if (input) input.value = String(seed);
+    syncSavedSeedsUI();
 }
 
 const SEED_HISTORY_MAX = 50;
@@ -322,7 +402,15 @@ function commitSeed(next) {
     syncSeedHistoryButtons();
 }
 
-window.setSeed = next => { commitSeed(next); };
+window.setSeed = next => {
+    const parsed = parseSeed(next);
+    if (parsed == null) {
+        const input = document.getElementById('seed-input');
+        if (input) input.value = String(seed);
+        return;
+    }
+    commitSeed(parsed);
+};
 window.shuffleSeed = () => {
     let next;
     do { next = (Math.random() * 0x7fffffff) | 0; } while (next === seed);
@@ -342,6 +430,153 @@ window.redoSeed = () => {
     generateMesh();
     syncSeedHistoryButtons();
 };
+
+const SAVED_SEEDS_KEY = 'planetgen.savedSeeds';
+const SAVED_SEED_NAME_MAX = 48;
+
+function readSavedSeeds() {
+    try {
+        const raw = localStorage.getItem(SAVED_SEEDS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        const seen = new Set();
+        const items = [];
+        for (const item of parsed) {
+            const parsedSeed = parseSeed(item && item.seed);
+            if (parsedSeed == null) continue;
+            const nextSeed = parsedSeed === 0 ? 1 : parsedSeed;
+            if (seen.has(nextSeed)) continue;
+            seen.add(nextSeed);
+            const name = item && typeof item.name === 'string'
+                ? item.name.trim().slice(0, SAVED_SEED_NAME_MAX)
+                : '';
+            items.push({seed: nextSeed, name});
+        }
+        return items;
+    } catch (_) {
+        return [];
+    }
+}
+
+function writeSavedSeeds(items) {
+    try {
+        localStorage.setItem(SAVED_SEEDS_KEY, JSON.stringify(items));
+    } catch (_) {
+        /* private mode / quota */
+    }
+}
+
+function renderSavedSeedsList(items) {
+    const list = document.getElementById('saved-seeds-list');
+    if (!list) return;
+    list.replaceChildren();
+    if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'saved-seeds-empty';
+        empty.textContent = 'No saved seeds';
+        list.append(empty);
+        return;
+    }
+    for (const item of items) {
+        const row = document.createElement('div');
+        row.className = 'saved-seed-row' + (item.seed === seed ? ' is-current' : '');
+
+        const load = document.createElement('button');
+        load.type = 'button';
+        load.className = 'saved-seed-item';
+        load.title = item.name ? `${item.name} (${item.seed})` : String(item.seed);
+        load.addEventListener('click', () => window.setSeed(item.seed));
+
+        const label = document.createElement('span');
+        label.className = 'saved-seed-name';
+        label.textContent = item.name || String(item.seed);
+
+        load.append(label);
+        if (item.name) {
+            const num = document.createElement('span');
+            num.className = 'saved-seed-num';
+            num.textContent = String(item.seed);
+            load.append(num);
+        }
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'saved-seed-delete';
+        del.setAttribute('aria-label', `Remove ${item.name || item.seed}`);
+        del.textContent = '×';
+        del.addEventListener('click', () => {
+            writeSavedSeeds(readSavedSeeds().filter(entry => entry.seed !== item.seed));
+            syncSavedSeedsUI();
+        });
+
+        row.append(load, del);
+        list.append(row);
+    }
+}
+
+function syncSavedSeedsUI() {
+    const items = readSavedSeeds();
+    const current = items.find(item => item.seed === seed);
+    const nameInput = document.getElementById('saved-seed-name');
+    if (nameInput && document.activeElement !== nameInput) {
+        nameInput.value = current ? current.name : '';
+    }
+    const saveBtn = document.querySelector('#saved-seeds-form button[type="submit"]');
+    if (saveBtn) saveBtn.textContent = current ? 'Update' : 'Save';
+    renderSavedSeedsList(items);
+}
+
+function positionSavedSeedsPopover() {
+    const button = document.getElementById('saved-seeds-btn');
+    const popover = document.getElementById('saved-seeds-popover');
+    if (!button || !popover) return;
+    const rect = button.getBoundingClientRect();
+    const gap = 8;
+    const width = Math.min(272, window.innerWidth - 16);
+    let left = rect.right + gap;
+    let top = rect.top;
+    if (left + width > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - width - 8);
+        top = rect.bottom + gap;
+    }
+    const maxTop = window.innerHeight - 16;
+    popover.style.width = `${width}px`;
+    popover.style.left = `${left}px`;
+    popover.style.top = `${Math.min(top, maxTop)}px`;
+    popover.style.transformOrigin = `${Math.max(0, rect.left - left)}px ${Math.max(0, rect.top - top)}px`;
+}
+
+function setupSavedSeeds() {
+    const form = document.getElementById('saved-seeds-form');
+    const popover = document.getElementById('saved-seeds-popover');
+    if (form) {
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            const nameInput = document.getElementById('saved-seed-name');
+            const name = nameInput ? nameInput.value.trim().slice(0, SAVED_SEED_NAME_MAX) : '';
+            const rest = readSavedSeeds().filter(item => item.seed !== seed);
+            writeSavedSeeds([{seed, name}, ...rest]);
+            syncSavedSeedsUI();
+        });
+    }
+    if (popover) {
+        popover.addEventListener('toggle', event => {
+            const open = event.newState === 'open';
+            document.getElementById('saved-seeds-btn')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (!open) return;
+            syncSavedSeedsUI();
+            positionSavedSeedsPopover();
+            const nameInput = document.getElementById('saved-seed-name');
+            if (nameInput) nameInput.focus();
+        });
+        window.addEventListener('resize', () => {
+            if (popover.matches(':popover-open')) positionSavedSeedsPopover();
+        });
+    }
+    syncSavedSeedsUI();
+}
+
 const persistence = 2/3;
 const amplitudes = Array.from({length: 5}, (_, octave) => Math.pow(persistence, octave));
 
@@ -511,57 +746,94 @@ function generatePlates(mesh, r_xyz) {
         }
     }
 
-    return {plate_r, r_plate};
+    // Assign a random movement vector for each plate
+    let plate_vec = [];
+    for (let center_r of plate_r) {
+        let neighbor_r = mesh.r_circulate_r([], center_r)[0];
+        let p0 = r_xyz.slice(3 * center_r, 3 * center_r + 3),
+            p1 = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
+        plate_vec[center_r] = vec3.normalize([], vec3.subtract([], p1, p0));
+    }
+
+    return {plate_r, r_plate, plate_vec};
 }
 
 
-function assignPlateMotion(mesh, r_xyz, plate_r, r_plate, plate_is_ocean) {
+/* Adjacent ocean plates become one plate so we don't get fake
+ * ocean-ocean ridges/trenches. Land plates stay as they are. */
+function mergeOceanPlates(mesh, plate_r, r_plate, plate_is_ocean) {
+    const {numRegions} = mesh;
+    const parent = new Map();
+    for (let p of plate_r) parent.set(p, p);
+
+    function find(p) {
+        let r = parent.get(p);
+        if (r !== p) {
+            r = find(r);
+            parent.set(p, r);
+        }
+        return r;
+    }
+
+    const r_out = [];
+    for (let r = 0; r < numRegions; r++) {
+        const p = r_plate[r];
+        if (!plate_is_ocean.has(p)) continue;
+        mesh.r_circulate_r(r_out, r);
+        for (let n of r_out) {
+            const q = r_plate[n];
+            if (q === p || !plate_is_ocean.has(q)) continue;
+            const a = find(p), b = find(q);
+            if (a !== b) parent.set(b, a);
+        }
+    }
+
+    const size = new Map();
+    for (let r = 0; r < numRegions; r++) {
+        const p = r_plate[r];
+        size.set(p, (size.get(p) || 0) + 1);
+    }
+    const survivor = new Map();
+    for (let p of plate_r) {
+        const root = find(p);
+        const prev = survivor.get(root);
+        if (prev == null || (size.get(p) || 0) > (size.get(prev) || 0)) {
+            survivor.set(root, p);
+        }
+    }
+
+    const remap = new Map();
+    for (let p of plate_r) remap.set(p, survivor.get(find(p)));
+    for (let r = 0; r < numRegions; r++) r_plate[r] = remap.get(r_plate[r]);
+
+    const nextPlates = new Set();
+    for (let p of plate_r) nextPlates.add(remap.get(p));
+    const nextOcean = new Set();
+    const extraOceanSeeds = [];
+    for (let p of plate_r) {
+        if (!plate_is_ocean.has(p)) continue;
+        const keep = remap.get(p);
+        nextOcean.add(keep);
+        if (p !== keep) extraOceanSeeds.push(p);
+    }
+    return {plate_r: nextPlates, plate_is_ocean: nextOcean, extraOceanSeeds};
+}
+
+
+function plateCentroids(mesh, r_xyz, plate_r, r_plate) {
     const {numRegions} = mesh;
     const centroid = [];
-    for (let center_r of plate_r) {
-        centroid[center_r] = [0, 0, 0];
-    }
+    for (let p of plate_r) centroid[p] = [0, 0, 0];
     for (let r = 0; r < numRegions; r++) {
-        let p = r_plate[r];
+        const p = r_plate[r];
         centroid[p][0] += r_xyz[3 * r];
         centroid[p][1] += r_xyz[3 * r + 1];
         centroid[p][2] += r_xyz[3 * r + 2];
     }
-    for (let center_r of plate_r) {
-        vec3.normalize(centroid[center_r], centroid[center_r]);
+    for (let p of plate_r) {
+        vec3.normalize(centroid[p], centroid[p]);
     }
-
-    const randFloat = makeRandFloat(seed + 19);
-    let oceanPole = vec3.normalize([], [
-        0.18 * (randFloat() - 0.5),
-        0.18 * (randFloat() - 0.5),
-        randFloat() < 0.5 ? 1 : -1
-    ]);
-
-    let plate_vec = [];
-    for (let center_r of plate_r) {
-        let neighbor_r = mesh.r_circulate_r([], center_r)[0];
-        let randomDir = vec3.normalize([], vec3.subtract([],
-            r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3),
-            r_xyz.slice(3 * center_r, 3 * center_r + 3)));
-        const c = centroid[center_r];
-
-        if (plate_is_ocean.has(center_r)) {
-            plate_vec[center_r] = velocityAroundPole(oceanPole, c, randomDir);
-        } else {
-            let pole = vec3.normalize([], [randFloat() - 0.5, randFloat() - 0.5, randFloat() - 0.5]);
-            plate_vec[center_r] = vec3.scale([], velocityAroundPole(pole, c, randomDir), 0.4);
-        }
-    }
-    return {plate_vec, oceanPole};
-}
-
-
-function velocityAroundPole(pole, pos, fallback) {
-    let v = vec3.cross([], pole, pos);
-    let len = vec3.length(v);
-    if (len < 1e-8) return fallback;
-    return vec3.scale([], v, 1 / len);
+    return centroid;
 }
 
 
@@ -600,131 +872,76 @@ function assignDistanceField(mesh, seeds_r, stop_r) {
 }
 
 
-/* Coastal ranges where ocean lithosphere runs into a continent (Andes).
- * Continent-continent orogeny is rare: keep only the strongest suture. */
-const COLLIDE_CO = 0.8;
-const ANDES_WIDTH = 1;
-const SUTURE_WIDTH = 1;
-const CC_MIN_CELLS = 20;
-const CC_KEEP = 36;
-function findCollisions(mesh, r_xyz, plate_is_ocean, r_plate, plate_vec, oceanPole) {
-    const deltaTime = 1e-2;
+/* Calculate the collision measure, which is the amount
+ * that any neighbor's plate vector is pushing against 
+ * the current plate vector. */
+const COLLISION_THRESHOLD = 0.75;
+function findCollisions(mesh, r_xyz, plate_is_ocean, r_plate, plate_vec) {
+    const deltaTime = 1e-2; // simulate movement
     let {numRegions} = mesh;
-    let andes_r = new Set(),
+    let mountain_r = new Set(),
         coastline_r = new Set(),
         ocean_r = new Set();
-    let ccRegions = new Map();
-    let ccScore = new Map();
     let r_out = [];
+    /* For each region, I want to know how much it's being compressed
+       into an adjacent region. The "compression" is the change in
+       distance as the two regions move. I'm looking for the adjacent
+       region from a different plate that pushes most into this one*/
     for (let current_r = 0; current_r < numRegions; current_r++) {
-        let bestCompression = -Infinity, best_r = -1;
-        let bestIncoming = -Infinity;
+        let bestCompression = Infinity, best_r = -1;
         mesh.r_circulate_r(r_out, current_r);
-        let current_pos = r_xyz.slice(3 * current_r, 3 * current_r + 3);
-        let current_plate = r_plate[current_r];
-        let currentOcean = plate_is_ocean.has(current_plate);
         for (let neighbor_r of r_out) {
-            if (current_plate === r_plate[neighbor_r]) continue;
-            let neighbor_pos = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
-            let neighbor_plate = r_plate[neighbor_r];
-            let vCurrent = currentOcean
-                ? velocityAroundPole(oceanPole, current_pos, plate_vec[current_plate])
-                : plate_vec[current_plate];
-            let vNeighbor = plate_is_ocean.has(neighbor_plate)
-                ? velocityAroundPole(oceanPole, neighbor_pos, plate_vec[neighbor_plate])
-                : plate_vec[neighbor_plate];
-            let distanceBefore = vec3.distance(current_pos, neighbor_pos),
-                distanceAfter = vec3.distance(vec3.add([], current_pos, vec3.scale([], vCurrent, deltaTime)),
-                                              vec3.add([], neighbor_pos, vec3.scale([], vNeighbor, deltaTime)));
-            let compression = distanceBefore - distanceAfter;
-            if (compression > bestCompression) {
-                best_r = neighbor_r;
-                bestCompression = compression;
-            }
-            if (!currentOcean && plate_is_ocean.has(neighbor_plate)) {
-                let towardLand = vec3.normalize([], vec3.subtract([], current_pos, neighbor_pos));
-                let incoming = vec3.dot(vNeighbor, towardLand);
-                if (incoming > bestIncoming) bestIncoming = incoming;
-            }
-        }
-        if (best_r === -1) continue;
-        let best_plate = r_plate[best_r];
-        let neighborOcean = plate_is_ocean.has(best_plate);
-        if (currentOcean && neighborOcean) {
-            ocean_r.add(current_r);
-        } else if (!currentOcean && !neighborOcean) {
-            if (bestCompression > 0) {
-                let key = current_plate < best_plate
-                    ? current_plate + ':' + best_plate
-                    : best_plate + ':' + current_plate;
-                if (!ccRegions.has(key)) {
-                    ccRegions.set(key, []);
-                    ccScore.set(key, 0);
+            if (r_plate[current_r] !== r_plate[neighbor_r]) {
+                /* sometimes I regret storing xyz in a compact array... */
+                let current_pos = r_xyz.slice(3 * current_r, 3 * current_r + 3),
+                    neighbor_pos = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
+                /* simulate movement for deltaTime seconds */
+                let distanceBefore = vec3.distance(current_pos, neighbor_pos),
+                    distanceAfter = vec3.distance(vec3.add([], current_pos, vec3.scale([], plate_vec[r_plate[current_r]], deltaTime)),
+                                                  vec3.add([], neighbor_pos, vec3.scale([], plate_vec[r_plate[neighbor_r]], deltaTime)));
+                /* how much closer did these regions get to each other? */
+                let compression = distanceBefore - distanceAfter;
+                /* keep track of the adjacent region that gets closest */
+                // TODO: shouldn't this be > ? need to re-tune all the parameters for the page after changing this
+                if (compression < bestCompression) {
+                    best_r = neighbor_r;
+                    bestCompression = compression;
                 }
-                ccRegions.get(key).push({r: current_r, compression: bestCompression});
-                ccScore.set(key, ccScore.get(key) + bestCompression);
             }
-        } else if (!currentOcean) {
-            if (bestIncoming > COLLIDE_CO) andes_r.add(current_r);
-            else coastline_r.add(current_r);
-        } else {
-            coastline_r.add(current_r);
+        }
+        if (best_r !== -1) {
+            /* at this point, bestCompression tells us how much closer
+               we are getting to the region that's pushing into us the most */
+            let collided = bestCompression > COLLISION_THRESHOLD * deltaTime;
+            let current_plate = r_plate[current_r],
+                best_plate = r_plate[best_r];
+            if (plate_is_ocean.has(current_plate) && plate_is_ocean.has(best_plate)) {
+                (collided? coastline_r : ocean_r).add(current_r);
+            } else if (!plate_is_ocean.has(current_plate) && !plate_is_ocean.has(best_plate)) {
+                if (collided) mountain_r.add(current_plate);
+            } else {
+                (collided? mountain_r : coastline_r).add(current_r);
+            }
         }
     }
-
-    let suture_r = new Set();
-    let bestKey = null, bestScore = 0;
-    for (let [key, score] of ccScore) {
-        if (score > bestScore) {
-            bestScore = score;
-            bestKey = key;
-        }
-    }
-    if (bestKey && ccRegions.get(bestKey).length >= CC_MIN_CELLS) {
-        let cells = ccRegions.get(bestKey).slice().sort((a, b) => b.compression - a.compression);
-        let keep = Math.min(CC_KEEP, cells.length);
-        for (let i = 0; i < keep; i++) suture_r.add(cells[i].r);
-    }
-    return {andes_r, suture_r, coastline_r, ocean_r};
+    return {mountain_r, coastline_r, ocean_r};
 }
 
 
-function expandOnContinent(mesh, seeds, r_plate, plate_is_ocean, hops) {
-    let out_r = new Set(seeds);
-    let r_out = [];
-    let frontier = Array.from(seeds);
-    for (let h = 0; h < hops; h++) {
-        let next = [];
-        for (let r of frontier) {
-            mesh.r_circulate_r(r_out, r);
-            for (let n of r_out) {
-                if (out_r.has(n) || plate_is_ocean.has(r_plate[n])) continue;
-                out_r.add(n);
-                next.push(n);
-            }
-        }
-        frontier = next;
-    }
-    return out_r;
-}
-
-
-function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec, oceanPole, /* out */ r_elevation}) {
+function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec, extra_ocean_seeds, /* out */ r_elevation}) {
     const epsilon = 1e-3;
     let {numRegions} = mesh;
 
-    let {andes_r, suture_r, coastline_r, ocean_r} = findCollisions(
-        mesh, r_xyz, plate_is_ocean, r_plate, plate_vec, oceanPole);
-    andes_r = expandOnContinent(mesh, andes_r, r_plate, plate_is_ocean, ANDES_WIDTH);
-    suture_r = expandOnContinent(mesh, suture_r, r_plate, plate_is_ocean, SUTURE_WIDTH);
-
-    let mountain_r = new Set(andes_r);
-    for (let r of suture_r) mountain_r.add(r);
+    let {mountain_r, coastline_r, ocean_r} = findCollisions(
+        mesh, r_xyz, plate_is_ocean, r_plate, plate_vec);
 
     for (let r = 0; r < numRegions; r++) {
         if (r_plate[r] === r) {
             (plate_is_ocean.has(r)? ocean_r : coastline_r).add(r);
         }
+    }
+    if (extra_ocean_seeds) {
+        for (let r of extra_ocean_seeds) ocean_r.add(r);
     }
 
     let stop_r = new Set();
@@ -732,65 +949,158 @@ function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec,
     for (let r of coastline_r) { stop_r.add(r); }
     for (let r of ocean_r) { stop_r.add(r); }
 
-    console.log('seeds andes/suture/coastline/ocean:', andes_r.size, suture_r.size, coastline_r.size, ocean_r.size, 'plate_is_ocean', plate_is_ocean.size,'/', P);
+    console.log('seeds mountain/coastline/ocean:', mountain_r.size, coastline_r.size, ocean_r.size, 'plate_is_ocean', plate_is_ocean.size,'/', P);
     let r_distance_a = assignDistanceField(mesh, mountain_r, ocean_r);
     let r_distance_b = assignDistanceField(mesh, ocean_r, coastline_r);
     let r_distance_c = assignDistanceField(mesh, coastline_r, stop_r);
-    let r_distance_suture = assignDistanceField(mesh, suture_r, ocean_r);
 
     for (let r = 0; r < numRegions; r++) {
-        let da = r_distance_a[r];
-        let a = Math.pow((da === Infinity ? 80 : da) + epsilon, 2.25),
+        let a = r_distance_a[r] + epsilon,
             b = r_distance_b[r] + epsilon,
             c = r_distance_c[r] + epsilon;
-        if (da === Infinity && r_distance_b[r] === Infinity) {
+        if (a === Infinity && b === Infinity) {
             r_elevation[r] = 0.1;
         } else {
             r_elevation[r] = (1/a - 1/b) / (1/a + 1/b + 1/c);
-            if (da !== Infinity) {
-                r_elevation[r] += 0.16 * Math.exp(-(da * da) / 5.5);
-            }
         }
-        let ds = r_distance_suture[r];
-        if (ds !== Infinity) {
-            r_elevation[r] += 0.12 * Math.exp(-(ds * ds) / 6.5);
-        }
-        if (r_elevation[r] > 0.62) {
-            r_elevation[r] = 0.62 + 0.28 * (r_elevation[r] - 0.62);
-        }
-        if (!plate_is_ocean.has(r_plate[r])) {
-            r_elevation[r] = Math.max(r_elevation[r], 0.15);
-        }
-        r_elevation[r] += 0.06 * fbm_noise(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
+        r_elevation[r] += 0.1 * fbm_noise(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
     }
-
-    flattenOceanBathymetry(mesh, {r_xyz, r_plate, plate_is_ocean, r_elevation, mountain_r});
 }
 
 
-const ABYSS = -0.4;
-const SHELF_WIDTH = 8;
+const STRAIT = -0.05;
+const LAKE_FILL = 0.08;
 
-function flattenOceanBathymetry(mesh, {r_xyz, r_plate, plate_is_ocean, r_elevation, mountain_r}) {
+function labelOceanComponents(mesh, r_elevation) {
     const {numRegions} = mesh;
-    const land_r = new Set();
+    const comp = new Int32Array(numRegions);
+    comp.fill(-1);
+    const r_out = [];
+    const sizes = [];
+    let ncomp = 0;
+    for (let s = 0; s < numRegions; s++) {
+        if (r_elevation[s] >= 0 || comp[s] !== -1) continue;
+        const q = [s];
+        comp[s] = ncomp;
+        let sz = 1;
+        for (let i = 0; i < q.length; i++) {
+            mesh.r_circulate_r(r_out, q[i]);
+            for (let n of r_out) {
+                if (r_elevation[n] < 0 && comp[n] === -1) {
+                    comp[n] = ncomp;
+                    q.push(n);
+                    sz++;
+                }
+            }
+        }
+        sizes.push(sz);
+        ncomp++;
+    }
+    let main = 0;
+    for (let i = 1; i < ncomp; i++) {
+        if (sizes[i] > sizes[main]) main = i;
+    }
+    return {comp, ncomp, sizes, main};
+}
+
+function heapPush(h, node) {
+    h.push(node);
+    let i = h.length - 1;
+    while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (h[p].key <= h[i].key) break;
+        const t = h[p];
+        h[p] = h[i];
+        h[i] = t;
+        i = p;
+    }
+}
+
+function heapPop(h) {
+    const out = h[0];
+    const last = h.pop();
+    if (!h.length) return out;
+    h[0] = last;
+    let i = 0;
+    for (;;) {
+        const l = i * 2 + 1, rgt = l + 1;
+        let s = i;
+        if (l < h.length && h[l].key < h[s].key) s = l;
+        if (rgt < h.length && h[rgt].key < h[s].key) s = rgt;
+        if (s === i) break;
+        const t = h[s];
+        h[s] = h[i];
+        h[i] = t;
+        i = s;
+    }
+    return out;
+}
+
+/* Make every below-sea-level cell part of one world ocean: fill tiny
+ * inland seas, punch a shallow strait through the lowest saddle between
+ * large basins. */
+function connectWorldOcean(mesh, r_elevation) {
+    const {numRegions} = mesh;
+    let labeled = labelOceanComponents(mesh, r_elevation);
+    if (labeled.ncomp <= 1) return;
+
+    const fillMax = Math.max(36, (labeled.sizes[labeled.main] * 0.08) | 0);
     for (let r = 0; r < numRegions; r++) {
-        const oceanPlate = plate_is_ocean.has(r_plate[r]);
-        if (r_elevation[r] >= 0 && (!oceanPlate || mountain_r.has(r))) {
-            land_r.add(r);
+        const c = labeled.comp[r];
+        if (c >= 0 && c !== labeled.main && labeled.sizes[c] <= fillMax) {
+            r_elevation[r] = LAKE_FILL;
         }
     }
-    if (land_r.size === 0) return;
 
-    const r_dist = assignDistanceField(mesh, land_r, new Set());
-    for (let r = 0; r < numRegions; r++) {
-        if (land_r.has(r)) continue;
-        const d = r_dist[r];
-        let t = (d === Infinity) ? 1 : Math.min(1, d / SHELF_WIDTH);
-        t = t * t * (3 - 2 * t);
-        const n = 0.02 * _randomNoise.noise3D(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
-        r_elevation[r] = ABYSS * t + n;
-        if (r_elevation[r] >= 0) r_elevation[r] = -0.02;
+    const r_out = [];
+    for (let guard = 0; guard < 24; guard++) {
+        labeled = labelOceanComponents(mesh, r_elevation);
+        if (labeled.ncomp <= 1) return;
+        const {comp, main} = labeled;
+
+        const d = new Float32Array(numRegions);
+        d.fill(Infinity);
+        const parent = new Int32Array(numRegions);
+        parent.fill(-1);
+        const heap = [];
+        for (let r = 0; r < numRegions; r++) {
+            if (comp[r] === main) {
+                d[r] = -1;
+                heapPush(heap, {r, key: -1});
+            }
+        }
+
+        let hit = -1;
+        while (heap.length) {
+            const {r, key} = heapPop(heap);
+            if (key > d[r]) continue;
+            if (comp[r] >= 0 && comp[r] !== main) {
+                hit = r;
+                break;
+            }
+            mesh.r_circulate_r(r_out, r);
+            for (let n of r_out) {
+                const step = r_elevation[n] < 0 ? d[r] : Math.max(d[r], r_elevation[n]);
+                if (step < d[n]) {
+                    d[n] = step;
+                    parent[n] = r;
+                    heapPush(heap, {r: n, key: step});
+                }
+            }
+        }
+        if (hit < 0) return;
+
+        let p = hit;
+        let carved = false;
+        while (p !== -1) {
+            if (r_elevation[p] >= 0) {
+                r_elevation[p] = STRAIT;
+                carved = true;
+            }
+            if (comp[p] === main) break;
+            p = parent[p];
+        }
+        if (!carved) return;
     }
 }
 
@@ -934,23 +1244,94 @@ function generateMap() {
     let result = generatePlates(mesh, map.r_xyz);
     map.plate_r = result.plate_r;
     map.r_plate = result.r_plate;
+    map.plate_vec = result.plate_vec;
     map.plate_is_ocean = new Set();
     for (let r of map.plate_r) {
         if (makeRandInt(r)(10) < 5) {
             map.plate_is_ocean.add(r);
         }
     }
-    let motion = assignPlateMotion(mesh, map.r_xyz, map.plate_r, map.r_plate, map.plate_is_ocean);
-    map.plate_vec = motion.plate_vec;
-    map.oceanPole = motion.oceanPole;
+    if (merge_ocean_plates) {
+        let merged = mergeOceanPlates(mesh, map.plate_r, map.r_plate, map.plate_is_ocean);
+        map.plate_r = merged.plate_r;
+        map.plate_is_ocean = merged.plate_is_ocean;
+        map.extra_ocean_seeds = merged.extraOceanSeeds;
+    } else {
+        map.extra_ocean_seeds = [];
+    }
+    map.plate_centroid = plateCentroids(mesh, map.r_xyz, map.plate_r, map.r_plate);
     assignRegionElevation(mesh, map);
+    if (connect_oceans) connectWorldOcean(mesh, map.r_elevation);
     assignClimate(mesh, map);
     assignTriangleValues(mesh, map);
 
     quadGeometry.setMap(mesh, map);
+    const indexed = plateIndexOf(map.plate_r);
+    map.plate_ids = indexed.ids;
+    map.plate_index = indexed.indexOf;
+    plateColorTm = buildPlateColorTm(mesh, map);
     mapId++;
     equirectCache = null;
     draw();
+}
+
+let plateColorTm = null;
+
+function hsvRgb(h, s, v) {
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = v * (1 - s);
+    const q = v * (1 - f * s);
+    const t = v * (1 - (1 - f) * s);
+    switch (i % 6) {
+        case 0: return [v, t, p];
+        case 1: return [q, v, p];
+        case 2: return [p, v, t];
+        case 3: return [p, q, v];
+        case 4: return [t, p, v];
+        default: return [v, p, q];
+    }
+}
+
+function plateIndexOf(plate_r) {
+    const ids = Array.from(plate_r);
+    const indexOf = new Map();
+    for (let i = 0; i < ids.length; i++) indexOf.set(ids[i], i);
+    return {ids, indexOf};
+}
+
+function colorForPlate(index, ocean) {
+    const h = (index * 0.618033988749895) % 1;
+    return hsvRgb(h, ocean ? 0.5 : 0.58, ocean ? 0.48 : 0.94);
+}
+
+function plateColorForRegion(r) {
+    const i = map.plate_index.get(map.r_plate[r]) || 0;
+    return colorForPlate(i, map.r_elevation[r] < 0);
+}
+
+function buildPlateColorTm(mesh, {r_plate, r_elevation, plate_index}) {
+    const {numRegions, numTriangles} = mesh;
+    const rgb = new Float32Array(3 * (numRegions + numTriangles));
+    const regionColor = [];
+    for (let r = 0; r < numRegions; r++) {
+        const c = colorForPlate(plate_index.get(r_plate[r]) || 0, r_elevation[r] < 0);
+        regionColor[r] = c;
+        rgb[3 * r] = c[0];
+        rgb[3 * r + 1] = c[1];
+        rgb[3 * r + 2] = c[2];
+    }
+    for (let t = 0; t < numTriangles; t++) {
+        const r1 = mesh.s_begin_r(3 * t),
+            r2 = mesh.s_begin_r(3 * t + 1),
+            r3 = mesh.s_begin_r(3 * t + 2);
+        const a = regionColor[r1], b = regionColor[r2], c = regionColor[r3];
+        const p = 3 * (numRegions + t);
+        rgb[p] = (a[0] + b[0] + c[0]) / 3;
+        rgb[p + 1] = (a[1] + b[1] + c[1]) / 3;
+        rgb[p + 2] = (a[2] + b[2] + c[2]) / 3;
+    }
+    return rgb;
 }
 
 
@@ -977,6 +1358,7 @@ function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_vec}) {
 
 function drawPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     let line_xyz = [], line_rgba = [];
+    const ink = usePlateOverlay() ? [0.06, 0.06, 0.08, 1] : [1, 1, 1, 1];
     for (let s = 0; s < mesh.numSides; s++) {
         let begin_r = mesh.s_begin_r(s),
             end_r = mesh.s_end_r(s);
@@ -985,7 +1367,7 @@ function drawPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
                 outer_t = mesh.s_outer_t(s);
             line_xyz.push(t_xyz.slice(3 * inner_t, 3 * inner_t + 3),
                           t_xyz.slice(3 * outer_t, 3 * outer_t + 3));
-            line_rgba.push([1, 1, 1, 1], [1, 1, 1, 1]);
+            line_rgba.push(ink, ink);
         }
     }
     renderLines({
@@ -1291,10 +1673,19 @@ function rColorFn(r) {
 }
 
 function getEquirectSurfaceGeometry() {
-    const key = `${drawMode}:${mapId}`;
+    const overlay = usePlateOverlay();
+    const meshMode = drawMode === 'centroid' ? 'centroid' : 'quads';
+    const key = `${meshMode}:${mapId}:${overlay ? 'plates' : 'surf'}`;
     if (equirectCache && equirectCache.key === key) return equirectCache.geo;
     let geo;
-    if (drawMode === 'centroid') {
+    if (overlay) {
+        if (drawMode === 'centroid') {
+            const raw = generateVoronoiGeometry(mesh, map, plateColorForRegion);
+            geo = buildEquirectTriangles(raw.xyz, raw.tm, null);
+        } else {
+            geo = buildEquirectTriangles(quadGeometry.xyz, plateColorTm, quadGeometry.I);
+        }
+    } else if (drawMode === 'centroid') {
         const raw = generateVoronoiGeometry(mesh, map, rColorFn);
         geo = buildEquirectTriangles(raw.xyz, raw.tm, null);
     } else {
@@ -1355,7 +1746,7 @@ function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plate_vec
 
 function drawEquirectPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     let line_xyz = [], line_rgba = [];
-    const white = [1, 1, 1, 1];
+    const ink = usePlateOverlay() ? [0.06, 0.06, 0.08, 1] : [1, 1, 1, 1];
     for (let s = 0; s < mesh.numSides; s++) {
         const begin_r = mesh.s_begin_r(s),
             end_r = mesh.s_end_r(s);
@@ -1366,7 +1757,7 @@ function drawEquirectPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
                 line_xyz, line_rgba,
                 t_xyz[3 * inner_t], t_xyz[3 * inner_t + 1], t_xyz[3 * inner_t + 2],
                 t_xyz[3 * outer_t], t_xyz[3 * outer_t + 1], t_xyz[3 * outer_t + 2],
-                white, white
+                ink, ink
             );
         }
     }
@@ -1382,27 +1773,14 @@ function drawEquirectPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
 
 function drawEquirect() {
     const geo = getEquirectSurfaceGeometry();
+    const overlay = usePlateOverlay();
     for (const xshift of [-2, 0, 2]) {
         const u_projection = equirectProjection(xshift);
-        if (drawMode === 'centroid') {
-            renderTriangles({
-                u_projection,
-                a_xyz: geo.xyz,
-                a_tm: geo.tm,
-                count: geo.count,
-            });
-        } else {
-            renderIndexedTriangles({
-                u_projection,
-                a_xyz: geo.xyz,
-                a_tm: geo.tm,
-                elements: sequentialElements(geo.count),
-            });
-        }
-        if (draw_plateVectors) {
+        drawSurface(u_projection, geo.xyz, geo.tm, geo.count);
+        if (!overlay && draw_plateVectors) {
             drawEquirectPlateVectors(u_projection, mesh, map);
         }
-        if (draw_plateBoundaries) {
+        if (overlay || draw_plateBoundaries) {
             drawEquirectPlateBoundaries(u_projection, mesh, map);
         }
     }
@@ -1459,6 +1837,7 @@ function restoreViewState() {
 
 function finishDraw() {
     _draw_pending = false;
+    if (!viewPersistSuspended) paintLivePlateOverlay();
     persistViewState();
     if (!window.__PLANET_READY__) {
         window.__PLANET_READY__ = true;
@@ -1466,14 +1845,30 @@ function finishDraw() {
 }
 
 let _draw_pending = false;
+function globeProjectionMatrix() {
+    let u_projection = mat4.create();
+    mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5]);
+    mat4.multiply(u_projection, u_projection, dragRotation);
+    applyGlobeOrientation(u_projection);
+    return u_projection;
+}
+
+function drawSurface(u_projection, xyz, tm, count) {
+    const overlay = usePlateOverlay();
+    if (drawMode === 'centroid') {
+        const cmd = overlay ? renderFlatTriangles : renderTriangles;
+        cmd({u_projection, a_xyz: xyz, a_tm: tm, count});
+        return;
+    }
+    const elements = count == null ? quadGeometry.I : sequentialElements(count);
+    const cmd = overlay ? renderFlatIndexed : renderIndexedTriangles;
+    cmd({u_projection, a_xyz: xyz, a_tm: tm, elements});
+}
+
 function _draw() {
     regl.poll();
     regl.clear({ color: [0, 0, 0, 0], depth: 1 });
-    let u_pointsize = 0.1 + 100 / Math.sqrt(N);
-    let u_projection = mat4.create();
-    mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5, 1]); // avoid clipping
-    mat4.multiply(u_projection, u_projection, dragRotation);
-    applyGlobeOrientation(u_projection);
+    let u_projection = globeProjectionMatrix();
 
     if (viewMode === 'equirect') {
         drawEquirect();
@@ -1481,33 +1876,22 @@ function _draw() {
         return;
     }
 
-    function r_color_fn(r) {
-        return [map.r_elevation[r], map.r_moisture[r], map.r_temperature[r]];
-    }
-
+    const overlay = usePlateOverlay();
     if (drawMode === 'centroid') {
-        let triangleGeometry = generateVoronoiGeometry(mesh, map, r_color_fn);
-        renderTriangles({
-            u_projection,
-            a_xyz: triangleGeometry.xyz,
-            a_tm: triangleGeometry.tm,
-            count: triangleGeometry.xyz.length / 3,
-        });
-    } else if (drawMode === 'quads') {
-        renderIndexedTriangles({
-            u_projection,
-            a_xyz: quadGeometry.xyz,
-            a_tm: quadGeometry.tm,
-            elements: quadGeometry.I,
-        });
+        const colorFn = overlay ? plateColorForRegion : rColorFn;
+        let triangleGeometry = generateVoronoiGeometry(mesh, map, colorFn);
+        drawSurface(u_projection, triangleGeometry.xyz, triangleGeometry.tm, triangleGeometry.xyz.length / 3);
+    } else {
+        const tm = overlay ? plateColorTm : quadGeometry.tm;
+        drawSurface(u_projection, quadGeometry.xyz, tm);
     }
 
-    drawNorthPole(u_projection);
-    
-    if (draw_plateVectors) {
+    if (!overlay) drawNorthPole(u_projection);
+
+    if (!overlay && draw_plateVectors) {
         drawPlateVectors(u_projection, mesh, map);
     }
-    if (draw_plateBoundaries) {
+    if (overlay || draw_plateBoundaries) {
         drawPlateBoundaries(u_projection, mesh, map);
     }
 
@@ -1516,13 +1900,595 @@ function _draw() {
         rose.style.transform = `rotate(${northHeading() * 180 / Math.PI}deg)`;
     }
     
-    // renderPoints({
-    //     u_projection,
-    //     u_pointsize,
-    //     a_xyz: map.r_xyz,
-    //     count: mesh.numRegions,
-    // });
     finishDraw();
+}
+
+/**********************************************************************
+ * Terrain Diffusion handoff
+ *
+ * Samples the sphere onto an equirectangular grid and converts
+ * planetgen units into the five GeoTIFF channels that
+ * `python -m terrain_diffusion … tiff-export` expects.
+ * Sketches, not a finished DEM: the coarse model is supposed to
+ * rewrite local shape. Regional mid-latitude crops are the actual
+ * inputs; a full-planet tiff-export at 23 km/px is hundreds of
+ * gigapixels after the 256× upsample.
+ */
+
+const TD_LAND_PEAK_M = 5500;
+const TD_LAND_POWER = 1.35;
+const TD_OCEAN_DEPTH_M = 4200;
+const TD_OCEAN_POWER = 1.4;
+const TD_TEMP_SCALE = 40;
+const TD_TEMP_OFFSET = -15;
+const TD_PRECIP_MIN = 60;
+const TD_PRECIP_RANGE = 3400;
+const TD_PRECIP_POWER = 1.55;
+const TD_EARTH_KM = 40075.017;
+
+function elevationToMeters(e) {
+    if (e >= 0) return TD_LAND_PEAK_M * Math.pow(e, TD_LAND_POWER);
+    return -TD_OCEAN_DEPTH_M * Math.pow(-e, TD_OCEAN_POWER);
+}
+
+function temperatureToC(t) {
+    return Math.max(-40, Math.min(40, TD_TEMP_SCALE * t + TD_TEMP_OFFSET));
+}
+
+function moistureToPrecipMm(m) {
+    return TD_PRECIP_MIN + TD_PRECIP_RANGE * Math.pow(clamp01(m), TD_PRECIP_POWER);
+}
+
+function temperatureStdC(moisture, elevationM, latRad) {
+    const mid = Math.sin(2 * Math.abs(latRad));
+    const inland = elevationM >= 0 ? (1 - clamp01(moisture)) : 0.12;
+    return 2.4 + 14 * mid * mid * (0.35 + 0.65 * inland);
+}
+
+function precipitationCvPct(moisture, latRad) {
+    const dry = 1 - clamp01(moisture);
+    const seasonal = 0.45 + 0.55 * Math.abs(Math.sin(2 * latRad));
+    return 16 + 58 * dry * seasonal;
+}
+
+function f32ToB64(arr) {
+    const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    const chunk = 0x8000;
+    let s = '';
+    for (let i = 0; i < u8.length; i += chunk) {
+        s += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+    }
+    return btoa(s);
+}
+
+function lonLatOfRegion(r, lon0) {
+    const x = map.r_xyz[3 * r], y = map.r_xyz[3 * r + 1], z = map.r_xyz[3 * r + 2];
+    let lon = Math.atan2(y, x) - lon0;
+    while (lon < -PI) lon += TWO_PI;
+    while (lon > PI) lon -= TWO_PI;
+    const lat = Math.asin(Math.max(-1, Math.min(1, z)));
+    return {lon, lat, e: map.r_elevation[r], m: map.r_moisture[r], t: map.r_temperature[r]};
+}
+
+function unwrapTriangleLons(a, b, c) {
+    const pts = [
+        {lon: a.lon, lat: a.lat, e: a.e, m: a.m, t: a.t},
+        {lon: b.lon, lat: b.lat, e: b.e, m: b.m, t: b.t},
+        {lon: c.lon, lat: c.lat, e: c.e, m: c.m, t: c.t},
+    ];
+    for (let i = 1; i < 3; i++) {
+        while (pts[i].lon - pts[0].lon > PI) pts[i].lon -= TWO_PI;
+        while (pts[0].lon - pts[i].lon > PI) pts[i].lon += TWO_PI;
+    }
+    return pts;
+}
+
+function rasterizeTriangle(elev, moist, temp, filled, width, height, toPixel, a, b, c) {
+    const pa = toPixel(a), pb = toPixel(b), pc = toPixel(c);
+    const minX = Math.max(0, Math.floor(Math.min(pa.x, pb.x, pc.x)));
+    const maxX = Math.min(width - 1, Math.ceil(Math.max(pa.x, pb.x, pc.x)));
+    const minY = Math.max(0, Math.floor(Math.min(pa.y, pb.y, pc.y)));
+    const maxY = Math.min(height - 1, Math.ceil(Math.max(pa.y, pb.y, pc.y)));
+    if (maxX < minX || maxY < minY) return;
+
+    const v0x = pb.x - pa.x, v0y = pb.y - pa.y;
+    const v1x = pc.x - pa.x, v1y = pc.y - pa.y;
+    const den = v0x * v1y - v1x * v0y;
+    if (Math.abs(den) < 1e-12) return;
+
+    for (let y = minY; y <= maxY; y++) {
+        const py = y + 0.5;
+        for (let x = minX; x <= maxX; x++) {
+            const px = x + 0.5;
+            const v2x = px - pa.x, v2y = py - pa.y;
+            const v = (v2x * v1y - v1x * v2y) / den;
+            const w = (v0x * v2y - v2x * v0y) / den;
+            const u = 1 - v - w;
+            if (u < -1e-4 || v < -1e-4 || w < -1e-4) continue;
+            const i = y * width + x;
+            elev[i] = u * a.e + v * b.e + w * c.e;
+            moist[i] = u * a.m + v * b.m + w * c.m;
+            temp[i] = u * a.t + v * b.t + w * c.t;
+            filled[i] = 1;
+        }
+    }
+}
+
+function fillRasterHoles(elev, moist, temp, filled, width, height) {
+    const q = [];
+    for (let i = 0; i < filled.length; i++) {
+        if (filled[i]) q.push(i);
+    }
+    if (!q.length) return;
+    const dirs = [-1, 1, -width, width];
+    for (let qi = 0; qi < q.length; qi++) {
+        const i = q[qi];
+        const x = i % width;
+        for (const d of dirs) {
+            if (d === -1 && x === 0) continue;
+            if (d === 1 && x === width - 1) continue;
+            const n = i + d;
+            if (n < 0 || n >= filled.length || filled[n]) continue;
+            elev[n] = elev[i];
+            moist[n] = moist[i];
+            temp[n] = temp[i];
+            filled[n] = 1;
+            q.push(n);
+        }
+    }
+}
+
+function rasterizeSphereGrid(width, height, toPixel, lon0, wrapShifts) {
+    const elev = new Float32Array(width * height);
+    const moist = new Float32Array(width * height);
+    const temp = new Float32Array(width * height);
+    const filled = new Uint8Array(width * height);
+    const {numTriangles} = mesh;
+    for (let t = 0; t < numTriangles; t++) {
+        const r1 = mesh.s_begin_r(3 * t);
+        const r2 = mesh.s_begin_r(3 * t + 1);
+        const r3 = mesh.s_begin_r(3 * t + 2);
+        const tri = unwrapTriangleLons(
+            lonLatOfRegion(r1, lon0),
+            lonLatOfRegion(r2, lon0),
+            lonLatOfRegion(r3, lon0),
+        );
+        const minL = Math.min(tri[0].lon, tri[1].lon, tri[2].lon);
+        const maxL = Math.max(tri[0].lon, tri[1].lon, tri[2].lon);
+        const shifts = wrapShifts(minL, maxL);
+        for (const shift of shifts) {
+            const a = {lon: tri[0].lon + shift, lat: tri[0].lat, e: tri[0].e, m: tri[0].m, t: tri[0].t};
+            const b = {lon: tri[1].lon + shift, lat: tri[1].lat, e: tri[1].e, m: tri[1].m, t: tri[1].t};
+            const c = {lon: tri[2].lon + shift, lat: tri[2].lat, e: tri[2].e, m: tri[2].m, t: tri[2].t};
+            rasterizeTriangle(elev, moist, temp, filled, width, height, toPixel, a, b, c);
+        }
+    }
+    fillRasterHoles(elev, moist, temp, filled, width, height);
+    return {elev, moist, temp, width, height};
+}
+
+function rasterizeEquirect(width, height, lon0) {
+    return rasterizeSphereGrid(width, height, (p) => ({
+        x: (p.lon + PI) / TWO_PI * width,
+        y: (PI / 2 - p.lat) / PI * height,
+    }), lon0, (minL, maxL) => {
+        const shifts = [0];
+        if (minL < -PI) shifts.push(TWO_PI);
+        if (maxL > PI) shifts.push(-TWO_PI);
+        return shifts;
+    });
+}
+
+function rasterizeLonLatBox(westDeg, southDeg, eastDeg, northDeg, width, height, lon0) {
+    const west = westDeg * PI / 180;
+    const east = eastDeg * PI / 180;
+    const south = southDeg * PI / 180;
+    const north = northDeg * PI / 180;
+    const lonSpan = east - west;
+    const latSpan = north - south;
+    return rasterizeSphereGrid(width, height, (p) => ({
+        x: (p.lon - west) / lonSpan * width,
+        y: (north - p.lat) / latSpan * height,
+    }), lon0, (minL, maxL) => {
+        const shifts = [0];
+        if (minL < west) shifts.push(TWO_PI);
+        if (maxL > east) shifts.push(-TWO_PI);
+        return shifts;
+    });
+}
+
+function latOfRow(y, height) {
+    return (PI / 2) - (y + 0.5) / height * PI;
+}
+
+function fieldsToTdLayers(fields, width, height, latAtRow) {
+    const n = width * height;
+    const heightmap = new Float32Array(n);
+    const temperature = new Float32Array(n);
+    const temperatureStd = new Float32Array(n);
+    const precipitation = new Float32Array(n);
+    const precipitationCv = new Float32Array(n);
+    const rowLat = latAtRow || ((y) => latOfRow(y, height));
+    for (let y = 0; y < height; y++) {
+        const lat = rowLat(y);
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            const eM = elevationToMeters(fields.elev[i]);
+            const tC = temperatureToC(fields.temp[i]);
+            const m = fields.moist[i];
+            heightmap[i] = eM;
+            temperature[i] = tC;
+            temperatureStd[i] = temperatureStdC(m, eM, lat);
+            precipitation[i] = moistureToPrecipMm(m);
+            precipitationCv[i] = precipitationCvPct(m, lat);
+        }
+    }
+    return {
+        heightmap,
+        temperature,
+        temperature_std: temperatureStd,
+        precipitation,
+        precipitation_cv: precipitationCv,
+        width,
+        height,
+    };
+}
+
+function encodeTdLayers(layers) {
+    return {
+        width: layers.width,
+        height: layers.height,
+        heightmap: f32ToB64(layers.heightmap),
+        temperature: f32ToB64(layers.temperature),
+        temperature_std: f32ToB64(layers.temperature_std),
+        precipitation: f32ToB64(layers.precipitation),
+        precipitation_cv: f32ToB64(layers.precipitation_cv),
+    };
+}
+
+function windowStats(layers, x0, y0, winW, winH) {
+    const {width, height, heightmap, temperature, precipitation} = layers;
+    let land = 0, coast = 0, n = 0;
+    let eSum = 0, eSum2 = 0, eMin = Infinity, eMax = -Infinity;
+    let tMin = Infinity, tMax = -Infinity, pMin = Infinity, pMax = -Infinity;
+    for (let y = y0; y < y0 + winH; y++) {
+        for (let x = x0; x < x0 + winW; x++) {
+            const i = y * width + x;
+            const e = heightmap[i];
+            n++;
+            if (e >= 0) {
+                land++;
+                eSum += e;
+                eSum2 += e * e;
+                if (e < eMin) eMin = e;
+                if (e > eMax) eMax = e;
+            }
+            const t = temperature[i];
+            if (t < tMin) tMin = t;
+            if (t > tMax) tMax = t;
+            const p = precipitation[i];
+            if (p < pMin) pMin = p;
+            if (p > pMax) pMax = p;
+            const left = x > 0 && heightmap[i - 1] >= 0;
+            const right = x + 1 < width && heightmap[i + 1] >= 0;
+            const up = y > 0 && heightmap[i - width] >= 0;
+            const down = y + 1 < height && heightmap[i + width] >= 0;
+            const here = e >= 0;
+            if (here !== left || here !== right || here !== up || here !== down) coast++;
+        }
+    }
+    const landFrac = land / n;
+    const mean = land ? eSum / land : 0;
+    const elevStd = land > 1 ? Math.sqrt(Math.max(0, eSum2 / land - mean * mean)) : 0;
+    return {
+        x: x0,
+        y: y0,
+        landFrac,
+        coastFrac: coast / n,
+        elevStd,
+        elevRange: land ? eMax - eMin : 0,
+        tempRange: tMax - tMin,
+        precipRange: pMax - pMin,
+    };
+}
+
+function pickTdCrops(layers, opts) {
+    const {width, height} = layers;
+    const winW = Math.max(8, Math.min(width, opts.winW));
+    const winH = Math.max(6, Math.min(height, opts.winH));
+    const stepX = Math.max(1, Math.floor(winW / 3));
+    const stepY = Math.max(1, Math.floor(winH / 3));
+    const yMargin = Math.floor(height * (40 / 180));
+    const scored = [];
+    for (let y = yMargin; y + winH <= height - yMargin; y += stepY) {
+        for (let x = stepX; x + winW <= width - stepX; x += stepX) {
+            const s = windowStats(layers, x, y, winW, winH);
+            if (s.landFrac < 0.22 || s.landFrac > 0.92) continue;
+            scored.push(s);
+        }
+    }
+    if (!scored.length) return [];
+
+    const picks = [];
+    function takeBest(name, scoreFn) {
+        let best = null, bestScore = -Infinity;
+        for (const s of scored) {
+            if (picks.some((p) => Math.abs(p.x - s.x) < winW * 0.85 && Math.abs(p.y - s.y) < winH * 0.85)) {
+                continue;
+            }
+            const score = scoreFn(s);
+            if (score > bestScore) {
+                bestScore = score;
+                best = s;
+            }
+        }
+        if (best) picks.push({name, ...best, winW, winH});
+    }
+
+    takeBest('coast', (s) => (
+        s.coastFrac * 2
+        + Math.min(s.landFrac, 1 - s.landFrac) * 1.4
+        + s.elevStd / 700
+        + s.elevRange / 2800
+    ));
+    takeBest('mountains', (s) => s.elevStd / 800 + s.elevRange / 4000 + s.landFrac);
+    takeBest('climate', (s) => s.tempRange / 20 + s.precipRange / 2500 + s.coastFrac + s.elevRange / 5000);
+    return picks.slice(0, opts.count);
+}
+
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+
+function lerpRgb(a, b, t) {
+    return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+}
+
+function elevRgb(m) {
+    if (m < 0) {
+        const t = Math.min(1, -m / TD_OCEAN_DEPTH_M);
+        return lerpRgb([72, 130, 176], [12, 28, 58], t);
+    }
+    const t = Math.min(1, m / TD_LAND_PEAK_M);
+    if (t < 0.35) return lerpRgb([92, 148, 78], [196, 196, 118], t / 0.35);
+    if (t < 0.7) return lerpRgb([196, 196, 118], [142, 104, 64], (t - 0.35) / 0.35);
+    return lerpRgb([142, 104, 64], [244, 244, 248], (t - 0.7) / 0.3);
+}
+
+function tempRgb(c) {
+    const t = Math.max(0, Math.min(1, (c + 20) / 50));
+    if (t < 0.5) return lerpRgb([40, 70, 170], [240, 240, 240], t / 0.5);
+    return lerpRgb([240, 240, 240], [190, 40, 30], (t - 0.5) / 0.5);
+}
+
+function precipRgb(mm) {
+    const t = Math.max(0, Math.min(1, Math.sqrt(mm / 3200)));
+    if (t < 0.5) return lerpRgb([214, 196, 150], [120, 168, 92], t / 0.5);
+    return lerpRgb([120, 168, 92], [28, 92, 150], (t - 0.5) / 0.5);
+}
+
+function hillshade(elev, width, height) {
+    const out = new Float32Array(width * height);
+    const zenith = 45 * Math.PI / 180;
+    const azimuth = 315 * Math.PI / 180;
+    const zcos = Math.cos(zenith), zsin = Math.sin(zenith);
+    const cell = 220;
+    for (let y = 0; y < height; y++) {
+        const y0 = y === 0 ? y : y - 1;
+        const y1 = y === height - 1 ? y : y + 1;
+        for (let x = 0; x < width; x++) {
+            const x0 = x === 0 ? x : x - 1;
+            const x1 = x === width - 1 ? x : x + 1;
+            const dzdx = (elev[y * width + x1] - elev[y * width + x0]) / (2 * cell);
+            const dzdy = (elev[y1 * width + x] - elev[y0 * width + x]) / (2 * cell);
+            const slope = Math.atan(Math.hypot(dzdx, dzdy));
+            const aspect = Math.atan2(-dzdy, dzdx);
+            let shade = zcos * Math.cos(slope) + zsin * Math.sin(slope) * Math.cos(azimuth - aspect);
+            out[y * width + x] = Math.max(0.15, Math.min(1, shade));
+        }
+    }
+    return out;
+}
+
+function putLayerRgb(ctx, x, y, width, height, rgbAt, shade) {
+    const img = ctx.createImageData(width, height);
+    for (let i = 0, p = 0; i < width * height; i++, p += 4) {
+        const c = rgbAt(i);
+        const s = shade ? 0.42 + 0.58 * shade[i] : 1;
+        img.data[p] = Math.round(c[0] * s);
+        img.data[p + 1] = Math.round(c[1] * s);
+        img.data[p + 2] = Math.round(c[2] * s);
+        img.data[p + 3] = 255;
+    }
+    ctx.putImageData(img, x, y);
+}
+
+function drawLabeled(ctx, x, y, title) {
+    ctx.fillStyle = '#111';
+    ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(title, x, y - 6);
+}
+
+function upsampleBilinear(src, srcW, srcH, dstW, dstH) {
+    const dst = new Float32Array(dstW * dstH);
+    for (let y = 0; y < dstH; y++) {
+        const fy = (y + 0.5) * srcH / dstH - 0.5;
+        const y0 = Math.max(0, Math.floor(fy));
+        const y1 = Math.min(srcH - 1, y0 + 1);
+        const ty = Math.max(0, Math.min(1, fy - y0));
+        for (let x = 0; x < dstW; x++) {
+            const fx = (x + 0.5) * srcW / dstW - 0.5;
+            const x0 = Math.max(0, Math.floor(fx));
+            const x1 = Math.min(srcW - 1, x0 + 1);
+            const tx = Math.max(0, Math.min(1, fx - x0));
+            const a = src[y0 * srcW + x0];
+            const b = src[y0 * srcW + x1];
+            const c = src[y1 * srcW + x0];
+            const d = src[y1 * srcW + x1];
+            dst[y * dstW + x] = lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+        }
+    }
+    return dst;
+}
+
+function canvasPng(canvas) {
+    return canvas.toDataURL('image/png');
+}
+
+function drawWorldSheet(world, crops, cropLayers) {
+    const w = world.width, h = world.height;
+    const gap = 16;
+    const label = 28;
+    const cropScale = 6;
+    const cropW = crops.length ? cropLayers[0].width * cropScale : 0;
+    const cropH = crops.length ? cropLayers[0].height * cropScale : 0;
+    const canvas = document.createElement('canvas');
+    canvas.width = w * 2 + gap;
+    canvas.height = label + h + gap + label + h + gap + label + cropH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const shade = hillshade(world.heightmap, w, h);
+    drawLabeled(ctx, 0, label, 'Coarse elevation (hypsometric + hillshade)');
+    putLayerRgb(ctx, 0, label, w, h, (i) => elevRgb(world.heightmap[i]), shade);
+    drawLabeled(ctx, w + gap, label, 'Temperature (°C)');
+    putLayerRgb(ctx, w + gap, label, w, h, (i) => tempRgb(world.temperature[i]), null);
+
+    const row2 = label + h + gap + label;
+    drawLabeled(ctx, 0, row2, 'Precipitation (mm / yr)');
+    putLayerRgb(ctx, 0, row2, w, h, (i) => precipRgb(world.precipitation[i]), null);
+    drawLabeled(ctx, w + gap, row2, 'Crop windows on elevation');
+    putLayerRgb(ctx, w + gap, row2, w, h, (i) => elevRgb(world.heightmap[i]), shade);
+
+    ctx.lineWidth = 2;
+    const colors = ['#f5d90a', '#ff5a36', '#5ad2ff'];
+    crops.forEach((crop, i) => {
+        ctx.strokeStyle = colors[i % colors.length];
+        ctx.lineWidth = 2;
+        ctx.strokeRect(w + gap + crop.x + 0.5, row2 + crop.y + 0.5, crop.winW, crop.winH);
+        const lx = w + gap + crop.x + 3;
+        const ly = row2 + Math.max(2, crop.y - 16);
+        ctx.font = '700 13px ui-sans-serif, system-ui, sans-serif';
+        const tw = ctx.measureText(crop.name).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.65)';
+        ctx.fillRect(lx - 2, ly - 1, tw + 6, 16);
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.textBaseline = 'top';
+        ctx.fillText(crop.name, lx, ly);
+    });
+
+    const row3 = row2 + h + gap + label;
+    crops.forEach((crop, i) => {
+        const layers = cropLayers[i];
+        const upE = upsampleBilinear(layers.heightmap, layers.width, layers.height, cropW, cropH);
+        const upShade = hillshade(upE, cropW, cropH);
+        const x = i * (cropW + gap);
+        drawLabeled(ctx, x, row3, `Crop “${crop.name}”  ${layers.width}×${layers.height} coarse cells`);
+        putLayerRgb(ctx, x, row3, cropW, cropH, (j) => elevRgb(upE[j]), upShade);
+        ctx.strokeStyle = colors[i % colors.length];
+        ctx.strokeRect(x + 0.5, row3 + 0.5, cropW - 1, cropH - 1);
+    });
+    return canvasPng(canvas);
+}
+
+function drawCropPreview(layers, name) {
+    const scale = 8;
+    const w = layers.width * scale;
+    const h = layers.height * scale;
+    const gap = 12;
+    const label = 26;
+    const canvas = document.createElement('canvas');
+    canvas.width = w * 3 + gap * 2;
+    canvas.height = label + h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const upE = upsampleBilinear(layers.heightmap, layers.width, layers.height, w, h);
+    const upT = upsampleBilinear(layers.temperature, layers.width, layers.height, w, h);
+    const upP = upsampleBilinear(layers.precipitation, layers.width, layers.height, w, h);
+    const shade = hillshade(upE, w, h);
+    drawLabeled(ctx, 0, label, `${name} elevation`);
+    putLayerRgb(ctx, 0, label, w, h, (i) => elevRgb(upE[i]), shade);
+    drawLabeled(ctx, w + gap, label, 'temperature');
+    putLayerRgb(ctx, w + gap, label, w, h, (i) => tempRgb(upT[i]), null);
+    drawLabeled(ctx, (w + gap) * 2, label, 'precipitation');
+    putLayerRgb(ctx, (w + gap) * 2, label, w, h, (i) => precipRgb(upP[i]), null);
+    return canvasPng(canvas);
+}
+
+function pixelBounds(x, y, winW, winH, width, height) {
+    const west = -180 + x / width * 360;
+    const east = -180 + (x + winW) / width * 360;
+    const north = 90 - y / height * 180;
+    const south = 90 - (y + winH) / height * 180;
+    return {west, south, east, north};
+}
+
+function exportTerrainDiffusion(opts = {}) {
+    const width = Math.max(64, opts.width | 0 || 720);
+    const height = Math.max(32, opts.height | 0 || 360);
+    const lon0Deg = Number.isFinite(opts.lon0) ? opts.lon0 : 0;
+    const lon0 = lon0Deg * PI / 180;
+    const scaleKm = Number.isFinite(opts.scaleKm) ? opts.scaleKm : 23;
+    const cropW = Math.max(8, opts.cropWidth | 0 || 48);
+    const cropH = Math.max(6, opts.cropHeight | 0 || 32);
+    const cropCount = Math.max(0, opts.crops | 0 || 3);
+
+    const rawWorld = rasterizeEquirect(width, height, lon0);
+    const world = fieldsToTdLayers(rawWorld, width, height);
+    const overviewKm = TD_EARTH_KM / width;
+    const winW = Math.max(8, Math.round(cropW * scaleKm * width / TD_EARTH_KM));
+    const winH = Math.max(6, Math.round(cropH * scaleKm * 2 * height / TD_EARTH_KM));
+    const picks = pickTdCrops(world, {winW, winH, count: cropCount});
+
+    const crops = picks.map((pick) => {
+        const bounds = pixelBounds(pick.x, pick.y, pick.winW, pick.winH, width, height);
+        const southRad = bounds.south * PI / 180;
+        const northRad = bounds.north * PI / 180;
+        const raw = rasterizeLonLatBox(bounds.west, bounds.south, bounds.east, bounds.north, cropW, cropH, lon0);
+        const layers = fieldsToTdLayers(raw, cropW, cropH, (row) => (
+            northRad - (row + 0.5) / cropH * (northRad - southRad)
+        ));
+        return {
+            name: pick.name,
+            x: pick.x,
+            y: pick.y,
+            winW: pick.winW,
+            winH: pick.winH,
+            landFrac: pick.landFrac,
+            ...bounds,
+            layers,
+            previewPng: drawCropPreview(layers, pick.name),
+        };
+    });
+
+    return {
+        seed,
+        n: N,
+        plates: P,
+        width,
+        height,
+        lon0: lon0Deg,
+        scaleKm,
+        overviewKm,
+        world: encodeTdLayers(world),
+        worldPreviewPng: drawWorldSheet(world, picks, crops.map((c) => c.layers)),
+        crops: crops.map((crop) => ({
+            name: crop.name,
+            west: crop.west + lon0Deg,
+            south: crop.south,
+            east: crop.east + lon0Deg,
+            north: crop.north,
+            landFrac: crop.landFrac,
+            width: cropW,
+            height: cropH,
+            scaleKm,
+            layers: encodeTdLayers(crop.layers),
+            previewPng: crop.previewPng,
+        })),
+    };
 }
 
 window.exportPlanetPreview = function exportPlanetPreview() {
@@ -1534,29 +2500,205 @@ window.exportEquirectPreview = function exportEquirectPreview(lon0) {
 };
 
 window.exportPreview = exportPreview;
+window.exportTerrainDiffusion = exportTerrainDiffusion;
 
 function exportPreview(view, opts = {}) {
     viewPersistSuspended = true;
+    const savedBoundaries = draw_plateBoundaries;
+    const savedVectors = draw_plateVectors;
+    const savedOverlay = previewPlateOverlay;
+    previewPlateOverlay = !!opts.plates;
+    if (opts.plates) {
+        draw_plateBoundaries = true;
+        draw_plateVectors = false;
+    }
     try {
-        if (view === 'globe') return captureGlobePreview();
-        if (view === 'equirect') return captureEquirectPreview(opts.lon0);
+        if (view === 'globe') return captureGlobePreview(opts.plates);
+        if (view === 'equirect') return captureEquirectPreview(opts.lon0, opts.plates);
         throw new Error(`unknown preview view: ${view}`);
     } finally {
+        draw_plateBoundaries = savedBoundaries;
+        draw_plateVectors = savedVectors;
+        previewPlateOverlay = savedOverlay;
         viewPersistSuspended = false;
     }
 }
 
-function captureGlobePreview() {
+const PLATE_ARROW_SCALE = 0.38;
+const PLATE_LEGEND = 'color = plate   dark = underwater   arrow = motion';
+
+function projectGlobePoint(xyz, projection) {
+    const p = vec4.transformMat4([], [xyz[0], xyz[1], xyz[2], 1], projection);
+    const w = p[3] || 1;
+    return {x: p[0] / w, y: p[1] / w, z: p[2] / w, front: p[2] / w <= 0.02};
+}
+
+function clipToCanvas(clip, width, height) {
+    return {
+        x: (clip.x * 0.5 + 0.5) * width,
+        y: (-clip.y * 0.5 + 0.5) * height,
+        front: clip.front,
+    };
+}
+
+function projectEquirectPoint(xyz, xshift) {
+    const lon = Math.atan2(xyz[1], xyz[0]) + xshift * Math.PI;
+    const lat = Math.asin(Math.max(-1, Math.min(1, xyz[2])));
+    const x = ((lon / Math.PI) + equirectPanX) * equirectZoom;
+    const y = ((2 * lat / Math.PI) + equirectPanY) * equirectZoom;
+    return {x, y, z: -0.5, front: true};
+}
+
+function strokeArrow(ctx, x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const len = Math.hypot(dx, dy);
+    if (len < 10) return;
+    const ux = dx / len, uy = dy / len;
+    const head = Math.min(16, len * 0.32);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x1 - ux * head + uy * head * 0.55, y1 - uy * head - ux * head * 0.55);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x1 - ux * head - uy * head * 0.55, y1 - uy * head + ux * head * 0.55);
+    ctx.stroke();
+}
+
+function drawHaloLabel(ctx, text, x, y) {
+    ctx.strokeText(text, x, y);
+    ctx.fillText(text, x, y);
+}
+
+function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0) {
+    if (!map.plate_ids || !map.plate_centroid) return;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+    ctx.strokeStyle = '#111111';
+    ctx.fillStyle = '#ffffff';
+    ctx.lineWidth = 4;
+
+    const toCanvas = (xyz) => {
+        const clip = mode === 'globe'
+            ? projectGlobePoint(xyz, projection)
+            : projectEquirectPoint(xyz, xshift);
+        return clipToCanvas(clip, width, height);
+    };
+
+    for (let i = 0; i < map.plate_ids.length; i++) {
+        const p = map.plate_ids[i];
+        const c = map.plate_centroid[p];
+        const v = map.plate_vec[p];
+        if (!c || !v) continue;
+        const start = toCanvas(c);
+        if (!Number.isFinite(start.x) || !Number.isFinite(start.y)) continue;
+        if (mode === 'globe' && !start.front) continue;
+        if (start.x < -40 || start.x > width + 40 || start.y < -40 || start.y > height + 40) continue;
+        start.x = Math.min(width - 16, Math.max(16, start.x));
+        start.y = Math.min(height - 16, Math.max(16, start.y));
+
+        const tip = [
+            c[0] + v[0] * PLATE_ARROW_SCALE,
+            c[1] + v[1] * PLATE_ARROW_SCALE,
+            c[2] + v[2] * PLATE_ARROW_SCALE,
+        ];
+        let end = toCanvas(tip);
+        if (mode === 'equirect' && Math.abs(end.x - start.x) > width * 0.5) {
+            const shift = end.x > start.x ? -width : width;
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = '#111111';
+            strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
+            strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
+            ctx.lineWidth = 2.4;
+            ctx.strokeStyle = '#ffe14a';
+            strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
+            strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
+        } else {
+            let dx = end.x - start.x, dy = end.y - start.y;
+            let len = Math.hypot(dx, dy);
+            if (len < 22 && len > 0.5) {
+                const s = 22 / len;
+                end = {x: start.x + dx * s, y: start.y + dy * s, front: end.front};
+            }
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = '#111111';
+            strokeArrow(ctx, start.x, start.y, end.x, end.y);
+            ctx.lineWidth = 2.4;
+            ctx.strokeStyle = '#ffe14a';
+            strokeArrow(ctx, start.x, start.y, end.x, end.y);
+        }
+
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#111111';
+        ctx.fillStyle = '#ffffff';
+        drawHaloLabel(ctx, String(i + 1), start.x, start.y - 12);
+    }
+    ctx.restore();
+}
+
+function plateAnnotCanvas() {
+    let el = document.getElementById('plate-overlay');
+    if (el) return el;
+    const src = document.getElementById('output');
+    if (!src || !src.parentElement) return null;
+    el = document.createElement('canvas');
+    el.id = 'plate-overlay';
+    el.style.position = 'absolute';
+    el.style.left = '0';
+    el.style.top = '0';
+    el.style.width = '100%';
+    el.style.height = '100%';
+    el.style.pointerEvents = 'none';
+    const parent = src.parentElement;
+    if (getComputedStyle(parent).position === 'static') {
+        parent.style.position = 'relative';
+    }
+    src.insertAdjacentElement('afterend', el);
+    return el;
+}
+
+function paintLivePlateOverlay() {
+    const overlay = plateAnnotCanvas();
+    const src = document.getElementById('output');
+    if (!overlay || !src) return;
+    if (!usePlateOverlay()) {
+        if (overlay.width !== 1 || overlay.height !== 1) {
+            overlay.width = 1;
+            overlay.height = 1;
+        }
+        overlay.style.display = 'none';
+        return;
+    }
+    overlay.style.display = 'block';
+    if (overlay.width !== src.width) overlay.width = src.width;
+    if (overlay.height !== src.height) overlay.height = src.height;
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (viewMode === 'equirect') {
+        for (const shift of [-2, 0, 2]) {
+            paintPlateAnnotations(ctx, overlay.width, overlay.height, 'equirect', null, shift);
+        }
+    } else {
+        paintPlateAnnotations(ctx, overlay.width, overlay.height, 'globe', globeProjectionMatrix());
+    }
+}
+
+function captureGlobePreview(plates) {
     const src = document.getElementById('output');
     const savedMode = viewMode;
     applyViewMode('globe');
     const cell = 512;
     const labelH = 28;
+    const legendH = plates ? 30 : 0;
     const yaws = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2];
     const labels = ['0', '90', '180', '270'];
     const sheet = document.createElement('canvas');
     sheet.width = cell * 2;
-    sheet.height = (cell + labelH) * 2;
+    sheet.height = (cell + labelH) * 2 + legendH;
     const ctx = sheet.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, sheet.width, sheet.height);
@@ -1570,14 +2712,37 @@ function captureGlobePreview() {
     mat4.identity(dragRotation);
     zoom = 1;
 
+    const annotated = document.createElement('canvas');
+    annotated.width = src.width;
+    annotated.height = src.height;
+    const actx = annotated.getContext('2d');
+
     for (let i = 0; i < yaws.length; i++) {
         previewYaw = yaws[i];
         _draw();
         regl._gl.finish();
         const x = (i % 2) * cell;
         const y = Math.floor(i / 2) * (cell + labelH);
+        ctx.fillStyle = '#111111';
+        ctx.font = '600 16px ui-sans-serif, system-ui, sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
         ctx.fillText(`${labels[i]} deg`, x + 10, y + labelH / 2);
-        ctx.drawImage(src, x, y + labelH, cell, cell);
+        if (plates) {
+            actx.clearRect(0, 0, annotated.width, annotated.height);
+            actx.drawImage(src, 0, 0);
+            paintPlateAnnotations(actx, src.width, src.height, 'globe', globeProjectionMatrix());
+            ctx.drawImage(annotated, x, y + labelH, cell, cell);
+        } else {
+            ctx.drawImage(src, x, y + labelH, cell, cell);
+        }
+    }
+
+    if (plates) {
+        ctx.fillStyle = '#111111';
+        ctx.font = '600 14px ui-sans-serif, system-ui, sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(PLATE_LEGEND, 10, sheet.height - legendH / 2);
     }
 
     previewYaw = savedYaw;
@@ -1588,7 +2753,7 @@ function captureGlobePreview() {
     return sheet.toDataURL('image/png');
 }
 
-function captureEquirectPreview(lon0) {
+function captureEquirectPreview(lon0, plates) {
     const src = document.getElementById('output');
     const savedMode = viewMode;
     const savedPanX = equirectPanX;
@@ -1601,7 +2766,33 @@ function captureEquirectPreview(lon0) {
     equirectZoom = 1;
     _draw();
     regl._gl.finish();
-    const dataUrl = src.toDataURL('image/png');
+
+    let dataUrl;
+    if (!plates) {
+        dataUrl = src.toDataURL('image/png');
+    } else {
+        const legendH = 32;
+        const overlay = document.createElement('canvas');
+        overlay.width = src.width;
+        overlay.height = src.height;
+        const octx = overlay.getContext('2d');
+        octx.drawImage(src, 0, 0);
+        paintPlateAnnotations(octx, src.width, src.height, 'equirect');
+
+        const out = document.createElement('canvas');
+        out.width = src.width;
+        out.height = src.height + legendH;
+        const ctx = out.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, out.width, out.height);
+        ctx.fillStyle = '#111111';
+        ctx.font = '600 14px ui-sans-serif, system-ui, sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(PLATE_LEGEND, 10, legendH / 2);
+        ctx.drawImage(overlay, 0, legendH);
+        dataUrl = out.toDataURL('image/png');
+    }
+
     equirectPanX = savedPanX;
     equirectPanY = savedPanY;
     equirectZoom = savedZoom;
@@ -1743,6 +2934,7 @@ document.querySelector('.view-mode-toggle')?.addEventListener('click', () => {
     applyViewMode(viewMode === 'globe' ? 'equirect' : 'globe');
 });
 restoreViewState();
+setupSavedSeeds();
 applySeed(seed);
 syncSeedHistoryButtons();
 generateMesh();
