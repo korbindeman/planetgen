@@ -24,7 +24,15 @@ ever capture one. Continents are seeded as cratons, not a noise threshold. A pla
 body made of sites that rotate with it, so its boundaries are arcs meeting at
 triple junctions and it stays one coherent body; each has a stable id, a
 generated name, a birth time and a parent, and keeps them through rifts and
-collisions. Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
+collisions. Majors and minors are seeded differently: the majors tile the
+sphere, the minors are carved out of the boundaries between them, stretched
+along the margin the way the Caribbean and Cocos are — never dropped into a
+major's interior, and a plate whose whole edge touches one neighbour (an
+enclave, which Earth does not have) is absorbed on sight. Plates rotate about Euler poles in a no-net-rotation frame; the crust carries a type, age and thickness that the plates advect over ~200 Myr; ocean depth comes from half-space cooling on sea-floor age and land height from isostasy on crustal thickness. Subduction acts on
+the plates themselves: sites overridden at a converging margin are consumed
+(density decides which side sinks — continents never do, they collide), ridges
+get those sites back as new ones, and trenches calve back-arc microplates so
+the census Earth keeps is kept here too. See `.cursor/rules/plates-elevation.mdc` for what must not regress.
 
 ## Downstream
 

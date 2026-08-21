@@ -175,6 +175,20 @@ function run(seed) {
     let mountains = 0;
     for (let r = 0; r < n; r++) if (Tectonics.elevationToMeters(map.r_elevation[r]) > 2000) mountains++;
 
+    /* A plate whose whole edge touches one neighbour is a hole in that
+     * neighbour. Earth has none; neither should we. */
+    const touches = map.plates.map(() => new Set());
+    for (let r = 0; r < n; r++) {
+        mesh.r_circulate_r(out_r, r);
+        for (const nb of out_r) {
+            if (map.r_plate[nb] !== map.r_plate[r]) touches[map.r_plate[r]].add(map.r_plate[nb]);
+        }
+    }
+    let enclaves = 0;
+    for (let p = 0; p < map.plates.length; p++) {
+        if (plateArea[p] > 0 && touches[p].size === 1) enclaves++;
+    }
+
     return {
         seed, ms, plates: areas.length, areas,
         land: land / n * 100,
@@ -183,6 +197,7 @@ function run(seed) {
         ageMedian: q(ages, 0.5), ageMax: q(ages, 1),
         depthP10: q(depths, 0.1), depthMedian: q(depths, 0.5), depthP90: q(depths, 0.9),
         mountains: mountains / n * 100,
+        enclaves,
         raggedness: weight ? (ragged / weight) / floor : NaN,
         raggednessFloor: floor,
         fragments: weight ? pieces / weight : NaN,
@@ -204,7 +219,7 @@ for (const s of results) {
     console.log(`  sea floor age median ${s.ageMedian.toFixed(0)} max ${s.ageMax.toFixed(0)} Myr`);
     console.log(`  ocean depth p10 ${s.depthP10.toFixed(0)} median ${s.depthMedian.toFixed(0)} p90 ${s.depthP90.toFixed(0)} m`);
     console.log(`  above 2000 m: ${s.mountains.toFixed(1)}% of surface`);
-    console.log(`  raggedness ${s.raggedness.toFixed(2)} (1.0 = straight arcs)  pieces per plate ${s.fragments.toFixed(2)}`);
+    console.log(`  raggedness ${s.raggedness.toFixed(2)} (1.0 = straight arcs)  pieces per plate ${s.fragments.toFixed(2)}  enclaves ${s.enclaves}`);
     console.log(`  boundaries  convergent ${s.boundary.convergent.toFixed(0)}%  divergent ${s.boundary.divergent.toFixed(0)}%  transform ${s.boundary.transform.toFixed(0)}%`);
 }
 
@@ -223,6 +238,7 @@ const rows = [
     ['plate count', mean(s => s.plates), '~15 major+minor'],
     ['boundary raggedness', mean(s => s.raggedness), `1.0 = as straight as this mesh allows (floor ${mean(s => s.raggednessFloor).toFixed(2)} raw)`],
     ['pieces per plate', mean(s => s.fragments), '1.0 - a plate is one body'],
+    ['enclave plates', mean(s => s.enclaves), '0 - no plate is a hole in another'],
     ['runtime ms', mean(s => s.ms), ''],
 ];
 for (const [label, value, earth] of rows) {

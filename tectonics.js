@@ -230,11 +230,22 @@ function generatePlates(mesh, numPlates, seed, options) {
     const randFloat = makeRandFloat(seed ^ 0x5f3759df);
     const nextName = makePlateNamer(makeRandFloat(seed ^ 0x1b873593));
 
+    /* Majors and minors are not the same kind of thing, so they are not
+     * seeded the same way. Earth's majors tile the whole sphere between
+     * them; its minors — Cocos, Caribbean, Juan de Fuca, Scotia — are
+     * slivers pinched off *at the boundaries between majors*, mostly where
+     * those majors converge. Seeding every plate from its own free-standing
+     * nucleus instead drops minors into the middle of majors, where they sit
+     * as enclaves with a single neighbour: a thing Earth does not have. */
     const targets = plateAreaTargets(numPlates, randFloat);
+    const numMajor = Math.max(1, Math.min(numPlates, Math.round(numPlates * PLATE_MAJOR_FRACTION)));
+    const majorTargets = targets.slice(0, numMajor);
+    const majorSum = majorTargets.reduce((a, b) => a + b, 0) || 1;
+
     /* nuclei kept apart, so no two plates start life fighting over the same
        patch of sphere */
     const nuclei = [];
-    for (let p = 0; p < numPlates; p++) {
+    for (let p = 0; p < numMajor; p++) {
         let best = null, bestGap = -1;
         for (let attempt = 0; attempt < 32; attempt++) {
             const c = randomUnitVector(randFloat);
@@ -246,10 +257,12 @@ function generatePlates(mesh, numPlates, seed, options) {
         nuclei.push(best);
     }
     const sites = scatterSites(numPlates * opts.sitesPerPlate, randFloat);
-    const owner = assignSitesToPlates(sites, nuclei, targets);
+    /* the majors take the whole sphere between them; the minors are carved
+       back out of their edges afterwards */
+    const owner = assignSitesToPlates(sites, nuclei, majorTargets.map(t => t / majorSum));
 
     const plates = [];
-    for (let p = 0; p < numPlates; p++) {
+    for (let p = 0; p < numMajor; p++) {
         plates.push({
             id: p,
             name: nextName(),
@@ -260,9 +273,124 @@ function generatePlates(mesh, numPlates, seed, options) {
             parent: -1,
         });
     }
+    carveMicroplates(plates, sites, owner, targets.slice(numMajor), opts, randFloat, nextName);
     for (let s = 0; s < sites.length; s++) plates[owner[s]].sites.push(sites[s]);
     /* a nucleus that ended up with nothing is not a plate */
-    return {plates: plates.filter(p => p.sites.length > 0), nextName};
+    return {plates: plates.filter(p => p.sites.length > 0), nextName,
+            /* the census the simulation keeps the planet topped up to */
+            targetPlateCount: numPlates};
+}
+
+
+/* Carve the minor plates out of the boundaries between majors.
+ *
+ * Every candidate location is the midpoint of a tight cross-plate site
+ * pair — a spot the boundary actually passes through — so a microplate is
+ * born touching at least two majors and cannot be an enclave. Candidates
+ * where the two majors are closing on each other are preferred, because
+ * that is where Earth keeps its microplates: trapped in the vice between
+ * converging plates, shedding island arcs. And the sites a minor takes are
+ * gathered anisotropically, stretched along the boundary, so it comes out
+ * as a sliver hugging the margin rather than a round cap punched into one
+ * side. */
+function carveMicroplates(plates, sites, owner, minorTargets, opts, randFloat, nextName) {
+    const n = sites.length;
+    if (minorTargets.length === 0 || plates.length < 2) return;
+
+    /* the boundary network, as tight cross-plate site pairs */
+    const pairs = [];
+    for (let s = 0; s < n; s++) {
+        let best = -1, bestD = Infinity;
+        for (let t = 0; t < n; t++) {
+            if (owner[t] === owner[s]) continue;
+            const d = angleBetween(sites[s], sites[t]);
+            if (d < bestD) { bestD = d; best = t; }
+        }
+        if (best !== -1 && s < best) pairs.push({s, t: best, d: bestD});
+        else if (best !== -1 && !pairs.some(q => q.s === best && q.t === s)) pairs.push({s: best, t: s, d: bestD});
+    }
+    pairs.sort((a, b) => a.d - b.d);
+    /* the tightest pairs straddle the boundary; the loose tail merely faces
+       it from a distance */
+    const candidates = pairs.slice(0, Math.max(minorTargets.length * 3, pairs.length >> 1));
+
+    const va = [0, 0, 0], vb = [0, 0, 0];
+    for (const c of candidates) {
+        const mid = vec3.normalize([], vec3.add([], sites[c.s], sites[c.t]));
+        /* direction from plate A's side towards plate B's, in the tangent plane */
+        const across = vec3.subtract([], sites[c.t], sites[c.s]);
+        vec3.scaleAndAdd(across, across, mid, -vec3.dot(across, mid));
+        if (vec3.length(across) < 1e-9) { c.closing = -Infinity; continue; }
+        vec3.normalize(across, across);
+        const A = plates[owner[c.s]], B = plates[owner[c.t]];
+        plateVelocity(va, A.pole, A.omega, mid);
+        plateVelocity(vb, B.pole, B.omega, mid);
+        /* positive when the two majors are closing on each other here */
+        c.closing = vec3.dot(vec3.subtract([], va, vb), across);
+        c.mid = mid;
+        c.across = across;
+    }
+    const ranked = candidates.filter(c => c.mid).sort((a, b) => b.closing - a.closing);
+
+    const taken = new Uint8Array(n);
+    const used = [];
+    for (const target of minorTargets) {
+        /* the boundary this minor is born on: the most convergent margin not
+           already claimed by an earlier minor */
+        let spot = null;
+        for (const c of ranked) {
+            let clear = true;
+            for (const u of used) if (angleBetween(c.mid, u) < opts.microplateSeparation) { clear = false; break; }
+            if (clear && !taken[c.s] && !taken[c.t]) { spot = c; break; }
+        }
+        if (!spot) break;
+        used.push(spot.mid);
+
+        /* along-boundary direction: tangent to the sphere, perpendicular to
+           the crossing direction */
+        const along = vec3.normalize([], vec3.cross([], spot.mid, spot.across));
+
+        /* The floor matters more than the target. A three-site sliver holds
+         * ~0.3% of the sphere, and the convergence feedback plus the retire
+         * threshold eat it inside a few steps: measured, a planet born with
+         * 21 plates kept losing its whole microplate belt by mid-run. Five
+         * sites lands a minor near 1%, Nazca-to-Caribbean country, big
+         * enough to live long enough to matter. */
+        const quota = Math.max(6, Math.round(target * n));
+        const cost = [];
+        for (let s = 0; s < n; s++) {
+            if (taken[s]) { cost.push(Infinity); continue; }
+            const d = angleBetween(sites[s], spot.mid);
+            const e = vec3.scaleAndAdd([], sites[s], spot.mid, -vec3.dot(sites[s], spot.mid));
+            let a = 0;
+            if (vec3.length(e) > 1e-9) a = Math.abs(vec3.dot(vec3.normalize(e, e), along)) * d;
+            const x = Math.sqrt(Math.max(0, d * d - a * a));
+            cost.push(Math.hypot(a / opts.microplateElongation, x));
+        }
+        const order = Array.from({length: n}, (_, i) => i).sort((a, b) => cost[a] - cost[b]);
+
+        const p = plates.length;
+        plates.push({
+            id: p,
+            name: nextName(),
+            sites: [],
+            pole: randomUnitVector(randFloat),
+            /* Earth's microplates are its sprinters: Cocos and Philippine
+               outrun every major. The speed is also what makes them matter —
+               it is what keeps their margins converging hard enough to build
+               arcs. */
+            omega: randomOmega(randFloat) * opts.microplateSpin,
+            bornMyr: 0,
+            parent: -1,
+        });
+        for (let k = 0, got = 0; k < n && got < quota; k++) {
+            const s = order[k];
+            if (cost[s] === Infinity) break;
+            taken[s] = 1;
+            owner[s] = p;
+            got++;
+        }
+    }
 }
 
 
@@ -548,18 +676,25 @@ const CRUST_OCEANIC = 0, CRUST_CONTINENTAL = 1;
 const DEFAULTS = {
     steps: 20,
     nucleusSeparation: 0.45,      // radians between plate nuclei at birth
-    sitesPerPlate: 26,            // enough that even the smallest plate in a
+    sitesPerPlate: 40,            // enough that even the smallest plate in a
                                   // heavy-tailed size distribution gets several, and
-                                  // enough that shapes are not convex caps
+                                  // enough that shapes are not convex caps. Also sets
+                                  // how finely a subduction front erodes: consumption
+                                  // scallops a margin at site spacing, and at 26 sites
+                                  // a 40k mesh resolved the scallops as raggedness
+                                  // 1.5 where 40 sites reads 1.2 at every mesh size
     boundaryWarp: 0.35,           // how far the boundary curves away from a true arc
     speckCells: 12,               // territory smaller than this is not a plate
+    microplateElongation: 2.4,    // how stretched along its margin a minor plate is
+    microplateSpin: 1.7,          // minors turn faster than majors, as Earth's do
+    microplateSeparation: 0.5,    // radians between minor plate birthplaces
     boundaryWarpScale: 1.6,       // low frequency: bend the boundary, do not fray it
     plateGrowth: 0.05,            // how fast a plate gains at its ridges and loses at
                                   // its trenches; this is what lets a mostly-subducting
                                   // plate shrink away, as the Farallon did
     plateReversion: 0.12,         // pull back towards its own size; must exceed
                                   // plateGrowth or the feedback has no equilibrium
-    plateRetireArea: 0.0015,       // a plate smaller than this is absorbed by its neighbours
+    plateRetireArea: 0.001,       // a plate smaller than this is absorbed by its neighbours
     stepMyr: 10,                  // 200 Myr of history
     cratons: 6,                   // continental nuclei; Earth has about this many blocks
     cratonSigma: 0.55,            // spread of craton sizes, so they are not all alike
@@ -601,6 +736,8 @@ const DEFAULTS = {
     weldContact: 0.30,            // accumulated contact needed to fuse two plates,
                                   // as a multiple of the whole surface
     contactDecay: 0.75,           // contact fades once two plates stop converging
+    backArcChance: 1.0,           // per step, chance a convergent margin calves off a
+                                  // microplate, so long as the census is under strength
     riftChance: 0.12,             // per step, chance of deliberately splitting a big
                                   // plate. Kept low because plates being cut in two by
                                   // their neighbours already supplies most of the churn
@@ -1194,6 +1331,243 @@ function weldPlates(mesh, map, collisions, opts) {
 }
 
 
+/* Subduction, done to the plates themselves.
+ *
+ * A plate is its sites, and until now sites were immortal: a converging
+ * plate's sites marched straight through whatever stood in their way and
+ * took its territory. That is not what a trench does. The slab that arrives
+ * at a subduction zone goes down and is gone, and the boundary stays put,
+ * pinned to the overriding plate — which is why the Caribbean can sit in
+ * the closing vice between the Americas and live: the ocean floor bearing
+ * down on it subducts under it instead of overrunning it.
+ *
+ * So: a site that finds itself on ground owned by another plate, at a
+ * margin that is converging, is slab that went down the trench — it is
+ * consumed. And because the sea floor consumed at trenches is made at
+ * ridges, every consumed site is handed back as a new site on a spreading
+ * margin, weighted by how much divergent boundary each plate has. Plates
+ * with ridges grow, plates being swallowed at trenches shrink and finally
+ * go, and the total never drifts. */
+function subductSites(mesh, map, randFloat) {
+    const {plates, r_plate, r_xyz} = map;
+    const {numRegions} = mesh;
+    const {r_boundary} = classifyBoundaries(mesh, map);
+    const out_r = [];
+
+    /* nearest ground still owned by plate p, walking outward from `from` */
+    const bfsHome = (from, p) => {
+        const queue = [from];
+        const seen = new Set(queue);
+        for (let h = 0; h < queue.length && h < 400; h++) {
+            mesh.r_circulate_r(out_r, queue[h]);
+            for (const nb of out_r) {
+                if (r_plate[nb] === p) return nb;
+                if (!seen.has(nb)) { seen.add(nb); queue.push(nb); }
+            }
+        }
+        return -1;
+    };
+
+    /* Which side goes down is not who won the tug over any one cell — it is
+     * density, and it is coherent along the whole margin. Ocean floor sinks
+     * under a continent, older colder floor sinks under younger, and a
+     * continent never sinks at all: it arrives, survives, and collides —
+     * which is the whole India story. Each overridden site casts a vote
+     * from the crust on its side and the crust it is standing on, and the
+     * margin's majority decides for every site on it. Deciding site by
+     * site instead lets the verdict flip cell to cell along a patchy
+     * coast, and the half-eaten, half-pinned front that leaves was
+     * measured at raggedness 4 where a clean arc scores 2. */
+    const overridden = [];        // {p, i, home}
+    const votes = new Map();      // "p>q" -> net vote that p subducts under q
+    let hint = 0;
+    for (let p = 0; p < plates.length; p++) {
+        for (let i = 0; i < plates[p].sites.length; i++) {
+            hint = nearestRegion(mesh, r_xyz, plates[p].sites[i], hint, out_r);
+            if (r_plate[hint] === p) continue;
+            /* only a converging margin consumes; a site nudged over a
+               transform or a bookkeeping line is left to find its way home */
+            let converging = r_boundary[hint] === BOUNDARY_CONVERGENT;
+            if (!converging) {
+                mesh.r_circulate_r(out_r, hint);
+                for (const nb of out_r) {
+                    if (r_boundary[nb] === BOUNDARY_CONVERGENT) { converging = true; break; }
+                }
+            }
+            if (!converging) continue;
+
+            const home = bfsHome(hint, p);
+            let goesDown = true;
+            if (home !== -1) {
+                const mine = map.r_crust_type[home], theirs = map.r_crust_type[hint];
+                if (mine === CRUST_CONTINENTAL) goesDown = false;
+                else if (theirs === CRUST_OCEANIC) goesDown = map.r_crust_age[home] >= map.r_crust_age[hint];
+            }
+            const key = `${p}>${r_plate[hint]}`;
+            votes.set(key, (votes.get(key) || 0) + (goesDown ? 1 : -1));
+            overridden.push({p, i, home, key});
+        }
+    }
+    if (overridden.length === 0) return false;
+
+    let consumed = 0;
+    const dead = new Set();
+    for (const site of overridden) {
+        if (votes.get(site.key) >= 0 || site.home === -1) {
+            consumed++;
+            dead.add(site);
+            continue;
+        }
+        /* The overriding side steps well back from the trench, not onto its
+         * lip: a site dropped on the boundary cell itself crowds the
+         * Voronoi there and crinkles the margin. Retreating towards the
+         * plate's nearest other site keeps the front smooth. */
+        const sites = plates[site.p].sites;
+        const ground = [r_xyz[3 * site.home], r_xyz[3 * site.home + 1], r_xyz[3 * site.home + 2]];
+        let nearest = null, best = -2;
+        for (let i = 0; i < sites.length; i++) {
+            if (i === site.i) continue;
+            const d = vec3.dot(sites[i], ground);
+            if (d > best) { best = d; nearest = sites[i]; }
+        }
+        sites[site.i] = nearest
+            ? vec3.normalize([], vec3.add([], ground, vec3.scale([], vec3.subtract([], nearest, ground), 0.85)))
+            : ground;
+    }
+    if (consumed > 0) {
+        for (const site of dead) plates[site.p].sites[site.i] = null;
+        for (const plate of plates) plate.sites = plate.sites.filter(Boolean);
+    }
+    if (consumed === 0) return true;
+
+    /* The ridges pay the trenches back. Weighted by the share of each
+     * plate's own boundary that is spreading, not by raw ridge length: the
+     * biggest plate always has the longest ridges, and paying by length
+     * hands it nearly every recycled site, which is the same
+     * rich-get-richer term that once let one plate eat the map. A plate
+     * whose edge is mostly ridge is growing whatever its size; that is the
+     * thing worth rewarding. */
+    const ridgeCells = plates.map(() => []);
+    const boundaryLen = new Int32Array(plates.length);
+    for (let r = 0; r < numRegions; r++) {
+        if (r_boundary[r] === BOUNDARY_NONE || plates[r_plate[r]].sites.length === 0) continue;
+        boundaryLen[r_plate[r]]++;
+        if (r_boundary[r] === BOUNDARY_DIVERGENT) ridgeCells[r_plate[r]].push(r);
+    }
+    const spreaders = [];
+    const weight = new Float64Array(plates.length);
+    let totalWeight = 0;
+    for (let p = 0; p < plates.length; p++) {
+        if (ridgeCells[p].length === 0) continue;
+        weight[p] = ridgeCells[p].length / boundaryLen[p];
+        spreaders.push(p);
+        totalWeight += weight[p];
+    }
+    if (totalWeight === 0) return true;
+    for (let k = 0; k < consumed; k++) {
+        let pick = randFloat() * totalWeight;
+        let q = spreaders[spreaders.length - 1];
+        for (const p of spreaders) { pick -= weight[p]; if (pick <= 0) { q = p; break; } }
+        const cell = ridgeCells[q][Math.min(ridgeCells[q].length - 1, Math.floor(randFloat() * ridgeCells[q].length))];
+        const at = [r_xyz[3 * cell], r_xyz[3 * cell + 1], r_xyz[3 * cell + 2]];
+        /* set the new site a little back from the ridge, towards the plate's
+           nearest existing site, so it lands on its own plate's ground */
+        let nearest = null, best = -2;
+        for (const s of plates[q].sites) {
+            const d = vec3.dot(s, at);
+            if (d > best) { best = d; nearest = s; }
+        }
+        const site = nearest
+            ? vec3.normalize([], vec3.add([], at, vec3.scale([], vec3.subtract([], nearest, at), 0.4)))
+            : at;
+        plates[q].sites.push(site);
+    }
+    return true;
+}
+
+
+/* Subduction consumes microplates, but it is also what makes them: a trench
+ * rolls back, the plate behind it stretches, and a sliver calves off — the
+ * Philippine Sea and Scotia plates both began this way. Without this birth
+ * channel the microplate census only ever falls, and a 200 Myr run grinds
+ * twenty plates down to nine survivors, none of them small. Pick a spot on
+ * a convergent margin, weighted by how hard it is converging, and pinch off
+ * a sliver of the plate there, stretched along the trench. */
+function spawnBackArcPlate(mesh, map, randFloat, opts) {
+    const {plates, r_plate, r_xyz} = map;
+    const {numRegions} = mesh;
+    const {r_boundary, r_convergence} = classifyBoundaries(mesh, map);
+
+    let total = 0;
+    const margin = [];
+    for (let r = 0; r < numRegions; r++) {
+        if (r_boundary[r] !== BOUNDARY_CONVERGENT || r_convergence[r] <= 0) continue;
+        margin.push(r);
+        total += r_convergence[r];
+    }
+    if (margin.length === 0) return false;
+    let pick = randFloat() * total;
+    let chosen = margin[margin.length - 1];
+    for (const r of margin) { pick -= r_convergence[r]; if (pick <= 0) { chosen = r; break; } }
+
+    const p = r_plate[chosen];
+    const parent = plates[p];
+    if (parent.sites.length < 7) return false;   // do not gut an already-small plate
+
+    /* the local frame of the trench: normal towards the other plate, tangent
+       along the margin */
+    const mid = [r_xyz[3 * chosen], r_xyz[3 * chosen + 1], r_xyz[3 * chosen + 2]];
+    const out_r = [];
+    mesh.r_circulate_r(out_r, chosen);
+    let normal = null;
+    for (const nb of out_r) {
+        if (r_plate[nb] === p) continue;
+        normal = [r_xyz[3 * nb] - mid[0], r_xyz[3 * nb + 1] - mid[1], r_xyz[3 * nb + 2] - mid[2]];
+        vec3.scaleAndAdd(normal, normal, mid, -vec3.dot(normal, mid));
+        if (vec3.length(normal) < 1e-9) { normal = null; continue; }
+        vec3.normalize(normal, normal);
+        break;
+    }
+    if (!normal) return false;
+    const along = vec3.normalize([], vec3.cross([], mid, normal));
+
+    /* the sliver: the parent's sites nearest the trench, gathered with the
+       same along-margin stretch the birth microplates use */
+    let totalSites = 0;
+    for (const plate of plates) totalSites += plate.sites.length;
+    const quota = Math.max(5, Math.round(0.012 * totalSites));
+    const scored = parent.sites.map(s => {
+        const d = angleBetween(s, mid);
+        const e = vec3.scaleAndAdd([], s, mid, -vec3.dot(s, mid));
+        let a = 0;
+        if (vec3.length(e) > 1e-9) a = Math.abs(vec3.dot(vec3.normalize(e, e), along)) * d;
+        const x = Math.sqrt(Math.max(0, d * d - a * a));
+        return {s, cost: Math.hypot(a / opts.microplateElongation, x)};
+    }).sort((a, b) => a.cost - b.cost);
+
+    const split = [], keep = [];
+    for (const {s, cost} of scored) {
+        /* only a sliver that actually hugs this margin; a quota filled from
+           the far side of the plate would be a teleporting fragment */
+        if (split.length < quota && cost < 0.5 && parent.sites.length - split.length > 4) split.push(s);
+        else keep.push(s);
+    }
+    if (split.length < 3) return false;
+    parent.sites = keep;
+    plates.push({
+        id: map.nextPlateId++,
+        name: map.nextName(),
+        sites: split,
+        pole: randomUnitVector(randFloat),
+        omega: randomOmega(randFloat) * opts.microplateSpin,
+        scale: parent.scale || 1,
+        bornMyr: map.elapsedMyr,
+        parent: parent.id,
+    });
+    return true;
+}
+
+
 /* Without this the plate count only ever falls. A plate splits along a
  * great circle through its centroid; the larger half keeps the name, the
  * smaller half is a new plate with its own pole, so the two drift apart. */
@@ -1239,6 +1613,41 @@ function riftPlate(mesh, map, randFloat, opts) {
         parent: plate.id,
     });
     return true;
+}
+
+
+/* A plate whose entire boundary touches a single neighbour is an enclave: a
+ * hole punched in another plate. Earth has nothing of the kind — every real
+ * plate's edge runs through at least two neighbours and a triple junction,
+ * because plates are made by boundaries meeting, not by holes opening. An
+ * enclave also cannot do anything tectonic: with one neighbour it has one
+ * relative motion, so its whole margin is a single ring of the same
+ * boundary type. Whatever churn created it, the surrounding plate simply
+ * takes it back. */
+function absorbEnclaves(mesh, map) {
+    const {plates, r_plate} = map;
+    const {numRegions} = mesh;
+    const out_r = [];
+    const touches = plates.map(() => new Set());
+    for (let r = 0; r < numRegions; r++) {
+        mesh.r_circulate_r(out_r, r);
+        for (const nb of out_r) {
+            if (r_plate[nb] !== r_plate[r]) touches[r_plate[r]].add(r_plate[nb]);
+        }
+    }
+    let changed = false;
+    for (let p = 0; p < plates.length; p++) {
+        if (plates[p].sites.length === 0 || touches[p].size !== 1) continue;
+        const q = touches[p].values().next().value;
+        /* two plates alone on the sphere surround each other; that is a
+           hemisphere pair, not an enclave */
+        if (touches[q].size === 1 || plates[q].sites.length === 0) continue;
+        plates[q].sites = plates[q].sites.concat(plates[p].sites);
+        plates[p].sites = [];
+        plates[p].absorbedInto = plates[q].id;
+        changed = true;
+    }
+    return changed;
 }
 
 
@@ -1388,6 +1797,10 @@ function simulateTectonics(mesh, map, seed, options) {
         compactPlates(map);
         map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
     }
+    if (absorbEnclaves(mesh, map)) {
+        compactPlates(map);
+        map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
+    }
     removeNetRotation(mesh, map.plates, map.r_plate);
     Object.assign(map, initCrust(mesh, map.r_xyz, seed, opts));
 
@@ -1395,19 +1808,38 @@ function simulateTectonics(mesh, map, seed, options) {
         map.elapsedMyr += opts.stepMyr;
         const collisions = stepTectonics(mesh, map, opts);
 
-        let changed = weldPlates(mesh, map, collisions, opts);
+        let changed = subductSites(mesh, map, randFloat);
+        if (weldPlates(mesh, map, collisions, opts)) changed = true;
         if (randFloat() < opts.riftChance && riftPlate(mesh, map, randFloat, opts)) changed = true;
+        /* births balance deaths: back-arc slivers keep calving off the
+           trenches until the census is back at strength, the way Earth's
+           subduction girdle keeps its microplate belt topped up. The vice
+           kills more than one microplate a step when the belt is full, so
+           a big deficit is allowed two births. */
+        const census = map.plates.reduce((c, plate) => c + (plate.sites.length > 0 ? 1 : 0), 0);
+        const deficit = (map.targetPlateCount || 0) - census;
+        for (let births = deficit > 2 ? 2 : deficit > 0 ? 1 : 0; births > 0; births--) {
+            if (randFloat() < opts.backArcChance && spawnBackArcPlate(mesh, map, randFloat, opts)) changed = true;
+        }
         if (retirePlates(mesh, map, opts)) changed = true;
         if (resolvePlateBodies(mesh, map, randFloat, opts)) {
             compactPlates(map);
             map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
         }
-        if (opts.onStep) opts.onStep(step, map);
         if (changed) {
             compactPlates(map);
             map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
-            removeNetRotation(mesh, map.plates, map.r_plate);
         }
+        /* the churn above can leave a plate wholly inside another; that is
+           not a configuration plates can be in, so it does not survive the
+           step */
+        if (absorbEnclaves(mesh, map)) {
+            compactPlates(map);
+            map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
+            changed = true;
+        }
+        if (changed) removeNetRotation(mesh, map.plates, map.r_plate);
+        if (opts.onStep) opts.onStep(step, map);
     }
 
     Object.assign(map, classifyBoundaries(mesh, map));
@@ -1424,7 +1856,7 @@ module.exports = {
     LAND_PEAK_M, LAND_POWER, OCEAN_DEPTH_M, OCEAN_POWER,
     elevationToMeters, metersToElevation,
     clamp01, smoothField,
-    generatePlates, removeNetRotation,
+    generatePlates, removeNetRotation, absorbEnclaves,
     plateVelocity, rotateAbout, nearestRegion,
     classifyBoundaries,
     oceanDepthMeters, continentHeightMeters,

@@ -68,6 +68,41 @@ Three layers, each measurable:
    correction overshoots; on one seed the worst error grew 2.0 to 4.6 while a
    single plate swelled from 131 sites to 340.
 
+   **Majors and minors are not seeded alike.** The majors tile the sphere
+   between them; the minors are then carved out of the boundaries between
+   majors — each is born at the midpoint of a tight cross-plate site pair,
+   preferring margins where the majors converge, its sites gathered with a
+   stretch along the boundary (`microplateElongation`) so it comes out a
+   sliver hugging the margin, the way the Caribbean, Cocos and Scotia do.
+   Seeding every plate from a free-standing nucleus instead drops minors
+   into the middle of majors, where they sit as single-neighbour enclaves.
+   Earth has no enclave plates, and neither does this model:
+   `absorbEnclaves` hands any plate whose whole edge touches one neighbour
+   back to that neighbour, at birth and every step, and `stats` counts what
+   is left (it must read 0). Minors also spin faster than majors
+   (`microplateSpin`), as Earth's do.
+
+   **Subduction acts on the plates themselves.** Sites used to be immortal,
+   so a converging plate's sites marched through whatever stood in the way;
+   a microplate in a closing vice was overrun in a few steps and the
+   census fell from ~20 to ~9 with nothing small left. Now a site standing
+   on another plate's ground at a converging margin is slab: density
+   decides which side sinks (ocean under continent, older floor under
+   younger, continents never — they collide, which is what a collision
+   belt needs), decided by majority along the whole shared margin rather
+   than site by site — a per-site verdict flip-flops along a patchy coast
+   and shreds the front. The overriding side's site retreats onto its own
+   ground instead, so the trench stays pinned to the plate that owns it.
+   Every consumed site is handed back as a new site on a spreading margin,
+   weighted by the *share* of each plate's boundary that is divergent —
+   never by raw ridge length, which is the same rich-get-richer term that
+   once let one plate eat the map. Trenches also calve back-arc
+   microplates (`spawnBackArcPlate`, the Philippine Sea story) whenever
+   the census is below the plate count asked for, so deaths at the
+   trenches do not empty the map. `sitesPerPlate` doubles as the grain of
+   trench erosion: at 26 sites a 40k mesh resolves the eaten front as
+   raggedness 1.5; at 40 it reads ~1.2–1.3 at any mesh size.
+
 2. **Motion.** Rigid rotation about an Euler pole, `omega x r`, in a
    no-net-rotation frame. A single constant vector per plate is tangent at
    one point only, and on 20 plates puts >30% of the velocity into the radial
@@ -192,7 +227,8 @@ plates and to push pieces per plate from 1.0 to 1.5, while the steps stayed
 invisible in captures at both resolutions. Do not rebuild it without first
 raising the mesh by an order of magnitude.
 
-The partition is not where the remaining gap to Earth is. Boundaries already
-sit at 1.2 on normalised raggedness, which is close to the straight-arc floor;
-what is still unlike Earth is relief (3.3% of the surface above 2000 m against
-5%, and in diffuse patches rather than linear belts).
+The partition is not where the remaining gap to Earth is. Boundaries sit at
+1.2–1.3 on normalised raggedness — the tenth above the straight-arc floor is
+the trench fronts, which genuinely erode now; what is still unlike Earth is
+relief (about 3% of the surface above 2000 m against 5%, and in diffuse
+patches rather than linear belts).
