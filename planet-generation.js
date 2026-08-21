@@ -422,6 +422,13 @@ window.setSeed = next => {
     }
     commitSeed(parsed);
 };
+/* Override a tectonic option and rebuild, so a parameter can be judged from a
+   capture without editing the file. Preview scripts use this; the UI does not. */
+window.setTectonicOption = (key, value) => {
+    if (!(key in Tectonics.DEFAULTS)) throw new Error(`unknown tectonic option: ${key}`);
+    Tectonics.DEFAULTS[key] = value;
+    generateMesh();
+};
 window.shuffleSeed = () => {
     let next;
     do { next = (Math.random() * 0x7fffffff) | 0; } while (next === seed);
@@ -1103,7 +1110,8 @@ function generateMap() {
         /* The 1843 path wants a static partition and a coin flip for which
          * plates are oceanic. */
         map.boundaryWarp = Tectonics.makeBoundaryWarp(mesh, map.r_xyz, seed, Tectonics.DEFAULTS);
-        map.r_plate = Tectonics.assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp);
+        map.tectonicFieldsFor = `${mesh.numRegions}:${seed}`;
+        map.r_plate = Tectonics.plateOwnership(mesh, map, Tectonics.DEFAULTS);
         map.plate_is_ocean = new Set();
         for (let p = 0; p < map.plates.length; p++) {
             if (makeRandInt(map.plates[p].id + 1)(10) < 5) map.plate_is_ocean.add(p);

@@ -39,6 +39,16 @@ Do not:
 
 Three layers, each measurable:
 
+0. **Per-cell fields belong to their mesh.** `boundaryWarp` and the crust
+   arrays are one value per cell, so a cached one is only valid for the mesh
+   it was built for. `simulateTectonics` stamps `map.tectonicFieldsFor` with
+   the region count and seed and rebuilds when it changes. Without that, a
+   caller that keeps one `map` across regenerations — which the browser does —
+   indexes a 10k field with a 40k mesh, reads undefined, and hands NaN weights
+   to the ownership pass. The planet collapses to two or three plates, but
+   only after the mesh size is changed, so it does not show up in the
+   headless scripts at all.
+
 1. **Plate geometry.** A plate is a rigid body made of *sites* — points that
    rotate with it. A cell belongs to whichever site is nearest, so a boundary
    falls where two plates' nearest sites tie: a great-circle arc, and where
@@ -149,11 +159,18 @@ bun run preview plates                # plate shapes, sizes, motion
 bun run preview crust                 # sea-floor age, orogeny, boundary types
 ```
 
-`bun run stats` reports **boundary raggedness** (a plate's boundary against
-the shortest one a body of that area could have) and **pieces per plate**.
-A perfect great-circle split of this mesh scores 1.42, so that is the floor,
-not 1.0. Flood-filled plates scored 3.0 and rose to 3.5 over a run; that ratio
-is what "messy" meant, and it is the number to watch.
+`bun run stats` reports **boundary raggedness** and **pieces per plate**.
+
+Raggedness is normalised: the raw perimeter-against-area ratio is divided by
+what a *perfect* spherical Voronoi scores on the same mesh at the same plate
+count, so **1.00 means "as straight as straight arcs can be drawn here"**.
+Normalising is not cosmetic. The raw ratio is not comparable across plate
+counts — on this mesh an exact Voronoi reads 1.38 at two plates and 2.27 at
+twenty, because the smaller each plate is the more of it is boundary. The
+figure of 1.42 that used to be quoted as the floor was measured on a two-plate
+split and is roughly twice too strict at twenty; against it the current
+partition looked half as good as it is. Flood-filled plates scored 3.0 raw
+and rose to 3.5 over a run — that is what "messy" meant.
 
 Judge aesthetics from `bun run sheet`, never from a single capture: a failure
 mode that affects every seed is easy to mistake for a bad roll, and a good roll
@@ -162,3 +179,20 @@ is easy to mistake for a fix.
 `crust` is the view that shows what the simulation is actually doing: ridges
 with young pale crust beside them fading to dark old crust, trenches, and
 transform segments.
+
+## What the mesh cannot draw
+
+Earth's ridges are a staircase: short spreading segments offset sideways by
+transform faults, which is what makes its divergent boundaries look angular
+rather than curved. That was built and then removed. It cannot work here.
+Earth's ridge segments run 30-500 km and its offsets 30-900 km, against cells
+226 km across at N=10000 and 113 km at N=40000, so only the very largest
+offsets are drawable at all — and drawing them was measured to cost 4 of 18
+plates and to push pieces per plate from 1.0 to 1.5, while the steps stayed
+invisible in captures at both resolutions. Do not rebuild it without first
+raising the mesh by an order of magnitude.
+
+The partition is not where the remaining gap to Earth is. Boundaries already
+sit at 1.2 on normalised raggedness, which is close to the straight-arc floor;
+what is still unlike Earth is relief (3.3% of the surface above 2000 m against
+5%, and in diffuse patches rather than linear belts).

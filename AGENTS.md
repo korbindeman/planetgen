@@ -9,6 +9,7 @@ bun run stats                                # compares the model against Earth
 bun run stats --seeds=1,2,3 --steps=30       # any --option overrides a tectonics DEFAULTS key
 bun run sheet                                # 12 seeds in one contact sheet, preview/seed-sheet.png
 bun run sheet --count=9 --view=globe --overlay=plates
+bun run stats --n=40000                      # the model should read the same at any mesh size
 bun run climate                              # compares the climate model against Earth
 ```
 

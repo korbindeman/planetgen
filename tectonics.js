@@ -448,13 +448,21 @@ function rotateAbout(out, v, axis, angle) {
 
 
 /* Nearest mesh region to a point, by hill-climbing from a nearby region.
- * Spherical Voronoi cells are convex, so the greedy walk lands on the true
- * nearest cell provided `start` is in the neighbourhood — which it is,
- * since a plate moves only a few cells per step. */
+ * Spherical Voronoi cells are convex, so the walk always ends on the true
+ * nearest cell — it stops when no neighbour is closer, and that local
+ * maximum is the global one.
+ *
+ * The step limit is only a safety net, so it has to scale with the mesh. A
+ * fixed cap works for advection, where the start is a cell or two away, but
+ * not for locating a plate site from an arbitrary hint: at 40000 regions the
+ * mesh is over 200 cells across, a 64-step cap cut the climb off partway,
+ * and the wrong cell then seeded the ownership. Half the plates vanished
+ * before the clock started, and only at high resolution. */
 function nearestRegion(mesh, r_xyz, x, start, out_r) {
     let current_r = start;
     let best = x[0] * r_xyz[3 * current_r] + x[1] * r_xyz[3 * current_r + 1] + x[2] * r_xyz[3 * current_r + 2];
-    for (let guard = 0; guard < 64; guard++) {
+    const limit = 8 * Math.sqrt(mesh.numRegions);
+    for (let guard = 0; guard < limit; guard++) {
         let moved = -1;
         mesh.r_circulate_r(out_r, current_r);
         for (const neighbor_r of out_r) {
@@ -544,6 +552,7 @@ const DEFAULTS = {
                                   // heavy-tailed size distribution gets several, and
                                   // enough that shapes are not convex caps
     boundaryWarp: 0.35,           // how far the boundary curves away from a true arc
+    speckCells: 12,               // territory smaller than this is not a plate
     boundaryWarpScale: 1.6,       // low frequency: bend the boundary, do not fray it
     plateGrowth: 0.05,            // how fast a plate gains at its ridges and loses at
                                   // its trenches; this is what lets a mostly-subducting
@@ -747,6 +756,57 @@ function initCrust(mesh, r_xyz, seed, opts) {
 }
 
 
+/* The partition. Everything that reads plate ownership goes through here, so
+ * whatever tidying happens after the Voronoi pass is never quietly rebuilt
+ * away by the next one. */
+function plateOwnership(mesh, map, opts, out) {
+    const r_plate = assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp, out);
+    despeckle(mesh, r_plate, opts);
+    return r_plate;
+}
+
+
+/* Absorb any run of territory too small to be a plate into whatever
+ * surrounds it. Only the specks: anything substantial is left for
+ * resolvePlateBodies to promote into a plate of its own. */
+function despeckle(mesh, r_plate, opts) {
+    const {numRegions} = mesh;
+    const out_r = [];
+    const component = new Int32Array(numRegions).fill(-1);
+    const members = [];
+    for (let r = 0; r < numRegions; r++) {
+        if (component[r] !== -1) continue;
+        const p = r_plate[r];
+        const id = members.length;
+        const queue = [r];
+        component[r] = id;
+        for (let h = 0; h < queue.length; h++) {
+            mesh.r_circulate_r(out_r, queue[h]);
+            for (const nb of out_r) {
+                if (component[nb] === -1 && r_plate[nb] === p) { component[nb] = id; queue.push(nb); }
+            }
+        }
+        members.push(queue);
+    }
+    const limit = Math.max(2, Math.round(opts.speckCells));
+    const tally = new Map();
+    for (const group of members) {
+        if (group.length > limit) continue;
+        tally.clear();
+        for (const r of group) {
+            mesh.r_circulate_r(out_r, r);
+            for (const nb of out_r) {
+                if (component[nb] === component[r]) continue;
+                tally.set(r_plate[nb], (tally.get(r_plate[nb]) || 0) + 1);
+            }
+        }
+        let best = -1, bestCount = 0;
+        for (const [p, count] of tally) if (count > bestCount) { bestCount = count; best = p; }
+        if (best !== -1) for (const r of group) r_plate[r] = best;
+    }
+}
+
+
 /* Weights for reading a field at an arbitrary point, spread over the cell
  * that contains it and that cell's neighbours.
  *
@@ -827,7 +887,7 @@ function stepTectonics(mesh, map, opts) {
         const angle = plate.omega * dtMyr;
         plate.sites = plate.sites.map(s => rotateAbout([], s, plate.pole, angle));
     }
-    const nextPlate = assignPlateOwnership(mesh, r_xyz, plates, map.boundaryWarp);
+    const nextPlate = plateOwnership(mesh, map, opts);
 
     const nextType = new Uint8Array(numRegions);
     const nextAge = new Float32Array(numRegions);
@@ -1307,17 +1367,26 @@ function simulateTectonics(mesh, map, seed, options) {
     const opts = Object.assign({}, DEFAULTS, options);
     const randFloat = makeRandFloat(seed ^ 0x85ebca6b);
 
-    map.boundaryWarp = map.boundaryWarp || makeBoundaryWarp(mesh, map.r_xyz, seed, opts);
+    /* Both fields are one value per cell, so a cached one belongs to the mesh
+     * it was built for. Callers that keep a single `map` across regenerations
+     * would otherwise index a 10k field with a 40k mesh, read undefined, and
+     * hand NaN weights to the ownership pass — which collapses the planet to
+     * a couple of plates, but only after the mesh size is changed. */
+    const stamp = `${mesh.numRegions}:${seed}`;
+    if (map.tectonicFieldsFor !== stamp) {
+        map.boundaryWarp = makeBoundaryWarp(mesh, map.r_xyz, seed, opts);
+        map.tectonicFieldsFor = stamp;
+    }
     map.nextPlateId = map.nextPlateId ?? map.plates.length;
     map.elapsedMyr = 0;
     for (const plate of map.plates) plate.scale = plate.scale || 1;
 
-    map.r_plate = assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp);
+    map.r_plate = plateOwnership(mesh, map, opts);
     /* Filling quotas nearest-first can leave a plate in two pieces before the
      * clock has even started, so settle the bodies once at birth too. */
     if (resolvePlateBodies(mesh, map, randFloat, opts)) {
         compactPlates(map);
-        map.r_plate = assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp, map.r_plate);
+        map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
     }
     removeNetRotation(mesh, map.plates, map.r_plate);
     Object.assign(map, initCrust(mesh, map.r_xyz, seed, opts));
@@ -1331,12 +1400,12 @@ function simulateTectonics(mesh, map, seed, options) {
         if (retirePlates(mesh, map, opts)) changed = true;
         if (resolvePlateBodies(mesh, map, randFloat, opts)) {
             compactPlates(map);
-            map.r_plate = assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp, map.r_plate);
+            map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
         }
         if (opts.onStep) opts.onStep(step, map);
         if (changed) {
             compactPlates(map);
-            map.r_plate = assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp, map.r_plate);
+            map.r_plate = plateOwnership(mesh, map, opts, map.r_plate);
             removeNetRotation(mesh, map.plates, map.r_plate);
         }
     }
@@ -1349,7 +1418,7 @@ function simulateTectonics(mesh, map, seed, options) {
 
 module.exports = {
     DEFAULTS,
-    assignPlateOwnership, makeBoundaryWarp,
+    assignPlateOwnership, plateOwnership, makeBoundaryWarp,
     BOUNDARY_NONE, BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM,
     CRUST_OCEANIC, CRUST_CONTINENTAL,
     LAND_PEAK_M, LAND_POWER, OCEAN_DEPTH_M, OCEAN_POWER,

@@ -40,11 +40,63 @@ const EARTH_PLATE_AREAS = [20.3, 14.9, 13.3, 12.0, 11.9, 9.2, 8.6, 3.3, 3.1, 2.3
                            1.1, 1.0, 0.65, 0.57, 0.31, 0.22, 0.1, 0.05, 0.04, 0.03];
 const topN = (a, n) => a.slice(0, n).reduce((x, y) => x + y, 0);
 
+/* The raggedness a flawless partition would score on this mesh: cells handed
+ * to the nearest of `count` random sites, boundaries therefore exact great
+ * circle arcs. Averaged over a few site layouts, and memoised, since it
+ * depends only on the mesh and the plate count. */
+const floorCache = new Map();
+function voronoiFloor(mesh, r_xyz, count) {
+    if (count < 2) return NaN;
+    if (floorCache.has(count)) return floorCache.get(count);
+    const n = mesh.numRegions;
+    const out_r = [];
+    let total = 0;
+    const TRIALS = 3;
+    for (let trial = 0; trial < TRIALS; trial++) {
+        const rf = makeRandFloat(0x5eed + trial * 977);
+        const sx = [], sy = [], sz = [];
+        for (let p = 0; p < count; p++) {
+            let x, y, z, d;
+            do { x = 2 * rf() - 1; y = 2 * rf() - 1; z = 2 * rf() - 1; d = Math.hypot(x, y, z); }
+            while (d < 1e-3 || d > 1);
+            sx.push(x / d); sy.push(y / d); sz.push(z / d);
+        }
+        const owner = new Int32Array(n);
+        for (let r = 0; r < n; r++) {
+            let best = 0, bestDot = -2;
+            for (let p = 0; p < count; p++) {
+                const d = r_xyz[3 * r] * sx[p] + r_xyz[3 * r + 1] * sy[p] + r_xyz[3 * r + 2] * sz[p];
+                if (d > bestDot) { bestDot = d; best = p; }
+            }
+            owner[r] = best;
+        }
+        const area = new Int32Array(count), perim = new Int32Array(count);
+        for (let r = 0; r < n; r++) {
+            const p = owner[r];
+            area[p]++;
+            mesh.r_circulate_r(out_r, r);
+            for (const nb of out_r) if (owner[nb] !== p) perim[p]++;
+        }
+        let w = 0, acc = 0;
+        for (let p = 0; p < count; p++) {
+            const a = area[p];
+            if (a < 60) continue;
+            acc += a * (perim[p] / (2 * Math.sqrt(Math.PI * a) * 1.1));
+            w += a;
+        }
+        total += acc / w;
+    }
+    const value = total / TRIALS;
+    floorCache.set(count, value);
+    return value;
+}
+
+
 function run(seed) {
     const started = Date.now();
     const { mesh, r_xyz } = SphereMesh.makeSphere(N, JITTER, makeRandFloat(seed));
     const map = { r_xyz, r_elevation: new Float32Array(mesh.numRegions) };
-    Object.assign(map, Tectonics.generatePlates(mesh, P, seed));
+    Object.assign(map, Tectonics.generatePlates(mesh, P, seed, OPTIONS));
     Tectonics.simulateTectonics(mesh, map, seed, OPTIONS);
     const ms = Date.now() - started;
 
@@ -77,10 +129,15 @@ function run(seed) {
     const boundaryTotal = boundary.convergent + boundary.divergent + boundary.transform || 1;
 
     /* Is each plate one coherent body with a boundary a sane length, or a
-     * scatter of pieces with an edge that wanders at cell scale? Raggedness
-     * compares a plate's boundary to the shortest one a body of that area
-     * could have. A perfect great-circle split of this mesh scores 1.42, so
-     * that is the floor here, not 1.0. */
+     * scatter of pieces with an edge that wanders at cell scale?
+     *
+     * The raw ratio of a plate's boundary to the shortest one a body of that
+     * area could have is not comparable across plate counts: on a discrete
+     * mesh even a *perfect* spherical Voronoi scores 1.38 at two plates and
+     * 2.27 at twenty, because the smaller each plate is the more of it is
+     * boundary. So the raw figure is divided by that floor, measured on this
+     * mesh at this plate count (`voronoiFloor`), and 1.00 means "as straight
+     * as straight arcs can be drawn here". */
     const plateArea = new Int32Array(map.plates.length);
     const platePerimeter = new Int32Array(map.plates.length);
     const out_r = [];
@@ -103,14 +160,16 @@ function run(seed) {
         }
         fragments[p]++;
     }
-    let weight = 0, ragged = 0, pieces = 0;
+    let weight = 0, ragged = 0, pieces = 0, counted = 0;
     for (let p = 0; p < map.plates.length; p++) {
         const a = plateArea[p];
         if (a < 60) continue;
         ragged += a * (platePerimeter[p] / (2 * Math.sqrt(Math.PI * a) * 1.1));
         pieces += a * fragments[p];
         weight += a;
+        counted++;
     }
+    const floor = voronoiFloor(mesh, r_xyz, counted);
 
     /* how much of the surface is high ground, and is it in belts? */
     let mountains = 0;
@@ -124,7 +183,8 @@ function run(seed) {
         ageMedian: q(ages, 0.5), ageMax: q(ages, 1),
         depthP10: q(depths, 0.1), depthMedian: q(depths, 0.5), depthP90: q(depths, 0.9),
         mountains: mountains / n * 100,
-        raggedness: weight ? ragged / weight : NaN,
+        raggedness: weight ? (ragged / weight) / floor : NaN,
+        raggednessFloor: floor,
         fragments: weight ? pieces / weight : NaN,
         named: map.plates.filter(p => plateArea[map.plates.indexOf(p)] / n > 0.01).length,
         boundary: {
@@ -144,6 +204,7 @@ for (const s of results) {
     console.log(`  sea floor age median ${s.ageMedian.toFixed(0)} max ${s.ageMax.toFixed(0)} Myr`);
     console.log(`  ocean depth p10 ${s.depthP10.toFixed(0)} median ${s.depthMedian.toFixed(0)} p90 ${s.depthP90.toFixed(0)} m`);
     console.log(`  above 2000 m: ${s.mountains.toFixed(1)}% of surface`);
+    console.log(`  raggedness ${s.raggedness.toFixed(2)} (1.0 = straight arcs)  pieces per plate ${s.fragments.toFixed(2)}`);
     console.log(`  boundaries  convergent ${s.boundary.convergent.toFixed(0)}%  divergent ${s.boundary.divergent.toFixed(0)}%  transform ${s.boundary.transform.toFixed(0)}%`);
 }
 
@@ -160,7 +221,7 @@ const rows = [
     ['ocean depth median m', mean(s => s.depthMedian), '~4000'],
     ['surface above 2000 m %', mean(s => s.mountains), '~5'],
     ['plate count', mean(s => s.plates), '~15 major+minor'],
-    ['boundary raggedness', mean(s => s.raggedness), '~1.2-1.5 (1.42 = a clean split on this mesh)'],
+    ['boundary raggedness', mean(s => s.raggedness), `1.0 = as straight as this mesh allows (floor ${mean(s => s.raggednessFloor).toFixed(2)} raw)`],
     ['pieces per plate', mean(s => s.fragments), '1.0 - a plate is one body'],
     ['runtime ms', mean(s => s.ms), ''],
 ];
