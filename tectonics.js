@@ -736,27 +736,54 @@ const DEFAULTS = {
                                   // plateGrowth or the feedback has no equilibrium
     plateRetireArea: 0.001,       // a plate smaller than this is absorbed by its neighbours
     stepMyr: 10,                  // 200 Myr of history
-    cratons: 6,                   // continental nuclei; Earth has about this many blocks
+    cratons: 6,                   // continents; each is grown from several welded blocks
     cratonSigma: 0.55,            // spread of craton sizes, so they are not all alike
-    cratonWarp: 0.5,              // how ragged the edge of a craton is. This multiplies
-                                  // the normalised distance, so it moves the whole
-                                  // margin in or out; pushed too far it detaches lobes
-                                  // and strings the continent out
+    cratonWarp: 1.0,              // gain on the banded margin cuts. The old
+                                  // multiplicative warp just resized a disc; this
+                                  // scales gulfs, bays and shatter instead
     cratonElongation: 0.38,       // log-sigma of how stretched a craton is along its
                                   // axis; discs make blobs, slivers make Americas, and
                                   // too much of it makes noodles
     cratonTaper: 0.35,            // how much one end of a craton narrows, so a mass
                                   // can come to a point the way South America does
+    continentBlocks: 1.0,         // a continent is grown as a chain of welded blocks,
+                                  // not one decorated cap; this scales how many blocks
+                                  // the largest continents get. 0 collapses every
+                                  // continent back to a single cap
+    blockSpread: 0.70,            // block centre spacing as a fraction of the two
+                                  // blocks' summed radii. Lower is compact and rounded,
+                                  // higher is lobed and sprawling; past ~1 the blocks
+                                  // detach into an island neighbour
+    sutures: 1.0,                 // gain on what a weld between two blocks does to the
+                                  // crust. The fixture zeroes this: it authors its own
+                                  // belts and basins
+    sutureWidth: 0.22,            // seam half-width, in units of block radius
+    sutureBeltKm: 5,              // an old collision belt along the weld: extra
+                                  // thickness that rootRelax erodes into rounded
+                                  // highlands, an Appalachians rather than a Himalaya
+    sutureSagKm: 5.5,             // a sagged weld: thinner crust that floods into a
+                                  // shallow epicontinental sea, a Hudson Bay or Baltic.
+                                  // This replaces the generated inland-sea caps
+    oceanGap: 0.07,               // radians of sea a growing block must keep from
+                                  // every other continent
+    gulfCut: 0.72,                // deep but sparse inlets; weak noise is ignored
+    bayCut: 0.16,                 // smaller bays
+    coastGrain: 0.06,             // a little edge grain; wiggly blobs are not the goal
+    cratonShatter: 0.12,          // some outer shelves break into islands
     coastContrast: 0.4,           // regional variation in coast raggedness: some
                                   // margins calm, some shattered
     cratonClustering: 0.62,       // chance a craton huddles against the others
-    cratonMinSeparation: 0.55,    // radians; stops two cratons landing on each other
+    cratonMinSeparation: 0.70,    // radians; block aggregates reach further than the
+                                  // caps they grew from, so continents need more room
+                                  // than single cratons did
     crustSmoothing: 1,            // smoothing of the craton edge warp
-    continentFraction: 0.57,      // Earth: continental crust is ~41% of the surface, of
-                                  // which ~29% is dry land. Set well above 0.41 because
-                                  // this is the fraction the planet is *born* with and
-                                  // rifting consumes roughly a quarter of it over the
-                                  // run; the target is where the planet ends up
+    continentFraction: 0.47,      // Earth: continental crust is ~41% of the surface, of
+                                  // which ~29% is dry land. Set above 0.41 because this
+                                  // is the fraction the planet is *born* with and
+                                  // rifting consumes some of it over the run; block
+                                  // aggregates expose much less margin than the old
+                                  // noise-fringed discs did, so they lose only ~5
+                                  // points where the discs lost 16
     crustReferenceKm: 33.5,       // thickness undisturbed continental crust relaxes towards.
                                   // Sets how high a quiet interior stands: at 145 m per km
                                   // above sea-level thickness, 33.5 km is ~650 m, near
@@ -777,9 +804,12 @@ const DEFAULTS = {
                                   // by its rim. A margin should have to be stretched down
                                   // to crustMinKm before it breaks
     crustMaxKm: 68,               // Tibet
-    crustInitialPeakKm: 36,       // craton cores stand ~1 km up, so the interior is
-                                  // unambiguously dry and only the margin sits near
-                                  // the waterline
+    coastalPlain: 0.35,           // fraction of the interior over which the coast climbs
+                                  // to platform height. Inside that ramp the continent is
+                                  // *flat*: a platform born at crustReferenceKm, the
+                                  // thickness it would relax to anyway. Relief on land is
+                                  // orogeny's job — a radial dome from core to coast made
+                                  // every continent shade like a blob
     shelfThinningKm: 0.15,         // per step, at a rifting margin
     collisionThickenKm: 0.9,      // per step, continent against continent
     collisionThrust: 0.34,        // share of an overridden column thrust onto the winner
@@ -793,11 +823,10 @@ const DEFAULTS = {
                                   // opening floods. Was declared but never used: the rift
                                   // branch tested against crustTypeKm instead, so crust
                                   // kept being drawn into new area almost indefinitely
-    emergentFraction: 0.68,       // share of continental crust starting above sea level.
-                                  // The rest is shelf: now that interiors stand a
-                                  // kilometre up, a craton needs a wider drowned rim to
-                                  // land at Earth's ~30% submerged, and that rim is what
-                                  // reads as a continental shelf rather than a cliff
+    emergentFraction: 0.73,       // share of continental crust starting above sea level.
+                                  // The rest is shelf: a craton needs a wide drowned rim
+                                  // to land at Earth's ~30% submerged, and that rim is
+                                  // what reads as a continental shelf rather than a cliff
     orogenyDecay: 0.88,           // erosion between steps
     orogenyReliefM: 2200,         // extra relief at full orogeny, on top of isostasy
     rootRelax: 0.030,             // crustal roots relax back towards normal
@@ -914,10 +943,13 @@ function placementFromSpec(spec, opts) {
     const shares = spec.shares || centres.map(() => 1);
     return {
         centres,
-        radii: radiiFromShares(shares, opts.continentFraction),
+        radii: spec.radii && spec.radii.length === centres.length
+            ? spec.radii.slice()
+            : radiiFromShares(shares, opts.continentFraction),
         axes: spec.axes,
         elong: spec.elong,
         taper: spec.taper,
+        shares: shares.slice(),
     };
 }
 
@@ -975,14 +1007,264 @@ function placeCratons(mesh, r_xyz, count, randFloat, opts) {
     });
     const elong = centres.map(() => Math.exp(opts.cratonElongation * Math.abs(gauss())));
     const taper = centres.map(() => opts.cratonTaper * (2 * randFloat() - 1));
-    return {centres, radii, axes, elong, taper};
+    return {centres, radii, axes, elong, taper, shares: weights};
+}
+
+
+function walkSphere(centre, tangent, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const out = [
+        centre[0] * c + tangent[0] * s,
+        centre[1] * c + tangent[1] * s,
+        centre[2] * c + tangent[2] * s,
+    ];
+    const len = Math.hypot(out[0], out[1], out[2]) || 1;
+    out[0] /= len; out[1] /= len; out[2] /= len;
+    return out;
+}
+
+
+function frameFromTangent(centre, u) {
+    const along = [
+        u[0] - vec3.dot(u, centre) * centre[0],
+        u[1] - vec3.dot(u, centre) * centre[1],
+        u[2] - vec3.dot(u, centre) * centre[2],
+    ];
+    if (vec3.length(along) < 1e-9) {
+        const ref = Math.abs(centre[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        vec3.cross(along, centre, ref);
+    }
+    vec3.normalize(along, along);
+    return {u: along, v: vec3.normalize([], vec3.cross([], centre, along))};
+}
+
+
+function smooth01(edge0, edge1, x) {
+    const t = clamp01((x - edge0) / (edge1 - edge0));
+    return t * t * (3 - 2 * t);
+}
+
+
+/* What a weld between two blocks does to the crust, decided once per
+ * pair: an old collision belt, a sagging seam, or a clean join. */
+const SUTURE_NONE = 0, SUTURE_BELT = 1, SUTURE_SAG = 2;
+
+function drawSutureTypes(nB, randFloat) {
+    const types = new Uint8Array(nB * nB);
+    for (let i = 0; i < nB; i++) {
+        for (let j = i + 1; j < nB; j++) {
+            const roll = randFloat();
+            const type = roll < 0.40 ? SUTURE_BELT : roll < 0.72 ? SUTURE_SAG : SUTURE_NONE;
+            types[i * nB + j] = types[j * nB + i] = type;
+        }
+    }
+    return types;
+}
+
+
+/* A continent is not one cap. Earth's are aggregates: a few cratonic
+ * blocks welded along sutures — Laurentia, the shield, an Appalachian
+ * rim make North America. A lone ellipse can only ever be a blob, and
+ * decorating it with authored peninsula and gulf caps kept the blob and
+ * added bumps. So grow each continent as a chain of overlapping blocks:
+ * the union's outline gets waists, promontories and concavities because
+ * the structure has them, and each weld is a suture that can carry an
+ * old belt or sag into a shallow sea.
+ *
+ * All randomness is drawn up front. Positions are re-derived for any
+ * radius scale with block spacing proportional to radius, so the area
+ * bisection in initCrust resizes an aggregate without changing its
+ * topology. */
+function planBlocks(continents, randFloat, opts) {
+    const nC = continents.centres.length;
+    const cShares = continents.shares || continents.centres.map(() => 1);
+    const cTotal = cShares.reduce((a, b) => a + b, 0);
+    const gauss = () => {
+        const u1 = Math.max(1e-9, randFloat()), u2 = randFloat();
+        return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    };
+
+    /* Pass 1: how many blocks each continent gets and how big each is,
+     * so every radius is known before any block is placed. */
+    const continent = [], weights = [], elong = [], taper = [];
+    const firstBlock = [];
+    for (let k = 0; k < nC; k++) {
+        const frac = cShares[k] / cTotal;
+        let want = 1;
+        if (frac >= 0.30) want = 5;
+        else if (frac >= 0.20) want = 4;
+        else if (frac >= 0.12) want = 3;
+        else if (frac >= 0.05) want = 2;
+        want = Math.max(1, Math.round(1 + (want - 1) * opts.continentBlocks));
+
+        const sub = [1];
+        for (let i = 1; i < want; i++) sub.push(0.50 * Math.exp(0.65 * gauss()));
+        const subTotal = sub.reduce((a, b) => a + b, 0);
+
+        firstBlock.push(continent.length);
+        for (let i = 0; i < want; i++) {
+            continent.push(k);
+            weights.push(cShares[k] * sub[i] / subTotal);
+            if (i === 0) {
+                elong.push(continents.elong[k]);
+                taper.push(continents.taper[k]);
+            } else {
+                elong.push(Math.exp(0.30 * Math.abs(gauss())));
+                taper.push(0.8 * opts.cratonTaper * (2 * randFloat() - 1));
+            }
+        }
+    }
+    const radii = radiiFromShares(weights, opts.continentFraction);
+    const nB = weights.length;
+
+    const parent = new Int32Array(nB).fill(-1);
+    const bearing = new Float32Array(nB);
+    const spread = new Float32Array(nB);
+    const axisJitter = new Float32Array(nB);
+
+    /* One block's centre, given its parent's, at a radius scale. The
+     * bearing is stored in a frame derived from the parent's position, so
+     * the same plan stays coherent as the bisection rescales it. */
+    const stepFrom = (P, k, theta, arc) => {
+        const f = frameFromTangent(P, continents.axes[k].u);
+        const c = Math.cos(theta), s = Math.sin(theta);
+        const dir = [
+            f.u[0] * c + f.v[0] * s,
+            f.u[1] * c + f.v[1] * s,
+            f.u[2] * c + f.v[2] * s,
+        ];
+        return {pos: walkSphere(P, dir, arc), dir};
+    };
+
+    const materialize = (scale) => {
+        const centres = new Array(nB), axes = new Array(nB);
+        for (let b = 0; b < nB; b++) {
+            const k = continent[b];
+            if (parent[b] < 0) {
+                centres[b] = continents.centres[k];
+                axes[b] = continents.axes[k];
+                continue;
+            }
+            const arc = spread[b] * (radii[parent[b]] + radii[b]) * scale;
+            const {pos, dir} = stepFrom(centres[parent[b]], k, bearing[b], arc);
+            centres[b] = pos;
+            /* The block lies along its chain step, give or take a jitter. */
+            const g = frameFromTangent(pos, dir);
+            const cj = Math.cos(axisJitter[b]), sj = Math.sin(axisJitter[b]);
+            const u = [
+                g.u[0] * cj + g.v[0] * sj,
+                g.u[1] * cj + g.v[1] * sj,
+                g.u[2] * cj + g.v[2] * sj,
+            ];
+            axes[b] = {u, v: vec3.cross([], pos, u)};
+        }
+        return {centres, axes};
+    };
+
+    /* Pass 2: place the blocks at scale 1, keeping every aggregate clear
+     * of the others. Positions are frozen as bearings, not coordinates. */
+    const pos1 = new Array(nB);
+    const clearance = (Q, b) => {
+        let gap = Infinity;
+        for (let j = 0; j < nB; j++) {
+            if (continent[j] === continent[b] || !pos1[j]) continue;
+            gap = Math.min(gap, angleBetween(Q, pos1[j]) - radii[j] - radii[b]);
+        }
+        for (let k = 0; k < nC; k++) {
+            if (k === continent[b] || pos1[firstBlock[k]]) continue;
+            gap = Math.min(gap, angleBetween(Q, continents.centres[k]) - continents.radii[k] - radii[b]);
+        }
+        return gap;
+    };
+
+    const OFFSETS = [0, 0.79, -0.79, 1.57, -1.57, 2.36, -2.36, 3.14];
+    for (let b = 0; b < nB; b++) {
+        const k = continent[b];
+        if (b === firstBlock[k]) { pos1[b] = continents.centres[k]; continue; }
+
+        /* Walk on from the newest block most of the time — that is what
+         * stretches a continent into a sliver or an arc — and sometimes
+         * branch from an earlier one, which fattens it instead. */
+        parent[b] = (b - firstBlock[k] === 1 || randFloat() < 0.55)
+            ? b - 1
+            : firstBlock[k] + Math.floor(randFloat() * (b - firstBlock[k]));
+
+        /* Prefer to grow away from the continent's existing mass. */
+        const centroid = [0, 0, 0];
+        for (let j = firstBlock[k]; j < b; j++) vec3.add(centroid, centroid, pos1[j]);
+        vec3.normalize(centroid, centroid);
+        const P = pos1[parent[b]];
+        const f = frameFromTangent(P, continents.axes[k].u);
+        const away = vec3.scaleAndAdd([], centroid, P, -vec3.dot(centroid, P));
+        let preferred;
+        if (vec3.length(away) < 1e-6) {
+            preferred = 2 * Math.PI * randFloat();
+        } else {
+            vec3.normalize(away, away);
+            preferred = Math.atan2(-vec3.dot(away, f.v), -vec3.dot(away, f.u));
+        }
+        preferred += 1.2 * (randFloat() - 0.5);
+
+        spread[b] = randFloat() < 0.10
+            ? 0.95 + 0.15 * randFloat()   // detached: an offshore Madagascar
+            : opts.blockSpread * (0.78 + 0.45 * randFloat());
+        const arc = spread[b] * (radii[parent[b]] + radii[b]);
+
+        /* A chain may not wander further than this from home: unbounded
+         * walks turned continents into globe-wrapping ribbons. The cap
+         * radius already covers the continent's whole share, so there is
+         * little legitimate reason to stand far outside it. */
+        const maxReach = 1.4 * continents.radii[k];
+        /* Score candidates by the worse of two constraints, but only an
+         * actual touch with another continent is disqualifying: a sprawl
+         * overshoot merely stops being preferred, or dropped blocks
+         * collapse continents back into the discs this replaced. */
+        let bestGap = -Infinity, bestClear = -Infinity, bestTheta = preferred, bestPos = null;
+        for (const off of OFFSETS) {
+            const theta = preferred + off;
+            const {pos} = stepFrom(P, k, theta, arc);
+            const clear = clearance(pos, b);
+            const gap = Math.min(clear, maxReach - angleBetween(pos, continents.centres[k]));
+            if (gap > bestGap) { bestGap = gap; bestClear = clear; bestTheta = theta; bestPos = pos; }
+            if (bestGap >= opts.oceanGap) break;
+        }
+        if (bestClear < 0) {
+            /* Nowhere to grow without touching another continent. Drop the
+             * block; the area bisection makes up the lost share. */
+            parent[b] = -2;
+            radii[b] = 0;
+            pos1[b] = P;
+            continue;
+        }
+        bearing[b] = bestTheta;
+        axisJitter[b] = 0.9 * (randFloat() - 0.5);
+        pos1[b] = bestPos;
+    }
+    /* Dropped blocks sit on their parent with radius 0; give materialize a
+     * valid parent so the chain positions stay defined. */
+    for (let b = 0; b < nB; b++) if (parent[b] === -2) parent[b] = firstBlock[continent[b]];
+
+    return {radii, elong, taper, materialize, sutureType: drawSutureTypes(nB, randFloat), nB};
+}
+
+
+/* Authored placement is already a set of blocks; nothing to grow. */
+function planFromSpec(placement, randFloat) {
+    const nB = placement.centres.length;
+    return {
+        radii: placement.radii,
+        elong: placement.elong,
+        taper: placement.taper,
+        materialize: () => ({centres: placement.centres, axes: placement.axes}),
+        sutureType: drawSutureTypes(nB, randFloat),
+        nB,
+    };
 }
 
 
 function initCrust(mesh, r_xyz, seed, opts) {
     const {numRegions} = mesh;
     const randFloat = makeRandFloat(seed ^ 0x2545f491);
-    const warpNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x27d4eb2f)), 4, 0.55);
 
     const r_crust_type = new Uint8Array(numRegions);
     const r_crust_age = new Float32Array(numRegions);
@@ -992,38 +1274,85 @@ function initCrust(mesh, r_xyz, seed, opts) {
     const r_arc = new Float32Array(numRegions);
     const r_hotspot = new Float32Array(numRegions);
 
-    const {centres, radii, axes, elong, taper} = placeCratons(mesh, r_xyz, opts.cratons, randFloat, opts);
+    const placement = placeCratons(mesh, r_xyz, opts.cratons, randFloat, opts);
+    const plan = opts.cratonPlacement
+        ? planFromSpec(placement, randFloat)
+        : planBlocks(placement, randFloat, opts);
+    const {radii, elong, taper, sutureType, nB} = plan;
 
-    /* Distance to the nearest craton centre, in units of that craton's radius,
-     * warped by noise so the coastline is ragged rather than circular.
+    /* Distance to the nearest block, in units of that block's radius.
      * Below 1 is continental crust; 0 is the deep interior.
      *
-     * The warp amplitude itself varies over the sphere: Earth's coasts are
-     * not uniformly wiggly — Africa's Atlantic side is calm while Norway's
-     * is shattered — and a single amplitude gives every margin the same
-     * texture. */
+     * The old warp multiplied the whole field by low-frequency FBM, which
+     * only resized the disc. Gulfs and shattered shelves are mid-scale
+     * *cuts* on the margin — additive, stronger toward the edge, so the
+     * interior stays a compact craton and we never sit on the percolation
+     * threshold. Contrast still varies which coasts are calm. */
     const depth = new Float32Array(numRegions);
-    const warp = new Float32Array(numRegions);
-    const contrastNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x9e3779b9)), 2, 0.6);
+    const gulf = new Float32Array(numRegions);
+    const bay = new Float32Array(numRegions);
+    const grain = new Float32Array(numRegions);
+    const contrast = new Float32Array(numRegions);
+    const gulfNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x27d4eb2f)), 3, 0.5);
+    const bayNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x9e3779b9)), 2, 0.55);
+    const grainNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0xa5a5a5a5)), 2, 0.5);
+    const contrastNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x85ebca6b)), 2, 0.6);
+    const GULF_F = 9, BAY_F = 16, GRAIN_F = 24;
     for (let r = 0; r < numRegions; r++) {
         const x = r_xyz[3 * r], y = r_xyz[3 * r + 1], z = r_xyz[3 * r + 2];
-        const amp = 1 + opts.coastContrast * contrastNoise(x, y, z);
-        warp[r] = 1 + opts.cratonWarp * amp * warpNoise(x, y, z);
+        gulf[r] = gulfNoise(GULF_F * x, GULF_F * y, GULF_F * z);
+        bay[r] = bayNoise(BAY_F * x, BAY_F * y, BAY_F * z);
+        grain[r] = grainNoise(GRAIN_F * x, GRAIN_F * y, GRAIN_F * z);
+        contrast[r] = 1 + opts.coastContrast * contrastNoise(x, y, z);
     }
-    smoothField(mesh, warp, null, opts.crustSmoothing);
+    smoothField(mesh, gulf, null, opts.crustSmoothing);
 
     const p = [0, 0, 0], t = [0, 0, 0];
-    const measure = (scale) => {
+    /* Signed thickness change along block welds, filled on the last pass:
+     * positive is an old belt, negative a sagging seam. */
+    const sutureKm = new Float32Array(numRegions);
+    const beltKm = opts.sutures * opts.sutureBeltKm;
+    const sagKm = opts.sutures * opts.sutureSagKm;
+    const measure = (scale, record) => {
+        const {centres, axes} = plan.materialize(scale);
         let inside = 0;
         for (let r = 0; r < numRegions; r++) {
             p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
-            let best = Infinity;
-            for (let k = 0; k < centres.length; k++) {
-                const d = capDistance(p, centres[k], axes[k], elong[k], taper[k], t);
-                best = Math.min(best, d / (radii[k] * scale));
+            let d1 = Infinity, d2 = Infinity, b1 = -1, b2 = -1;
+            for (let k = 0; k < nB; k++) {
+                if (!(radii[k] > 0)) continue;
+                const d = capDistance(p, centres[k], axes[k], elong[k], taper[k], t)
+                    / (radii[k] * scale);
+                if (d < d1) { d2 = d1; b2 = b1; d1 = d; b1 = k; }
+                else if (d < d2) { d2 = d; b2 = k; }
             }
-            depth[r] = best * warp[r];
+            const raw = d1;
+            const w = opts.cratonWarp * contrast[r];
+            const g = gulf[r], b = bay[r];
+            const mGulf = smooth01(0.22, 0.85, raw);
+            const mBay = smooth01(0.48, 1.00, raw);
+            const mEdge = smooth01(0.62, 1.12, raw);
+            const cut = w * (
+                opts.gulfCut * Math.max(0, g - 0.22) * mGulf +
+                opts.bayCut * Math.max(0, b - 0.10) * mBay +
+                opts.cratonShatter * Math.max(0, 0.55 * g + 0.45 * b - 0.20) * mEdge
+            );
+            const wig = w * opts.coastGrain * grain[r] * mEdge;
+            depth[r] = raw + cut + wig;
             if (depth[r] < 1) inside++;
+
+            /* A weld is where two blocks are nearly equidistant and the
+             * point is really inside their overlap, not out past the rim. */
+            if (record && b2 >= 0 && d1 < 1.05) {
+                const type = sutureType[b1 * nB + b2];
+                if (type !== SUTURE_NONE) {
+                    let s = 1 - (d2 - d1) / opts.sutureWidth;
+                    if (s > 0) {
+                        s *= s * (1 - smooth01(0.80, 1.05, d2));
+                        sutureKm[r] = type === SUTURE_BELT ? beltKm * s : -sagKm * s;
+                    }
+                }
+            }
         }
         return inside / numRegions;
     };
@@ -1036,7 +1365,7 @@ function initCrust(mesh, r_xyz, seed, opts) {
         const mid = (lo + hi) / 2;
         if (measure(mid) < opts.continentFraction) lo = mid; else hi = mid;
     }
-    measure((lo + hi) / 2);
+    measure((lo + hi) / 2, true);
 
     /* Sea level sits at the depth enclosing `emergentFraction` of the
      * continental crust, found the same way the radii were: by bisection on
@@ -1064,12 +1393,19 @@ function initCrust(mesh, r_xyz, seed, opts) {
             continue;
         }
         r_crust_type[r] = CRUST_CONTINENTAL;
-        r_thickness[r] = d < shore
-            /* interior: thickest at the craton's core, thinning outward */
-            ? opts.seaLevelThicknessKm + (opts.crustInitialPeakKm - opts.seaLevelThicknessKm) *
-              Math.pow(1 - d / shore, 0.7)
+        const base = d < shore
+            /* interior: a coastal plain climbing to a flat platform at the
+               equilibrium thickness. Not a dome — distance from the coast
+               says nothing about how high a real continent stands */
+            ? opts.seaLevelThicknessKm + (opts.crustReferenceKm - opts.seaLevelThicknessKm) *
+              smooth01(0, opts.coastalPlain, 1 - d / shore)
             /* the shelf, between the shoreline and the edge of the craton */
             : opts.crustShelfKm + (opts.seaLevelThicknessKm - opts.crustShelfKm) * (1 - d) / (1 - shore);
+        /* then the weld running through here, if any: an old belt stands
+           up as rounded highlands, a sag floods into a shallow sea */
+        r_thickness[r] = sutureKm[r]
+            ? Math.max(opts.crustMinKm, Math.min(opts.crustMaxKm, base + sutureKm[r]))
+            : base;
     }
     applyBasins(r_xyz, r_thickness, r_crust_type, opts, null);
     return {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_orogenyDir, r_arc, r_hotspot};
@@ -1078,8 +1414,8 @@ function initCrust(mesh, r_xyz, seed, opts) {
 
 /* Enclosed seas — Mediterranean, Hudson Bay — are drowned continental
  * crust, not ocean floor. A basin is the same stretched cap as a craton
- * but it thins the column until it sits below sea level. Authored for the
- * Earth seed; the random path has none unless a caller passes them. */
+ * but it thins the column until it sits below sea level. The Earth
+ * fixture authors a few; the random path generates its own. */
 function applyBasins(r_xyz, r_thickness, r_crust_type, opts, r_orogeny) {
     const basins = opts.basinPlacement;
     if (!basins || !basins.centres || basins.centres.length === 0) return;

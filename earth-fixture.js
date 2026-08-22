@@ -21,10 +21,11 @@ const MESH_SEED = 1843;
  * 200 Myr run consumes crust; using that here would drown the map. */
 const EARTH_OPTS = {
     continentFraction: 0.41,
-    emergentFraction: 0.73,
+    emergentFraction: 0.64,       // block unions carry proportionally less rim than
+                                  // single caps, so more of the crust must start as
+                                  // drowned shelf to land near Earth's 29% land
     cratons: 9,
-    cratonWarp: 0.32,
-    coastContrast: 0.22,
+    sutures: 0,                   // belts and basins are authored here, not grown
     paintPasses: 6,
     seafloorAgeCapMyr: 180,
     polarStraits: true,
@@ -260,24 +261,46 @@ function placementFromLonLat(specs, withFloor) {
 }
 
 
+/* Each continent is a union of blocks, the way the real one is an
+ * aggregate of cratons and accreted terranes. A single decorated cap can
+ * only make a blob — a circular Africa was the proof — so the wedge, the
+ * waist and the peninsula are built from block geometry instead. */
 function earthCratons() {
     return placementFromLonLat([
-        /* Africa: compact wedge, Horn to the east, Med coast at ~32°N so
-         * the basin can sit between it and Europe rather than being filled. */
-        {lon: 20, lat: 4, share: 0.205, toward: [42, 10], elong: 1.28, taper: 0.16},
-        /* Eurasia: long E–W from Europe to Siberia. Centre west of the
-         * Urals so Iberia and Scandinavia are inside the cap, not a
-         * shelf that the Med basin then drowns. */
-        {lon: 55, lat: 57, share: 0.280, toward: [125, 60], elong: 2.25, taper: 0.08},
-        /* North America: points at Mexico, fat in the Canadian Shield;
-         * not stretched at Greenland. */
-        {lon: -98, lat: 48, share: 0.145, toward: [-102, 22], elong: 1.42, taper: 0.16},
-        /* South America: Amazon bulge, tapering to Patagonia, stopping
-         * short of 56°S so Drake Passage has somewhere to cut. */
-        {lon: -62, lat: -8, share: 0.118, toward: [-68, -42], elong: 1.92, taper: 0.12},
-        {lon: 134, lat: -24, share: 0.048, toward: [146, -24], elong: 1.50, taper: 0.08},
-        /* Antarctica sits on the pole as a disc, not a lobe toward Chile. */
-        {lon: 0, lat: -90, share: 0.078, toward: [90, -80], elong: 1.05, taper: 0.0},
+        /* Africa: wide across the Sahara, waisted at the Gulf of Guinea,
+         * tapering through the Kalahari; the Horn as its own small block. */
+        {lon: 3, lat: 18, share: 0.088, toward: [28, 15], elong: 1.55, taper: 0.10},
+        {lon: 22, lat: -1, share: 0.056, toward: [38, -2], elong: 1.15, taper: 0.05},
+        {lon: 24, lat: -22, share: 0.042, toward: [21, -33], elong: 1.35, taper: 0.25},
+        {lon: 45, lat: 7, share: 0.012, toward: [51, 11], elong: 1.45, taper: 0.25},
+        /* Eurasia: Baltica, Siberia, a Kazakh link, China, and Indochina
+         * trailing off toward the equator. India and Arabia dock below. */
+        {lon: 25, lat: 55, share: 0.055, toward: [48, 60], elong: 1.40, taper: 0.10},
+        {lon: 95, lat: 63, share: 0.075, toward: [130, 63], elong: 1.60, taper: 0.08},
+        {lon: 68, lat: 48, share: 0.035, toward: [88, 46], elong: 1.35, taper: 0.05},
+        {lon: 110, lat: 32, share: 0.055, toward: [117, 42], elong: 1.35, taper: 0.15},
+        {lon: 102, lat: 14, share: 0.020, toward: [104, 3], elong: 1.75, taper: 0.30},
+        /* North America: the shield wide across Canada, a cordilleran
+         * block pointing at Mexico, Alaska reaching for the strait, and
+         * an Appalachian seaboard strip. */
+        {lon: -95, lat: 56, share: 0.072, toward: [-70, 56], elong: 1.50, taper: 0.08},
+        {lon: -105, lat: 37, share: 0.045, toward: [-100, 19], elong: 1.50, taper: 0.30},
+        {lon: -143, lat: 64, share: 0.020, toward: [-158, 61], elong: 1.55, taper: 0.20},
+        {lon: -76, lat: 38, share: 0.020, toward: [-62, 46], elong: 1.85, taper: 0.15},
+        /* South America: the Amazon bulge, then a sliver tapering through
+         * Patagonia, stopping short of 56°S so Drake Passage can cut. */
+        {lon: -59, lat: -6, share: 0.068, toward: [-47, -9], elong: 1.25, taper: 0.10},
+        {lon: -66, lat: -32, share: 0.024, toward: [-70, -49], elong: 3.40, taper: 0.30},
+        {lon: -52, lat: -18, share: 0.014, toward: [-45, -22], elong: 1.35, taper: 0.10},
+        /* Australia: a western shield and an eastern block whose taper
+         * points at Cape York, so the north coast gets its notch. */
+        {lon: 122, lat: -25, share: 0.030, toward: [112, -24], elong: 1.30, taper: 0.12},
+        {lon: 144, lat: -25, share: 0.022, toward: [143, -13], elong: 1.45, taper: 0.28},
+        /* Antarctica: the East Antarctic disc plus a West Antarctic lobe
+         * toward the Peninsula. */
+        {lon: 60, lat: -82, share: 0.058, toward: [90, -78], elong: 1.10, taper: 0.0},
+        {lon: -100, lat: -78, share: 0.022, toward: [-66, -67], elong: 1.60, taper: 0.25},
+        /* India, Greenland, Arabia. */
         {lon: 78, lat: 21, share: 0.042, toward: [78, 32], elong: 1.28, taper: 0.14},
         {lon: -42, lat: 73, share: 0.020, toward: [-42, 84], elong: 1.45, taper: 0.08},
         {lon: 46, lat: 24, share: 0.024, toward: [48, 32], elong: 1.38, taper: 0.12},
@@ -290,7 +313,7 @@ function earthCratons() {
  * the Caribbean stops the Americas becoming an isthmus wall. */
 function earthBasins() {
     return placementFromLonLat([
-        {lon: 20, lat: 36, toward: [38, 36], elong: 2.40, taper: 0.0, radius: 0.24, floorKm: 16},
+        {lon: 21, lat: 38, toward: [39, 37], elong: 2.60, taper: 0.0, radius: 0.21, floorKm: 16},
         {lon: -82, lat: 60, toward: [-92, 58], elong: 1.55, taper: 0.0, radius: 0.17, floorKm: 25},
         {lon: -62, lat: 70, toward: [-62, 78], elong: 2.10, taper: 0.0, radius: 0.11, floorKm: 20},
         {lon: -76, lat: 15, toward: [-64, 14], elong: 2.05, taper: 0.0, radius: 0.15, floorKm: 18},

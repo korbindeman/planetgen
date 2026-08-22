@@ -28,7 +28,7 @@ what gives continents a wet and a dry coast instead of one dry girdle; see
 
 Run `stats` and `climate` before judging pictures, and `sheet` when judging how the planets
 *look* — a failure mode that hits every seed reads as a bad roll if you only
-ever capture one. Continents are seeded as cratons, not a noise threshold. A plate is a rigid
+ever capture one. Continents are seeded as aggregates of welded cratonic blocks, not a noise threshold. A plate is a rigid
 body made of sites that rotate with it, so its boundaries are arcs meeting at
 triple junctions and it stays one coherent body; each has a stable id, a
 generated name, a birth time and a parent, and keeps them through rifts and

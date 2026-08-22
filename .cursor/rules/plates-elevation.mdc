@@ -116,18 +116,22 @@ Three layers, each measurable:
    most, and grows until it owns the map. The reversion term must stay
    stronger than the growth term or there is no equilibrium at all.
 
-3. **Continents.** A handful of cratons, unequal in size and biased to cluster
-   into one hemisphere — which is what leaves a Pacific-sized ocean opposite
-   instead of spreading land evenly. Each is a spherical cap whose radius is
-   warped by noise (`cratonWarp`) to give it a ragged coast; a global bisection
-   on the radii hits the target continental area. Crust thickens towards each
-   craton's core, with sea level at the radius enclosing `emergentFraction` of
-   its area.
+3. **Continents.** A handful of continents, unequal in size and biased to
+   cluster into one hemisphere — which is what leaves a Pacific-sized ocean
+   opposite instead of spreading land evenly. Each is grown as a chain of
+   overlapping elliptical blocks (`planBlocks`), the way a real continent is
+   an aggregate of cratons: the union's outline gets waists, promontories and
+   concavities from the structure, and noise (`cratonWarp`, `gulfCut`…) only
+   textures the margin. A weld between two blocks can carry an old belt or
+   sag into a shallow inland sea (`sutures`). A global bisection rescales the
+   whole plan to hit the target continental area; the Earth fixture authors
+   its blocks directly and zeroes `sutures`.
 
-   Craton cores should sit a few hundred metres above sea level, not
-   kilometres: `crustInitialPeakKm` minus `seaLevelThicknessKm`, times 145 m,
-   is that height. Set it too high and every continent renders as bare rock
-   plateau, because the shader mixes high ground towards rock.
+   Interiors are *flat*: a coastal plain climbs to a platform at
+   `crustReferenceKm` (~650 m via isostasy) and stays there. Do not bring
+   back a radial dome from core to coast — elevation is not a function of
+   distance to the coastline, and the dome is what made every continent
+   shade like a blob. Relief on land belongs to orogeny and sutures.
 
 4. **Simulation.** The crust is the state: type, age, thickness, orogeny, arc.
    Each step the plates turn, ownership is rebuilt from the sites, and the
