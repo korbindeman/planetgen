@@ -318,7 +318,7 @@
         <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)">
         <br>
         Seed:
-        <input id="seed-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" value="88" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
+        <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="88" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
         <button type="button" onclick="shuffleSeed()">Shuffle</button>
         <button type="button" id="seed-undo" onclick="undoSeed()" disabled title="Undo seed (⌘Z)">Undo</button>
         <button type="button" id="seed-redo" onclick="redoSeed()" disabled title="Redo seed (⌘⇧Z)">Redo</button>

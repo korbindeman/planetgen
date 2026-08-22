@@ -8,6 +8,7 @@
  *   bun run preview equirect
  *   bun run preview equirect --lon=90
  *   bun run preview --seed=42
+ *   bun run preview --earth         present-day Earth fixture (not a numeric seed)
  *   bun run preview plates          globe + equirect with plates and motion arrows
  *   bun run preview plates equirect
  *   bun run preview crust           sea-floor age, orogeny and boundary types
@@ -199,16 +200,20 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--lon=") || arg.startsWith("--lon0=")) {
       lon0 = Number(arg.slice(arg.indexOf("=") + 1));
       if (Number.isNaN(lon0)) throw new Error(`invalid ${arg}`);
+    } else if (arg === "--earth") {
+      seed = "earth";
     } else if (arg === "--seed") {
       const next = argv[++i];
-      if (next == null || Number.isNaN(Number(next))) {
-        throw new Error(`${arg} needs a number`);
-      }
-      seed = Number(next) | 0;
+      if (next == null) throw new Error(`${arg} needs a value`);
+      if (String(next).toLowerCase() === "earth") seed = "earth";
+      else if (Number.isNaN(Number(next))) throw new Error(`${arg} needs a number`);
+      else seed = Number(next) | 0;
     } else if (arg.startsWith("--seed=")) {
-      seed = Number(arg.slice("--seed=".length)) | 0;
-      if (Number.isNaN(Number(arg.slice("--seed=".length)))) {
-        throw new Error(`invalid ${arg}`);
+      const raw = arg.slice("--seed=".length);
+      if (raw.toLowerCase() === "earth") seed = "earth";
+      else {
+        seed = Number(raw) | 0;
+        if (Number.isNaN(Number(raw))) throw new Error(`invalid ${arg}`);
       }
     } else if (arg === "plates" || arg === "--plates") {
       overlay = "plates";
@@ -223,7 +228,7 @@ function parseArgs(argv) {
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all|plates|crust|climate] [--lon=degrees] [--seed=n] [--connect-oceans] [--no-tectonics]",
+          "usage: bun run preview [globe|equirect|all|plates|crust|climate] [--lon=degrees] [--seed=n] [--earth] [--connect-oceans] [--no-tectonics]",
       );
     }
   }

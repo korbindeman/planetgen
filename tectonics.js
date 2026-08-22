@@ -853,7 +853,33 @@ function makeFbm(noise, octaves, persistence = 2 / 3) {
  * Pacific is a third of the planet with nothing in it. So place cratons and
  * grow them, and use noise only to make their edges irregular.
  */
+function radiiFromShares(shares, continentFraction) {
+    const total = shares.reduce((a, b) => a + b, 0) || 1;
+    return shares.map(w => {
+        const share = continentFraction * w / total;
+        return Math.acos(Math.max(-1, 1 - 2 * share));
+    });
+}
+
+
+/* Authored cratons skip the random huddle. Same primitive otherwise:
+ * spherical caps, unequal shares, a stretch axis and a taper. */
+function placementFromSpec(spec, opts) {
+    const centres = spec.centres;
+    const shares = spec.shares || centres.map(() => 1);
+    return {
+        centres,
+        radii: radiiFromShares(shares, opts.continentFraction),
+        axes: spec.axes,
+        elong: spec.elong,
+        taper: spec.taper,
+    };
+}
+
+
 function placeCratons(mesh, r_xyz, count, randFloat, opts) {
+    if (opts.cratonPlacement) return placementFromSpec(opts.cratonPlacement, opts);
+
     const centres = [];
     const angle = (a, b) => Math.acos(Math.max(-1, Math.min(1, vec3.dot(a, b))));
 
@@ -883,14 +909,10 @@ function placeCratons(mesh, r_xyz, count, randFloat, opts) {
         return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     };
     const weights = centres.map(() => Math.exp(opts.cratonSigma * gauss()));
-    const total = weights.reduce((a, b) => a + b, 0) || 1;
 
     /* Radius of a spherical cap holding this craton's share of the target
      * continental area: cap fraction = (1 - cos R) / 2. */
-    const radii = weights.map(w => {
-        const share = opts.continentFraction * w / total;
-        return Math.acos(Math.max(-1, 1 - 2 * share));
-    });
+    const radii = radiiFromShares(weights, opts.continentFraction);
 
     /* A cap is a disc, and a planet of discs reads as a planet of blobs.
      * Earth's masses have a grain: the Americas are a sliver, Africa a
@@ -1148,6 +1170,56 @@ function advectTangent(out, v, pole, angle, pos) {
 }
 
 
+/* Raise arcs and collision belts along every converging margin. Extracted
+ * so the Earth fixture can run the same loop in place without turning the
+ * plates. Returns continent-continent contact counts, keyed "a,b". */
+function paintConvergentMargins(mesh, fields, opts) {
+    const {
+        r_xyz, plates, r_plate, r_crust_type, r_crust_age,
+        r_thickness, r_orogeny, r_orogenyDir, r_arc,
+    } = fields;
+    const {numRegions} = mesh;
+    const {r_boundary} = classifyBoundaries(mesh, {r_xyz, r_plate, plates});
+    const collisions = new Map();
+    const out_r = [];
+    const va = [0, 0, 0], vb = [0, 0, 0], rel = [0, 0, 0];
+    for (let r = 0; r < numRegions; r++) {
+        if (r_boundary[r] !== BOUNDARY_CONVERGENT) continue;
+        const mine = r_plate[r];
+        mesh.r_circulate_r(out_r, r);
+        let facingContinental = false, facingOceanic = false, oldestFacing = -1, other = -1;
+        for (const nb of out_r) {
+            if (r_plate[nb] === mine) continue;
+            if (r_crust_type[nb] === CRUST_CONTINENTAL) facingContinental = true;
+            else { facingOceanic = true; oldestFacing = Math.max(oldestFacing, r_crust_age[nb]); }
+            other = r_plate[nb];
+        }
+        if (other === -1) continue;
+
+        if (r_crust_type[r] === CRUST_CONTINENTAL && facingContinental) {
+            /* two continents meeting: the crust shortens and thickens */
+            r_thickness[r] = Math.min(opts.crustMaxKm, r_thickness[r] + opts.collisionThickenKm);
+            const added = Math.min(opts.orogenyCollision, 2 - r_orogeny[r]);
+            r_orogeny[r] += added;
+            if (added > 0) addOrogenyDir(r_orogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
+            const key = other < mine ? `${other},${mine}` : `${mine},${other}`;
+            collisions.set(key, (collisions.get(key) || 0) + 1);
+        } else if (r_crust_type[r] === CRUST_CONTINENTAL && facingOceanic) {
+            /* ocean going down beneath a continent: an Andean margin */
+            r_arc[r] = Math.min(2, r_arc[r] + opts.arcContinental);
+            const added = Math.min(opts.orogenyAndean, 2 - r_orogeny[r]);
+            r_orogeny[r] += added;
+            if (added > 0) addOrogenyDir(r_orogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
+            r_thickness[r] = Math.min(opts.crustMaxKm, r_thickness[r] + 0.35);
+        } else if (r_crust_type[r] === CRUST_OCEANIC && facingOceanic && r_crust_age[r] < oldestFacing) {
+            /* the younger, lighter slab stays up and carries the arc */
+            r_arc[r] = Math.min(2, r_arc[r] + opts.arcOceanic);
+        }
+    }
+    return collisions;
+}
+
+
 /* One timestep.
  *
  * The plates turn about their poles, carrying their sites with them, and
@@ -1194,7 +1266,6 @@ function stepTectonics(mesh, map, opts) {
     const out_r = [], cells = [], weights = [];
     const back = [0, 0, 0], x = [0, 0, 0];
     const sampledDir = [0, 0, 0], rotatedDir = [0, 0, 0];
-    const va = [0, 0, 0], vb = [0, 0, 0], rel = [0, 0, 0];
 
     for (let r = 0; r < numRegions; r++) {
         const now = nextPlate[r];
@@ -1292,42 +1363,17 @@ function stepTectonics(mesh, map, opts) {
      * band a cell or two wide per step, so tying mountain building to that
      * band alone leaves a planet with almost no relief. The Andes are raised
      * continuously above a subducting slab; so are these. */
-    {
-        const boundaryNow = classifyBoundaries(mesh, {r_xyz, r_plate: nextPlate, plates}).r_boundary;
-        for (let r = 0; r < numRegions; r++) {
-            if (boundaryNow[r] !== BOUNDARY_CONVERGENT) continue;
-            const mine = nextPlate[r];
-            mesh.r_circulate_r(out_r, r);
-            let facingContinental = false, facingOceanic = false, oldestFacing = -1, other = -1;
-            for (const nb of out_r) {
-                if (nextPlate[nb] === mine) continue;
-                if (nextType[nb] === CRUST_CONTINENTAL) facingContinental = true;
-                else { facingOceanic = true; oldestFacing = Math.max(oldestFacing, nextAge[nb]); }
-                other = nextPlate[nb];
-            }
-            if (other === -1) continue;
-
-            if (nextType[r] === CRUST_CONTINENTAL && facingContinental) {
-                /* two continents meeting: the crust shortens and thickens */
-                nextThickness[r] = Math.min(opts.crustMaxKm, nextThickness[r] + opts.collisionThickenKm);
-                const added = Math.min(opts.orogenyCollision, 2 - nextOrogeny[r]);
-                nextOrogeny[r] += added;
-                if (added > 0) addOrogenyDir(nextOrogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
-                const key = other < mine ? `${other},${mine}` : `${mine},${other}`;
-                collisions.set(key, (collisions.get(key) || 0) + 1);
-            } else if (nextType[r] === CRUST_CONTINENTAL && facingOceanic) {
-                /* ocean going down beneath a continent: an Andean margin */
-                nextArc[r] = Math.min(2, nextArc[r] + opts.arcContinental);
-                const added = Math.min(opts.orogenyAndean, 2 - nextOrogeny[r]);
-                nextOrogeny[r] += added;
-                if (added > 0) addOrogenyDir(nextOrogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
-                nextThickness[r] = Math.min(opts.crustMaxKm, nextThickness[r] + 0.35);
-            } else if (nextType[r] === CRUST_OCEANIC && facingOceanic && nextAge[r] < oldestFacing) {
-                /* the younger, lighter slab stays up and carries the arc */
-                nextArc[r] = Math.min(2, nextArc[r] + opts.arcOceanic);
-            }
-        }
-    }
+    const painted = paintConvergentMargins(mesh, {
+        r_xyz, plates,
+        r_plate: nextPlate,
+        r_crust_type: nextType,
+        r_crust_age: nextAge,
+        r_thickness: nextThickness,
+        r_orogeny: nextOrogeny,
+        r_orogenyDir: nextOrogenyDir,
+        r_arc: nextArc,
+    }, opts);
+    for (const [key, count] of painted) collisions.set(key, (collisions.get(key) || 0) + count);
 
     /* Continental crust against brand new ocean floor is a rifting margin:
      * stretching thins it, which is what turns it into a shelf. */
@@ -2106,8 +2152,9 @@ module.exports = {
     sampleWeights, sampleField, samplePacked3,
     generatePlates, removeNetRotation, absorbEnclaves,
     plateVelocity, rotateAbout, nearestRegion,
-    classifyBoundaries,
+    classifyBoundaries, paintConvergentMargins,
+    placeCratons, initCrust,
     oceanDepthMeters, continentHeightMeters,
-    crustToMeters, applyIslandCrests,
+    crustToMeters, applyIslandCrests, crustToElevation,
     simulateTectonics,
 };

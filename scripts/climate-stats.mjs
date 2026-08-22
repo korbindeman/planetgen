@@ -4,6 +4,7 @@
  *
  *   bun run climate
  *   bun run climate --seeds=1,2,3 --moistureGain=1.5
+ *   bun run climate --earth
  *
  * The headline number is the coast asymmetry. On Earth the subtropical dry
  * belt is not a girdle: at 15-30 degrees a continent's east coast is wet
@@ -24,6 +25,7 @@ const require = createRequire(join(root, 'package.json'));
 const { makeRandFloat } = require('@redblobgames/prng');
 const SphereMesh = require(join(root, 'sphere-mesh.js'));
 const Tectonics = require(join(root, 'tectonics.js'));
+const EarthFixture = require(join(root, 'earth-fixture.js'));
 const Climate = require(join(root, 'climate.js'));
 
 const args = Object.fromEntries(
@@ -33,19 +35,25 @@ const args = Object.fromEntries(
 
 const N = Number(args.n ?? 10000);
 const P = Number(args.p ?? 20);
-const SEEDS = (args.seeds ?? '1,2,3,5,6,9').split(',').map(Number);
+const EARTH = 'earth' in args;
+const SEEDS = EARTH ? [EarthFixture.TOKEN] : (args.seeds ?? '1,2,3,5,6,9').split(',').map(Number);
 const OPTIONS = {};
 for (const key of Object.keys(Climate.DEFAULTS)) {
     if (args[key] !== undefined) OPTIONS[key] = Number(args[key]);
 }
 
 function run(seed) {
-    const { mesh, r_xyz } = SphereMesh.makeSphere(N, 0.75, makeRandFloat(seed));
+    const meshSeed = EarthFixture.numericSeed(seed);
+    const { mesh, r_xyz } = SphereMesh.makeSphere(N, 0.75, makeRandFloat(meshSeed));
     const map = { r_xyz, r_elevation: new Float32Array(mesh.numRegions) };
-    Object.assign(map, Tectonics.generatePlates(mesh, P, seed));
-    Tectonics.simulateTectonics(mesh, map, seed);
+    if (EarthFixture.isEarthSeed(seed)) {
+        EarthFixture.buildEarthMap(mesh, map, {seed});
+    } else {
+        Object.assign(map, Tectonics.generatePlates(mesh, P, seed));
+        Tectonics.simulateTectonics(mesh, map, seed);
+    }
     const started = Date.now();
-    const { r_moisture } = Climate.assignClimate(mesh, map, seed, OPTIONS);
+    const { r_moisture } = Climate.assignClimate(mesh, map, meshSeed, OPTIONS);
     const ms = Date.now() - started;
 
     const n = mesh.numRegions;

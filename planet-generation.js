@@ -10,6 +10,7 @@ function seedFromUrl() {
     try {
         const q = new URLSearchParams(location.search).get('seed');
         if (q == null || q === '') return 88;
+        if (String(q).trim().toLowerCase() === 'earth') return 'earth';
         const n = Number(q);
         return Number.isFinite(n) ? (n | 0) : 88;
     } catch (_) {
@@ -26,6 +27,7 @@ const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
 const Tectonics = require('./tectonics');
+const EarthFixture = require('./earth-fixture');
 const Climate = require('./climate');
 const Detail = require('./detail');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
@@ -374,18 +376,28 @@ void main() {
  * Geometry
  */
 
-let _randomNoise = new SimplexNoise(makeRandFloat(seed));
+function noiseSeedOf(value) {
+    return EarthFixture.numericSeed(value);
+}
+
+let _randomNoise = new SimplexNoise(makeRandFloat(noiseSeedOf(seed)));
 
 function parseSeed(raw) {
-    const n = Number(String(raw).trim());
+    const text = String(raw).trim();
+    if (EarthFixture.isEarthSeed(text)) return EarthFixture.TOKEN;
+    const n = Number(text);
     if (!Number.isFinite(n)) return null;
     return n | 0;
 }
 
 function applySeed(next) {
-    seed = (next | 0);
-    if (seed === 0) seed = 1;
-    _randomNoise = new SimplexNoise(makeRandFloat(seed));
+    if (EarthFixture.isEarthSeed(next)) {
+        seed = EarthFixture.TOKEN;
+    } else {
+        seed = (next | 0);
+        if (seed === 0) seed = 1;
+    }
+    _randomNoise = new SimplexNoise(makeRandFloat(noiseSeedOf(seed)));
     const input = document.getElementById('seed-input');
     if (input) input.value = String(seed);
     syncSavedSeedsUI();
@@ -1066,7 +1078,7 @@ const {clamp01} = Tectonics;
 /* Winds, moisture advection and temperature all live in ./climate.js so they
  * can be run and measured outside the browser. */
 function assignClimate(mesh, map) {
-    Climate.assignClimate(mesh, map, seed);
+    Climate.assignClimate(mesh, map, noiseSeedOf(seed));
 }
 
 
@@ -1097,7 +1109,7 @@ var quadGeometry = new QuadGeometry();
 var detailCache = null;
 
 function generateMesh() {
-    let result = SphereMesh.makeSphere(N, jitter, makeRandFloat(seed));
+    let result = SphereMesh.makeSphere(N, jitter, makeRandFloat(noiseSeedOf(seed)));
     simMesh = result.mesh;
     simMap = {
         r_elevation: new Float32Array(simMesh.numRegions),
@@ -1134,33 +1146,41 @@ function useDetailPass() {
 }
 
 function generateMap() {
-    Object.assign(simMap, generatePlates(simMesh, simMap.r_xyz));
-
-    if (simulate_tectonics) {
-        Tectonics.simulateTectonics(simMesh, simMap, seed, {
-            steps: sim_steps,
+    if (EarthFixture.isEarthSeed(seed)) {
+        EarthFixture.buildEarthMap(simMesh, simMap, {
+            seed,
             deferCrests: useDetailPass(),
         });
         simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
     } else {
-        /* The 1843 path wants a static partition and a coin flip for which
-         * plates are oceanic. */
-        simMap.boundaryWarp = Tectonics.makeBoundaryWarp(simMesh, simMap.r_xyz, seed, Tectonics.DEFAULTS);
-        simMap.tectonicFieldsFor = `${simMesh.numRegions}:${seed}`;
-        simMap.r_plate = Tectonics.plateOwnership(simMesh, simMap, Tectonics.DEFAULTS);
-        simMap.plate_is_ocean = new Set();
-        for (let p = 0; p < simMap.plates.length; p++) {
-            if (makeRandInt(simMap.plates[p].id + 1)(10) < 5) simMap.plate_is_ocean.add(p);
+        Object.assign(simMap, generatePlates(simMesh, simMap.r_xyz));
+
+        if (simulate_tectonics) {
+            Tectonics.simulateTectonics(simMesh, simMap, seed, {
+                steps: sim_steps,
+                deferCrests: useDetailPass(),
+            });
+            simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
+        } else {
+            /* The 1843 path wants a static partition and a coin flip for which
+             * plates are oceanic. */
+            simMap.boundaryWarp = Tectonics.makeBoundaryWarp(simMesh, simMap.r_xyz, seed, Tectonics.DEFAULTS);
+            simMap.tectonicFieldsFor = `${simMesh.numRegions}:${seed}`;
+            simMap.r_plate = Tectonics.plateOwnership(simMesh, simMap, Tectonics.DEFAULTS);
+            simMap.plate_is_ocean = new Set();
+            for (let p = 0; p < simMap.plates.length; p++) {
+                if (makeRandInt(simMap.plates[p].id + 1)(10) < 5) simMap.plate_is_ocean.add(p);
+            }
+            if (merge_ocean_plates) {
+                simMap.plate_is_ocean = mergeOceanPlates(simMesh, simMap.r_plate, simMap.plate_is_ocean).plate_is_ocean;
+            }
+            simMap.extra_ocean_seeds = [];
+            simMap.plate_vec = plateVectorsFromPoles(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
+            assignRegionElevation(simMesh, simMap);
+            simMap.r_boundary = null;
+            simMap.r_crust_age = null;
+            simMap.r_meters = null;
         }
-        if (merge_ocean_plates) {
-            simMap.plate_is_ocean = mergeOceanPlates(simMesh, simMap.r_plate, simMap.plate_is_ocean).plate_is_ocean;
-        }
-        simMap.extra_ocean_seeds = [];
-        simMap.plate_vec = plateVectorsFromPoles(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
-        assignRegionElevation(simMesh, simMap);
-        simMap.r_boundary = null;
-        simMap.r_crust_age = null;
-        simMap.r_meters = null;
     }
     simMap.plate_centroid = plateCentroids(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
     if (connect_oceans) connectWorldOcean(simMesh, simMap.r_elevation);
@@ -1168,7 +1188,7 @@ function generateMap() {
 
     if (useDetailPass()) {
         const built = ensureDetailMesh();
-        map = Detail.applyDetailPass(simMesh, simMap, built.mesh, built.r_xyz, seed);
+        map = Detail.applyDetailPass(simMesh, simMap, built.mesh, built.r_xyz, noiseSeedOf(seed));
         map.t_xyz = built.t_xyz;
         map.t_elevation = new Float32Array(built.mesh.numTriangles);
         map.t_moisture = new Float32Array(built.mesh.numTriangles);

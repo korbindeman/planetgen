@@ -4,6 +4,7 @@
  *
  *   bun run scripts/tectonics-stats.mjs
  *   bun run scripts/tectonics-stats.mjs --seeds=1,2,3 --steps=20
+ *   bun run scripts/tectonics-stats.mjs --earth
  *
  * Reported against these reference values for Earth:
  *   land 29% of the surface, continental crust ~41%
@@ -19,6 +20,7 @@ const require = createRequire(join(root, 'package.json'));
 const { makeRandFloat } = require('@redblobgames/prng');
 const SphereMesh = require(join(root, 'sphere-mesh.js'));
 const Tectonics = require(join(root, 'tectonics.js'));
+const EarthFixture = require(join(root, 'earth-fixture.js'));
 
 const args = Object.fromEntries(
     process.argv.slice(2)
@@ -28,7 +30,8 @@ const args = Object.fromEntries(
 const N = Number(args.n ?? 10000);
 const P = Number(args.p ?? 20);
 const JITTER = 0.75;
-const SEEDS = (args.seeds ?? '123,42,7,2024,99').split(',').map(Number);
+const EARTH = 'earth' in args;
+const SEEDS = EARTH ? [EarthFixture.TOKEN] : (args.seeds ?? '123,42,7,2024,99').split(',').map(Number);
 const OPTIONS = {};
 /* every key in DEFAULTS is overridable from the command line, so a sweep
  * never silently does nothing because the list here fell behind */
@@ -94,10 +97,15 @@ function voronoiFloor(mesh, r_xyz, count) {
 
 function run(seed) {
     const started = Date.now();
-    const { mesh, r_xyz } = SphereMesh.makeSphere(N, JITTER, makeRandFloat(seed));
+    const meshSeed = EarthFixture.numericSeed(seed);
+    const { mesh, r_xyz } = SphereMesh.makeSphere(N, JITTER, makeRandFloat(meshSeed));
     const map = { r_xyz, r_elevation: new Float32Array(mesh.numRegions) };
-    Object.assign(map, Tectonics.generatePlates(mesh, P, seed, OPTIONS));
-    Tectonics.simulateTectonics(mesh, map, seed, OPTIONS);
+    if (EarthFixture.isEarthSeed(seed)) {
+        EarthFixture.buildEarthMap(mesh, map, Object.assign({seed}, OPTIONS));
+    } else {
+        Object.assign(map, Tectonics.generatePlates(mesh, P, seed, OPTIONS));
+        Tectonics.simulateTectonics(mesh, map, seed, OPTIONS);
+    }
     const ms = Date.now() - started;
 
     const n = mesh.numRegions;
