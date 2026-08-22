@@ -210,6 +210,10 @@ function run(seed) {
         raggednessFloor: floor,
         fragments: weight ? pieces / weight : NaN,
         named: map.plates.filter(p => plateArea[map.plates.indexOf(p)] / n > 0.01).length,
+        namedAreas: EarthFixture.isEarthSeed(seed)
+            ? map.plates.map((p, i) => ({name: p.name, pct: plateArea[i] / n * 100}))
+                .sort((a, b) => b.pct - a.pct)
+            : null,
         boundary: {
             convergent: boundary.convergent / boundaryTotal * 100,
             divergent: boundary.divergent / boundaryTotal * 100,
@@ -222,6 +226,11 @@ const results = SEEDS.map(run);
 for (const s of results) {
     console.log(`\n=== seed ${s.seed} (${s.ms} ms) ===`);
     console.log(`plates ${s.plates}  areas: ${s.areas.slice(0, 10).map(a => a.toFixed(1)).join(' ')}`);
+    if (s.namedAreas) {
+        for (const row of s.namedAreas) {
+            console.log(`    ${row.name.padEnd(16)} ${row.pct.toFixed(2).padStart(6)}%`);
+        }
+    }
     console.log(`  top1 ${s.areas[0].toFixed(0)}%  top3 ${topN(s.areas, 3).toFixed(0)}%  top7 ${topN(s.areas, 7).toFixed(0)}%`);
     console.log(`  land ${s.land.toFixed(1)}%  continental crust ${s.continental.toFixed(1)}% (${s.submerged.toFixed(0)}% of it submerged)`);
     console.log(`  sea floor age median ${s.ageMedian.toFixed(0)} max ${s.ageMax.toFixed(0)} Myr`);

@@ -1,16 +1,18 @@
 /*
- * Frozen present-day Earth: authored plates, Euler poles and cratons, then
- * a one-shot kinematic paint for age and belts. The random generator is not
- * involved. WebGL-free, like tectonics.js.
+ * Frozen present-day Earth: Bird 2003 plate outlines, NNR-MORVEL56 Euler
+ * poles, authored cratons, then a one-shot kinematic paint for age and
+ * belts. The random generator is not involved. WebGL-free, like tectonics.js.
  *
- * Poles and ω are NNR-MORVEL56 (Argus, Gordon, DeMets 2011). Sites are
- * hand-placed so Dijkstra ownership falls near Earth's trenches and ridges.
- * Minors are slivers that touch two majors, not enclaves.
+ * Outlines are PB2002 (Bird 2003), merged to the 16-plate USGS-style map
+ * so trenches and ridges stay major–major boundaries. Poles and ω are
+ * NNR-MORVEL56 (Argus, Gordon, DeMets 2011). Ownership is point-in-polygon
+ * on those outlines — not Dijkstra from a handful of sites, and not warped.
  */
 'use strict';
 
 const {vec3} = require('gl-matrix');
 const Tectonics = require('./tectonics');
+const PLATE_DATA = require('./earth-plates-data.json');
 
 const TOKEN = 'earth';
 const MESH_SEED = 1843;
@@ -26,6 +28,28 @@ const EARTH_OPTS = {
 };
 
 const DEG = Math.PI / 180;
+const RAD = 180 / Math.PI;
+
+/* Known spots used as a sanity check that the outlines landed where they
+ * should. Minors are listed first so a point on a shared edge prefers them. */
+const PROBE = [
+    ['Juan de Fuca', -128.5, 46.5],
+    ['Scotia', -40, -57],
+    ['Caribbean', -75, 15],
+    ['Cocos', -95, 10],
+    ['Arabia', 45, 24],
+    ['Philippine Sea', 135, 16],
+    ['Nazca', -90, -20],
+    ['India', 78, 22],
+    ['Somalia', 45, 0],
+    ['Pacific', -150, 5],
+    ['North America', -100, 45],
+    ['South America', -60, -15],
+    ['Eurasia', 40, 54],
+    ['Africa', 18, 6],
+    ['Antarctica', 0, -80],
+    ['Australia', 134, -24],
+];
 
 
 function isEarthSeed(value) {
@@ -45,13 +69,13 @@ function lonLatToXyz(lonDeg, latDeg) {
 }
 
 
-function omegaFromDeg(degPerMyr) {
-    return degPerMyr * DEG;
+function xyzToLonLat(x, y, z) {
+    return [Math.atan2(y, x) * RAD, Math.asin(Math.max(-1, Math.min(1, z))) * RAD];
 }
 
 
-function sitesFrom(pairs) {
-    return pairs.map(([lon, lat]) => lonLatToXyz(lon, lat));
+function omegaFromDeg(degPerMyr) {
+    return degPerMyr * DEG;
 }
 
 
@@ -66,113 +90,145 @@ function tangentFrame(centre, toward) {
 }
 
 
-function makePlate(id, name, poleLon, poleLat, omegaDeg, sitePairs) {
-    return {
-        id,
-        name,
-        sites: sitesFrom(sitePairs),
-        pole: lonLatToXyz(poleLon, poleLat),
-        omega: omegaFromDeg(omegaDeg),
-        bornMyr: 0,
-        parent: -1,
-        scale: 1,
-    };
+/* Even-odd test in lon/lat. PB2002 already splits dateline-crossing plates
+ * and walks polar plates up the ±180 meridians to the pole, so a planar
+ * test on the equirectangular plane matches the polygons. */
+function pointInRing(lon, lat, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        if ((yi > lat) !== (yj > lat)) {
+            const x = (xj - xi) * (lat - yi) / (yj - yi) + xi;
+            if (lon < x) inside = !inside;
+        }
+    }
+    return inside;
 }
 
 
-/* ~15 NUVEL / NNR-MORVEL56 plates. Each has an interior point plus a ring
- * inset from the real margin. Minors hug the boundary between two majors. */
-function earthPlates() {
-    return [
-        makePlate(0, 'Pacific', 114.70, -63.58, 0.651, [
-            [-150, 5], [-165, 20], [175, -15], [-145, -25],
-            [172, 51], [-168, 52], [-152, 51],
-            [-138, 46], [-128, 32], [-118, 12],
-            [-114, -2], [-116, -18], [-118, -34], [-125, -48],
-            [-148, -58], [178, -56], [162, -48],
-            [156, 42], [154, 28], [155, 12], [164, -4],
-            [-168, -18], [-170, -34],
-        ]),
-        makePlate(1, 'North America', -80.64, -4.85, 0.209, [
-            [-100, 46], [-110, 55], [-90, 38],
-            [-152, 64], [-140, 68], [-120, 72], [-90, 78],
-            [-45, 72], [-40, 64], [-62, 48],
-            [-72, 36], [-82, 26], [-96, 22],
-            [-118, 38], [-124, 48], [-128, 56],
-            [170, 68], [-170, 66],
-            [-50, 35], [-42, 42],
-        ]),
-        makePlate(2, 'South America', -112.83, -22.62, 0.109, [
-            [-62, -14], [-58, 2],
-            [-70, 6], [-68, -4], [-69, -16], [-69, -28], [-70, -38],
-            [-68, -48], [-66, -54],
-            [-52, -28], [-44, -20], [-38, -10], [-48, 0],
-            [-71, -12], [-70, -24], [-71, -36],
-        ]),
-        makePlate(3, 'Eurasia', -106.50, 48.85, 0.223, [
-            [40, 54], [10, 50], [70, 56],
-            [-8, 52], [8, 58], [24, 64],
-            [30, 42], [55, 44], [80, 36], [90, 48], [110, 58], [128, 60],
-            [138, 42], [140, 36], [145, 44], [155, 52],
-            [128, 32], [108, 26], [98, 20],
-            [70, 32], [82, 30], [90, 30], [38, 44],
-            [60, 72], [100, 72],
-        ]),
-        makePlate(4, 'Africa', -68.44, 47.68, 0.292, [
-            [18, 6], [8, 22], [28, 18],
-            [-8, 28], [2, 32], [22, 30], [32, 22],
-            [38, 8], [32, -4], [28, -16], [24, -28],
-            [18, -32], [12, -22], [4, -8], [-8, 4], [-14, 16],
-            [-20, 0], [8, -8],
-        ]),
-        makePlate(5, 'Antarctica', -118.11, 65.42, 0.250, [
-            [0, -84],
-            [0, -72], [60, -72], [120, -72], [180, -72],
-            [-120, -72], [-60, -72],
-            [-58, -66], [80, -66], [-160, -66],
-        ]),
-        makePlate(6, 'Australia', 37.94, 33.86, 0.632, [
-            [134, -24], [122, -24], [144, -24],
-            [118, -32], [128, -34], [142, -36], [150, -28],
-            [146, -16], [136, -12], [128, -14],
-            [152, -8], [164, -22], [168, -36], [146, -42],
-        ]),
-        makePlate(7, 'Nazca', -101.06, 46.23, 0.696, [
-            [-90, -18],
-            [-104, -4], [-108, -16], [-110, -28], [-104, -38],
-            [-78, -8], [-76, -18], [-75, -28], [-76, -38],
-            [-88, -6], [-92, -32],
-        ]),
-        makePlate(8, 'India', -3.29, 50.37, 0.544, [
-            [78, 18], [80, 24], [72, 20], [86, 20],
-            [78, 10], [74, 8], [88, 12],
-            [70, 14], [66, 8],
-        ]),
-        makePlate(9, 'Caribbean', -92.62, 35.20, 0.286, [
-            [-76, 15], [-86, 16], [-68, 14],
-            [-80, 12], [-72, 18], [-88, 13], [-64, 16],
-        ]),
-        makePlate(10, 'Cocos', -124.31, 26.93, 1.198, [
-            [-96, 10], [-102, 12], [-90, 9],
-            [-100, 6], [-94, 14], [-88, 12],
-        ]),
-        makePlate(11, 'Philippine Sea', -31.36, -46.02, 0.910, [
-            [134, 16], [128, 22], [140, 18],
-            [132, 8], [138, 26], [126, 14], [142, 10],
-        ]),
-        makePlate(12, 'Scotia', -106.15, 22.52, 0.146, [
-            [-46, -56], [-32, -57], [-56, -57],
-            [-40, -54], [-50, -59],
-        ]),
-        makePlate(13, 'Arabia', -8.49, 48.88, 0.559, [
-            [46, 24], [40, 28], [52, 22],
-            [44, 16], [50, 28], [38, 22],
-        ]),
-        makePlate(14, 'Juan de Fuca', 60.04, -38.31, 0.951, [
-            [-128, 46], [-130, 48], [-126, 43],
-            [-132, 45], [-127, 49],
-        ]),
-    ];
+function ringBounds(ring) {
+    let west = 180, east = -180, south = 90, north = -90;
+    for (const [lon, lat] of ring) {
+        if (lon < west) west = lon;
+        if (lon > east) east = lon;
+        if (lat < south) south = lat;
+        if (lat > north) north = lat;
+    }
+    return {west, east, south, north};
+}
+
+
+function compilePlateRings(spec) {
+    const rings = [];
+    for (const ring of spec.rings) {
+        if (!ring || ring.length < 4) continue;
+        rings.push({ring, bounds: ringBounds(ring)});
+    }
+    return rings;
+}
+
+
+const COMPILED = PLATE_DATA.plates.map(compilePlateRings);
+
+
+function plateIndexAtLonLat(lon, lat) {
+    for (let p = 0; p < COMPILED.length; p++) {
+        for (const {ring, bounds} of COMPILED[p]) {
+            if (lat < bounds.south || lat > bounds.north) continue;
+            if (lon < bounds.west || lon > bounds.east) continue;
+            if (pointInRing(lon, lat, ring)) return p;
+        }
+    }
+    return -1;
+}
+
+
+function assignFromPolygons(mesh, r_xyz) {
+    const n = mesh.numRegions;
+    const r_plate = new Int32Array(n);
+    r_plate.fill(-1);
+    for (let r = 0; r < n; r++) {
+        const [lon, lat] = xyzToLonLat(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
+        r_plate[r] = plateIndexAtLonLat(lon, lat);
+    }
+    fillGaps(mesh, r_plate);
+    return r_plate;
+}
+
+
+function fillGaps(mesh, r_plate) {
+    const n = mesh.numRegions;
+    const out_r = [];
+    const queue = [];
+    for (let r = 0; r < n; r++) if (r_plate[r] >= 0) queue.push(r);
+    for (let h = 0; h < queue.length; h++) {
+        mesh.r_circulate_r(out_r, queue[h]);
+        const p = r_plate[queue[h]];
+        for (const nb of out_r) {
+            if (r_plate[nb] < 0) {
+                r_plate[nb] = p;
+                queue.push(nb);
+            }
+        }
+    }
+    for (let r = 0; r < n; r++) if (r_plate[r] < 0) r_plate[r] = 0;
+}
+
+
+function sitesFromOwnership(r_xyz, r_plate, p, count) {
+    const cells = [];
+    for (let r = 0; r < r_plate.length; r++) if (r_plate[r] === p) cells.push(r);
+    if (cells.length === 0) return [[1, 0, 0]];
+
+    let cx = 0, cy = 0, cz = 0;
+    for (const r of cells) {
+        cx += r_xyz[3 * r];
+        cy += r_xyz[3 * r + 1];
+        cz += r_xyz[3 * r + 2];
+    }
+    const pick = [];
+    let best = cells[0], bestDot = -2;
+    const inv = 1 / Math.hypot(cx, cy, cz) || 1;
+    cx *= inv; cy *= inv; cz *= inv;
+    for (const r of cells) {
+        const d = r_xyz[3 * r] * cx + r_xyz[3 * r + 1] * cy + r_xyz[3 * r + 2] * cz;
+        if (d > bestDot) { bestDot = d; best = r; }
+    }
+    pick.push(best);
+    const want = Math.min(count, cells.length);
+    while (pick.length < want) {
+        let far = cells[0], farScore = -1;
+        for (const r of cells) {
+            let nearest = -2;
+            for (const s of pick) {
+                const d = r_xyz[3 * r] * r_xyz[3 * s]
+                    + r_xyz[3 * r + 1] * r_xyz[3 * s + 1]
+                    + r_xyz[3 * r + 2] * r_xyz[3 * s + 2];
+                if (d > nearest) nearest = d;
+            }
+            const score = 1 - nearest;
+            if (score > farScore) { farScore = score; far = r; }
+        }
+        if (pick.includes(far)) break;
+        pick.push(far);
+    }
+    return pick.map(r => [r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]]);
+}
+
+
+function earthPlates(r_xyz, r_plate) {
+    const perPlate = Tectonics.DEFAULTS.sitesPerPlate;
+    return PLATE_DATA.plates.map((spec, id) => ({
+        id,
+        name: spec.name,
+        sites: sitesFromOwnership(r_xyz, r_plate, id, perPlate),
+        pole: lonLatToXyz(spec.poleLon, spec.poleLat),
+        omega: omegaFromDeg(spec.omegaDeg),
+        bornMyr: 0,
+        parent: -1,
+        scale: 1,
+    }));
 }
 
 
@@ -321,24 +377,37 @@ function paintHotspots(mesh, map, opts) {
 }
 
 
+function assertProbes() {
+    const names = PLATE_DATA.plates.map(p => p.name);
+    const missed = [];
+    for (const [expect, lon, lat] of PROBE) {
+        const got = plateIndexAtLonLat(lon, lat);
+        if (got < 0 || names[got] !== expect) {
+            missed.push(`${expect} at ${lon},${lat} -> ${got < 0 ? 'none' : names[got]}`);
+        }
+    }
+    if (missed.length) {
+        throw new Error(`earth plate probes failed:\n  ${missed.join('\n  ')}`);
+    }
+}
+
+
 function buildEarthMap(mesh, map, options) {
     const opts = Object.assign({}, Tectonics.DEFAULTS, EARTH_OPTS, options);
     const seed = numericSeed(options && options.seed != null ? options.seed : TOKEN);
 
-    map.plates = earthPlates();
+    assertProbes();
+
+    map.r_plate = assignFromPolygons(mesh, map.r_xyz);
+    map.plates = earthPlates(map.r_xyz, map.r_plate);
     map.targetPlateCount = map.plates.length;
     map.nextPlateId = map.plates.length;
     map.elapsedMyr = 0;
 
-    const stamp = `${mesh.numRegions}:${TOKEN}`;
-    if (map.tectonicFieldsFor !== stamp) {
-        map.boundaryWarp = Tectonics.makeBoundaryWarp(mesh, map.r_xyz, seed, opts);
-        map.tectonicFieldsFor = stamp;
-    }
-
-    /* Authored sites, no enclave absorption, no body-splitting, no NNR
-     * correction — the poles are already in that frame. */
-    map.r_plate = Tectonics.assignPlateOwnership(mesh, map.r_xyz, map.plates, map.boundaryWarp);
+    /* Authored outlines, not a noise-warped Voronoi. Anything that later
+     * asks for a warp must not bend the trenches off the real margins. */
+    map.boundaryWarp = () => 1;
+    map.tectonicFieldsFor = `${mesh.numRegions}:${TOKEN}`;
 
     opts.cratonPlacement = earthCratons();
     Object.assign(map, Tectonics.initCrust(mesh, map.r_xyz, seed, opts));
@@ -362,5 +431,6 @@ module.exports = {
     isEarthSeed,
     numericSeed,
     lonLatToXyz,
+    plateIndexAtLonLat,
     buildEarthMap,
 };
