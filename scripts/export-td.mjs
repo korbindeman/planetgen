@@ -20,17 +20,18 @@
  * Do not tiff-export the whole world raster: the model upsamples 256×
  * on each axis. Regional mid-latitude crops are the Azgaar-equivalent.
  */
-import { chromium } from "playwright-core";
+import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-process.env.PLAYWRIGHT_CHROMIUM_USE_HEADLESS_SHELL = "1";
-
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(join(root, "package.json"));
+const Tectonics = require(join(root, "tectonics.js"));
+const Planet = require(join(root, "planet.js"));
+const Render = require(join(root, "software-render.js"));
+
 const outDir = join(root, "preview", "terrain-diffusion");
-const port = 41000 + Math.floor(Math.random() * 1000);
-const origin = `http://localhost:${port}`;
 
 const CHANNELS = [
   "heightmap",
@@ -40,136 +41,290 @@ const CHANNELS = [
   "precipitation_cv",
 ];
 
+const TD_TEMP_SCALE = 40;
+const TD_TEMP_OFFSET = -15;
+const TD_PRECIP_MIN = 60;
+const TD_PRECIP_RANGE = 3400;
+const TD_PRECIP_POWER = 1.55;
+const TD_EARTH_KM = 40075.017;
+const PI = Math.PI;
+const {elevationToMeters, clamp01} = Tectonics;
+
 const { seed, lon0, scaleKm, crops, connectOceans, width, height } = parseArgs(
   process.argv.slice(2),
 );
 
-const server = Bun.spawn(["bun", "--port", String(port), "index.html"], {
-  cwd: root,
-  stdout: "inherit",
-  stderr: "inherit",
+const planet = Planet.generatePlanet({
+  seed: seed == null ? 88 : seed,
+  connectOceans,
 });
 
-let browser;
-try {
-  await waitForServer(origin);
-  await ensureChromium();
-  browser = await chromium.launch({
-    headless: true,
-    args: ["--ignore-gpu-blocklist", "--enable-webgl", "--use-gl=angle"],
-  });
-  const page = await browser.newPage({
-    viewport: { width: 1280, height: 1024 },
-    deviceScaleFactor: 1,
-  });
-  const pageUrl = seed == null ? origin : `${origin}/?seed=${seed}`;
-  await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-  await page.waitForFunction(() => window.__PLANET_READY__ === true, null, {
-    timeout: 180_000,
-  });
-  if (connectOceans) {
-    await page.evaluate(() => window.setConnectOceans(true));
-  }
+const lon0Rad = lon0 * PI / 180;
+const cropW = 48;
+const cropH = 32;
+const cropCount = crops;
 
-  const payload = await page.evaluate(
-    (opts) => window.exportTerrainDiffusion(opts),
-    { lon0, scaleKm, crops, width, height },
+const rawWorld = Planet.rasterizeEquirect(planet.mesh, planet.map, width, height, lon0Rad);
+const world = fieldsToTdLayers(rawWorld, width, height);
+const overviewKm = TD_EARTH_KM / width;
+const winW = Math.max(8, Math.round(cropW * scaleKm * width / TD_EARTH_KM));
+const winH = Math.max(6, Math.round(cropH * scaleKm * 2 * height / TD_EARTH_KM));
+const picks = pickTdCrops(world, {winW, winH, count: cropCount});
+
+const cropRecords = picks.map((pick) => {
+  const bounds = pixelBounds(pick.x, pick.y, pick.winW, pick.winH, width, height);
+  const southRad = bounds.south * PI / 180;
+  const northRad = bounds.north * PI / 180;
+  const raw = Planet.rasterizeLonLatBox(
+    planet.mesh, planet.map,
+    bounds.west, bounds.south, bounds.east, bounds.north,
+    cropW, cropH, lon0Rad,
   );
-  if (!payload?.worldPreviewPng) {
-    throw new Error("exportTerrainDiffusion did not return rasters");
-  }
-
-  await mkdir(outDir, { recursive: true });
-  await writePng(join(outDir, "examples.png"), payload.worldPreviewPng);
-
-  const worldBounds = {
-    west: -180 + payload.lon0,
-    south: -90,
-    east: 180 + payload.lon0,
-    north: 90,
+  const layers = fieldsToTdLayers(raw, cropW, cropH, (row) => (
+    northRad - (row + 0.5) / cropH * (northRad - southRad)
+  ));
+  return {
+    name: pick.name,
+    x: pick.x,
+    y: pick.y,
+    winW: pick.winW,
+    winH: pick.winH,
+    landFrac: pick.landFrac,
+    ...bounds,
+    layers,
+    previewPng: Render.drawCropPreview(layers, pick.name),
   };
-  await writeFolder(join(outDir, "world"), payload.world, worldBounds);
-  await writePng(join(outDir, "world", "preview.png"), payload.worldPreviewPng);
+});
 
-  const manifest = {
-    seed: payload.seed,
-    n: payload.n,
-    plates: payload.plates,
-    scaleKm: payload.scaleKm,
-    overviewKm: payload.overviewKm,
-    lon0: payload.lon0,
-    model: "xandergos/terrain-diffusion-90m",
-    snr: "0.2,0.2,1.0,0.2,1.0",
-    note:
-      "Use crop-* folders with tiff-export. World TIFFs are the planetary sketch, not a single export job.",
-    crops: [],
+await mkdir(outDir, { recursive: true });
+const worldPreviewPng = Render.drawWorldSheet(world, picks, cropRecords.map((c) => c.layers));
+await writeFile(join(outDir, "examples.png"), worldPreviewPng);
+
+const worldBounds = {
+  west: -180 + lon0,
+  south: -90,
+  east: 180 + lon0,
+  north: 90,
+};
+await writeFolder(join(outDir, "world"), world, worldBounds);
+await writeFile(join(outDir, "world", "preview.png"), worldPreviewPng);
+
+const manifest = {
+  seed: planet.seed,
+  n: planet.n,
+  plates: planet.p,
+  scaleKm,
+  overviewKm,
+  lon0,
+  model: "xandergos/terrain-diffusion-90m",
+  snr: "0.2,0.2,1.0,0.2,1.0",
+  note:
+    "Use crop-* folders with tiff-export. World TIFFs are the planetary sketch, not a single export job.",
+  crops: [],
+};
+
+for (const crop of cropRecords) {
+  const dir = join(outDir, `crop-${crop.name}`);
+  const bounds = {
+    west: crop.west + lon0,
+    south: crop.south,
+    east: crop.east + lon0,
+    north: crop.north,
   };
-
-  for (const crop of payload.crops) {
-    const dir = join(outDir, `crop-${crop.name}`);
-    const bounds = {
-      west: crop.west,
-      south: crop.south,
-      east: crop.east,
-      north: crop.north,
-    };
-    await writeFolder(dir, crop.layers, bounds);
-    await writePng(join(dir, "preview.png"), crop.previewPng);
-    manifest.crops.push({
-      name: crop.name,
-      dir: `crop-${crop.name}`,
-      width: crop.width,
-      height: crop.height,
-      landFrac: crop.landFrac,
-      ...bounds,
-      outputPx: [crop.width * 256, crop.height * 256],
-      coverageKm: [crop.width * payload.scaleKm, crop.height * payload.scaleKm],
-    });
-    console.log(join(dir, "heightmap.tif"));
-  }
-
-  await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
-  console.log(join(outDir, "examples.png"));
-  console.log(`seed ${payload.seed}  scale ${payload.scaleKm} km/px`);
-} finally {
-  await browser?.close();
-  server.kill();
+  await writeFolder(dir, crop.layers, bounds);
+  await writeFile(join(dir, "preview.png"), crop.previewPng);
+  manifest.crops.push({
+    name: crop.name,
+    dir: `crop-${crop.name}`,
+    width: cropW,
+    height: cropH,
+    landFrac: crop.landFrac,
+    ...bounds,
+    outputPx: [cropW * 256, cropH * 256],
+    coverageKm: [cropW * scaleKm, cropH * scaleKm],
+  });
+  console.log(join(dir, "heightmap.tif"));
 }
+
+await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+console.log(join(outDir, "examples.png"));
+console.log(`seed ${planet.seed}  scale ${scaleKm} km/px`);
 
 async function writeFolder(dir, layers, bounds) {
   await mkdir(dir, { recursive: true });
   for (const name of CHANNELS) {
-    const data = b64ToF32(layers[name]);
     const tif = encodeFloat32GeoTiff(
       layers.width,
       layers.height,
-      data,
+      layers[name],
       bounds,
     );
     await writeFile(join(dir, `${name}.tif`), tif);
   }
 }
 
-async function writePng(path, dataUrl) {
-  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
-    throw new Error(`expected png data URL for ${path}`);
-  }
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, Buffer.from(dataUrl.split(",")[1], "base64"));
+function temperatureToC(t) {
+  return Math.max(-40, Math.min(40, TD_TEMP_SCALE * t + TD_TEMP_OFFSET));
 }
 
-function b64ToF32(b64) {
-  const buf = Buffer.from(b64, "base64");
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+function moistureToPrecipMm(m) {
+  return TD_PRECIP_MIN + TD_PRECIP_RANGE * Math.pow(clamp01(m), TD_PRECIP_POWER);
 }
 
-function encodeFloat32GeoTiff(width, height, data, bounds) {
-  if (data.length !== width * height) {
-    throw new Error(`tiff data length ${data.length} != ${width * height}`);
+function temperatureStdC(moisture, elevationM, latRad) {
+  const mid = Math.sin(2 * Math.abs(latRad));
+  const inland = elevationM >= 0 ? (1 - clamp01(moisture)) : 0.12;
+  return 2.4 + 14 * mid * mid * (0.35 + 0.65 * inland);
+}
+
+function precipitationCvPct(moisture, latRad) {
+  const dry = 1 - clamp01(moisture);
+  const seasonal = 0.45 + 0.55 * Math.abs(Math.sin(2 * latRad));
+  return 16 + 58 * dry * seasonal;
+}
+
+function latOfRow(y, height) {
+  return (PI / 2) - (y + 0.5) / height * PI;
+}
+
+function fieldsToTdLayers(fields, w, h, latAtRow) {
+  const n = w * h;
+  const heightmap = new Float32Array(n);
+  const temperature = new Float32Array(n);
+  const temperatureStd = new Float32Array(n);
+  const precipitation = new Float32Array(n);
+  const precipitationCv = new Float32Array(n);
+  const rowLat = latAtRow || ((y) => latOfRow(y, h));
+  for (let y = 0; y < h; y++) {
+    const lat = rowLat(y);
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const eM = elevationToMeters(fields.elev[i]);
+      const tC = temperatureToC(fields.temp[i]);
+      const m = fields.moist[i];
+      heightmap[i] = eM;
+      temperature[i] = tC;
+      temperatureStd[i] = temperatureStdC(m, eM, lat);
+      precipitation[i] = moistureToPrecipMm(m);
+      precipitationCv[i] = precipitationCvPct(m, lat);
+    }
   }
-  const imageBytes = width * height * 4;
-  const sx = (bounds.east - bounds.west) / width;
-  const sy = (bounds.north - bounds.south) / height;
+  return {
+    heightmap,
+    temperature,
+    temperature_std: temperatureStd,
+    precipitation,
+    precipitation_cv: precipitationCv,
+    width: w,
+    height: h,
+  };
+}
+
+function windowStats(layers, x0, y0, winW, winH) {
+  const {width, height, heightmap, temperature, precipitation} = layers;
+  let land = 0, coast = 0, n = 0;
+  let eSum = 0, eSum2 = 0, eMin = Infinity, eMax = -Infinity;
+  let tMin = Infinity, tMax = -Infinity, pMin = Infinity, pMax = -Infinity;
+  for (let y = y0; y < y0 + winH; y++) {
+    for (let x = x0; x < x0 + winW; x++) {
+      const i = y * width + x;
+      const e = heightmap[i];
+      n++;
+      if (e >= 0) {
+        land++;
+        eSum += e;
+        eSum2 += e * e;
+        if (e < eMin) eMin = e;
+        if (e > eMax) eMax = e;
+      }
+      const t = temperature[i];
+      if (t < tMin) tMin = t;
+      if (t > tMax) tMax = t;
+      const p = precipitation[i];
+      if (p < pMin) pMin = p;
+      if (p > pMax) pMax = p;
+      const left = x > 0 && heightmap[i - 1] >= 0;
+      const right = x + 1 < width && heightmap[i + 1] >= 0;
+      const up = y > 0 && heightmap[i - width] >= 0;
+      const down = y + 1 < height && heightmap[i + width] >= 0;
+      const here = e >= 0;
+      if (here !== left || here !== right || here !== up || here !== down) coast++;
+    }
+  }
+  const landFrac = land / n;
+  const mean = land ? eSum / land : 0;
+  const elevStd = land > 1 ? Math.sqrt(Math.max(0, eSum2 / land - mean * mean)) : 0;
+  return {
+    x: x0,
+    y: y0,
+    landFrac,
+    coastFrac: coast / n,
+    elevStd,
+    elevRange: land ? eMax - eMin : 0,
+    tempRange: tMax - tMin,
+    precipRange: pMax - pMin,
+  };
+}
+
+function pickTdCrops(layers, opts) {
+  const {width, height} = layers;
+  const winW = Math.max(8, Math.min(width, opts.winW));
+  const winH = Math.max(6, Math.min(height, opts.winH));
+  const stepX = Math.max(1, Math.floor(winW / 3));
+  const stepY = Math.max(1, Math.floor(winH / 3));
+  const yMargin = Math.floor(height * (40 / 180));
+  const scored = [];
+  for (let y = yMargin; y + winH <= height - yMargin; y += stepY) {
+    for (let x = stepX; x + winW <= width - stepX; x += stepX) {
+      const s = windowStats(layers, x, y, winW, winH);
+      if (s.landFrac < 0.22 || s.landFrac > 0.92) continue;
+      scored.push(s);
+    }
+  }
+  if (!scored.length) return [];
+
+  const picks = [];
+  function takeBest(name, scoreFn) {
+    let best = null, bestScore = -Infinity;
+    for (const s of scored) {
+      if (picks.some((p) => Math.abs(p.x - s.x) < winW * 0.85 && Math.abs(p.y - s.y) < winH * 0.85)) {
+        continue;
+      }
+      const score = scoreFn(s);
+      if (score > bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+    if (best) picks.push({name, ...best, winW, winH});
+  }
+
+  takeBest("coast", (s) => (
+    s.coastFrac * 2
+    + Math.min(s.landFrac, 1 - s.landFrac) * 1.4
+    + s.elevStd / 700
+    + s.elevRange / 2800
+  ));
+  takeBest("mountains", (s) => s.elevStd / 800 + s.elevRange / 4000 + s.landFrac);
+  takeBest("climate", (s) => s.tempRange / 20 + s.precipRange / 2500 + s.coastFrac + s.elevRange / 5000);
+  return picks.slice(0, opts.count);
+}
+
+function pixelBounds(x, y, winW, winH, w, h) {
+  const west = -180 + x / w * 360;
+  const east = -180 + (x + winW) / w * 360;
+  const north = 90 - y / h * 180;
+  const south = 90 - (y + winH) / h * 180;
+  return {west, south, east, north};
+}
+
+function encodeFloat32GeoTiff(w, h, data, bounds) {
+  if (data.length !== w * h) {
+    throw new Error(`tiff data length ${data.length} != ${w * h}`);
+  }
+  const imageBytes = w * h * 4;
+  const sx = (bounds.east - bounds.west) / w;
+  const sy = (bounds.north - bounds.south) / h;
 
   const tags = [];
   const extras = [];
@@ -181,14 +336,14 @@ function encodeFloat32GeoTiff(width, height, data, bounds) {
     extras.push(bytes);
   }
 
-  addInline(256, 4, width);
-  addInline(257, 4, height);
+  addInline(256, 4, w);
+  addInline(257, 4, h);
   addInline(258, 3, 32);
   addInline(259, 3, 1);
   addInline(262, 3, 1);
   addInline(273, 4, 0);
   addInline(277, 3, 1);
-  addInline(278, 4, height);
+  addInline(278, 4, h);
   addInline(279, 4, imageBytes);
   addInline(284, 3, 1);
   addInline(339, 3, 3);
@@ -248,13 +403,12 @@ function doubles(values) {
 }
 
 function geoKeys() {
-  // 1 directory + 3 keys, each 4 uint16
   const buf = Buffer.alloc(16 * 2);
   const keys = [
     1, 1, 0, 3,
-    1024, 0, 1, 2, // GTModelType = Geographic
-    1025, 0, 1, 1, // GTRasterType = PixelIsArea
-    2048, 0, 1, 4326, // GeographicType = WGS84
+    1024, 0, 1, 2,
+    1025, 0, 1, 1,
+    2048, 0, 1, 4326,
   ];
   for (let i = 0; i < keys.length; i++) buf.writeUInt16LE(keys[i], i * 2);
   return buf;
@@ -287,7 +441,7 @@ function parseArgs(argv) {
     else if (arg === "--crops") crops = nextNum(arg) | 0;
     else if (arg.startsWith("--crops=")) crops = Number(arg.slice(8)) | 0;
     else if (arg === "--width") width = nextNum(arg) | 0;
-    else if (arg.startsWith("--width=")) width = Number(arg.slice(8)) | 0;
+    else if (arg.startsWith("--width=")) width = nextNum(arg) | 0;
     else if (arg === "--height") height = nextNum(arg) | 0;
     else if (arg.startsWith("--height=")) height = Number(arg.slice(9)) | 0;
     else if (arg === "--connect-oceans") connectOceans = true;
@@ -299,34 +453,4 @@ function parseArgs(argv) {
     }
   }
   return { seed, lon0, scaleKm, crops, connectOceans, width, height };
-}
-
-async function ensureChromium() {
-  if (await Bun.file(chromium.executablePath()).exists()) return;
-  const install = Bun.spawnSync(
-    ["bunx", "playwright-core", "install", "chromium"],
-    { cwd: root, stdout: "inherit", stderr: "inherit" },
-  );
-  if (install.exitCode !== 0) {
-    throw new Error("failed to install headless Chromium");
-  }
-}
-
-async function waitForServer(url) {
-  const deadline = Date.now() + 30_000;
-  let lastError;
-  while (Date.now() < deadline) {
-    if (server.exitCode != null) {
-      throw new Error(`preview server exited ${server.exitCode}`);
-    }
-    try {
-      const response = await fetch(url);
-      if (response.ok) return;
-      lastError = new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
-    await Bun.sleep(150);
-  }
-  throw lastError ?? new Error(`timed out waiting for ${url}`);
 }

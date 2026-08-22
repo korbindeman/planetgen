@@ -21,10 +21,16 @@ const MESH_SEED = 1843;
  * 200 Myr run consumes crust; using that here would drown the map. */
 const EARTH_OPTS = {
     continentFraction: 0.41,
-    emergentFraction: 0.71,
-    cratons: 7,
+    emergentFraction: 0.73,
+    cratons: 9,
+    cratonWarp: 0.32,
+    coastContrast: 0.22,
     paintPasses: 6,
     seafloorAgeCapMyr: 180,
+    polarStraits: true,
+    polarCapLand: 0.50,
+    polarStraitLat: 52,
+    polarStraitBand: 16,
 };
 
 const DEG = Math.PI / 180;
@@ -232,26 +238,66 @@ function earthPlates(r_xyz, r_plate) {
 }
 
 
-function earthCratons() {
-    const specs = [
-        {lon: 20, lat: 8, share: 0.21, toward: [20, 32], elong: 1.35, taper: 0.18},
-        {lon: 55, lat: 54, share: 0.28, toward: [100, 52], elong: 1.55, taper: 0.05},
-        {lon: -92, lat: 52, share: 0.17, toward: [-55, 72], elong: 1.35, taper: 0.04},
-        {lon: -64, lat: -18, share: 0.13, toward: [-64, 6], elong: 2.05, taper: 0.18},
-        {lon: 134, lat: -25, share: 0.055, toward: [148, -25], elong: 1.45, taper: 0.10},
-        {lon: 0, lat: -82, share: 0.105, toward: [90, -78], elong: 1.12, taper: 0.0},
-        {lon: 78, lat: 20, share: 0.06, toward: [78, 30], elong: 1.30, taper: 0.15},
-    ];
+function placementFromLonLat(specs, withFloor) {
     const centres = [], shares = [], axes = [], elong = [], taper = [];
+    const radii = [], floorKm = [];
     for (const s of specs) {
         const centre = lonLatToXyz(s.lon, s.lat);
         centres.push(centre);
-        shares.push(s.share);
-        axes.push(tangentFrame(centre, lonLatToXyz(s.toward[0], s.toward[1])));
+        if (s.share != null) shares.push(s.share);
+        if (s.radius != null) radii.push(s.radius);
+        if (s.floorKm != null) floorKm.push(s.floorKm);
+        const toward = s.toward || [s.lon, s.lat + (s.lat >= 0 ? 10 : -10)];
+        axes.push(tangentFrame(centre, lonLatToXyz(toward[0], toward[1])));
         elong.push(s.elong);
         taper.push(s.taper);
     }
-    return {centres, shares, axes, elong, taper};
+    const out = {centres, axes, elong, taper};
+    if (shares.length) out.shares = shares;
+    if (radii.length) out.radii = radii;
+    if (withFloor) out.floorKm = floorKm;
+    return out;
+}
+
+
+function earthCratons() {
+    return placementFromLonLat([
+        /* Africa: compact wedge, Horn to the east, Med coast at ~32°N so
+         * the basin can sit between it and Europe rather than being filled. */
+        {lon: 20, lat: 4, share: 0.205, toward: [42, 10], elong: 1.28, taper: 0.16},
+        /* Eurasia: long E–W from Europe to Siberia. Centre west of the
+         * Urals so Iberia and Scandinavia are inside the cap, not a
+         * shelf that the Med basin then drowns. */
+        {lon: 55, lat: 57, share: 0.280, toward: [125, 60], elong: 2.25, taper: 0.08},
+        /* North America: points at Mexico, fat in the Canadian Shield;
+         * not stretched at Greenland. */
+        {lon: -98, lat: 48, share: 0.145, toward: [-102, 22], elong: 1.42, taper: 0.16},
+        /* South America: Amazon bulge, tapering to Patagonia, stopping
+         * short of 56°S so Drake Passage has somewhere to cut. */
+        {lon: -62, lat: -8, share: 0.118, toward: [-68, -42], elong: 1.92, taper: 0.12},
+        {lon: 134, lat: -24, share: 0.048, toward: [146, -24], elong: 1.50, taper: 0.08},
+        /* Antarctica sits on the pole as a disc, not a lobe toward Chile. */
+        {lon: 0, lat: -90, share: 0.078, toward: [90, -80], elong: 1.05, taper: 0.0},
+        {lon: 78, lat: 21, share: 0.042, toward: [78, 32], elong: 1.28, taper: 0.14},
+        {lon: -42, lat: 73, share: 0.020, toward: [-42, 84], elong: 1.45, taper: 0.08},
+        {lon: 46, lat: 24, share: 0.024, toward: [48, 32], elong: 1.38, taper: 0.12},
+    ]);
+}
+
+
+/* Drowned continental crust. The Med is the one that reads from space;
+ * Hudson Bay and Davis Strait keep Canada and Greenland from fusing;
+ * the Caribbean stops the Americas becoming an isthmus wall. */
+function earthBasins() {
+    return placementFromLonLat([
+        {lon: 20, lat: 36, toward: [38, 36], elong: 2.40, taper: 0.0, radius: 0.24, floorKm: 16},
+        {lon: -82, lat: 60, toward: [-92, 58], elong: 1.55, taper: 0.0, radius: 0.17, floorKm: 25},
+        {lon: -62, lat: 70, toward: [-62, 78], elong: 2.10, taper: 0.0, radius: 0.11, floorKm: 20},
+        {lon: -76, lat: 15, toward: [-64, 14], elong: 2.05, taper: 0.0, radius: 0.15, floorKm: 18},
+        {lon: 38, lat: 21, toward: [39, 28], elong: 2.45, taper: 0.0, radius: 0.13, floorKm: 16},
+        {lon: -65, lat: -62, toward: [-42, -62], elong: 2.70, taper: 0.0, radius: 0.12, floorKm: 14},
+        {lon: -90, lat: 25, toward: [-90, 25], elong: 1.35, taper: 0.0, radius: 0.11, floorKm: 24},
+    ], true);
 }
 
 
@@ -410,6 +456,7 @@ function buildEarthMap(mesh, map, options) {
     map.tectonicFieldsFor = `${mesh.numRegions}:${TOKEN}`;
 
     opts.cratonPlacement = earthCratons();
+    opts.basinPlacement = earthBasins();
     Object.assign(map, Tectonics.initCrust(mesh, map.r_xyz, seed, opts));
 
     paintSeafloorAge(mesh, map, opts);
@@ -417,6 +464,9 @@ function buildEarthMap(mesh, map, options) {
     for (let i = 0; i < opts.paintPasses; i++) {
         Tectonics.paintConvergentMargins(mesh, map, opts);
     }
+    /* Collision paint would raise the Med back into mountains; drown it
+     * again and kill the orogeny the basin is sitting on. */
+    Tectonics.applyBasins(map.r_xyz, map.r_thickness, map.r_crust_type, opts, map.r_orogeny);
 
     Object.assign(map, Tectonics.classifyBoundaries(mesh, map));
     Tectonics.crustToElevation(mesh, map, seed, opts);

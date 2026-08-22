@@ -32,6 +32,7 @@ const DEFAULTS = {
     warpBiasBase: 0.25,
     warpBiasStrengthScale: 0.5,
     warpHotspotDampen: 0.8,
+    warpCoastKeep: 0.12,          // keep land/ocean when the lookup would swap them
     islandWavelengthKm: 900,      // octave 0 of the crest noise; finer octaves
                                   // break the ridge into a chain rather than a wall
 
@@ -50,39 +51,51 @@ const DEFAULTS = {
     ridgeWarpAmp: 0.006,          // unit-sphere; ~38 km of phase meander
     ridgeWarpOctaves: 5,
 
-    /* First-stage erosion. Area in km², distances in km, heights in m. */
-    hydraulicIters: 10,
-    streamK: 0.004,
+    /* First-stage erosion. Grain on a ~50 km cell, not a fjord map.
+     * A real Norwegian fjord is 1–6 km across, so one drowned coastal
+     * cell is the whole feature. Catchment-scaled amplitudes cut
+     * hundred-cell canyons and read as a drainage diagram. */
+    hydraulicIters: 6,
+    streamK: 0.0012,
     streamM: 0.5,
     streamDt: 1,
-    streamCap: 0.45,              // one step never pulls more than this toward the receiver
+    streamCap: 0.22,              // one step never pulls more than this toward the receiver
     depositFrac: 0.45,
     depositSlope: 12,             // steep receivers keep less sediment (physical slope)
     thermalIters: 1,
     talusSlope: 0.7,              // ~35°, a dry talus
-    thermalK: 0.15,
-    thermalShare: 0.5,
-    glacialIters: 5,
-    glacialStrength: 0.7,
+    thermalK: 0.12,
+    thermalShare: 0.4,
+    glacialIters: 3,
+    glacialStrength: 0.55,
     iceTemp: 0.28,                // matches LAND_ICE in the renderer
     iceRamp: 0.18,
-    glacialCarveM: 90,
-    glacialConvergeM: 40,
-    glacialDepositM: 18,
-    glacialFjordM: 140,
-    glacialFlowMin: 0.1,
-    glacialFjordMin: 0.5,
-    glacialWiden: 0.4,
+    paleoIceTemp: 0.58,           // last-glacial ice line; fjords on the high-latitude coasts
+    paleoIceRamp: 0.16,
+    iceSheetFluvial: 0.04,        // almost no running water on a live ice sheet
+    iceSheetCarveScale: 0.08,     // ice sheets are domes, not alpine U-valleys
+    iceSheetFjordScale: 0.06,     // Antarctica's coast is ice shelves, not Norway
+    iceSheetFjordLat0: 64,        // degrees; start fading fjords toward the pole
+    iceSheetFjordLat1: 72,        // no Norway-style drowning on a polar ice continent
+    iceWarpDamp: 0.18,            // domain warp on ice sheets; they have smooth outlines
+    glacialCarveM: 28,
+    glacialConvergeM: 10,
+    glacialDepositM: 6,
+    glacialFjordM: 40,            // one coastal cell, tens of metres — not a 200 km inlet
+    glacialFlowMin: 0.2,
+    glacialFjordMin: 1.2,         // only concentrated outlets, not every icy shore
+    glacialFlowCap: 6,            // catchments above this do not carve any deeper
+    glacialWiden: 0.12,
     glacialTerminus: 0.3,
-    glacialFjordIceMin: 0.2,
-    glacialSmooth: 0.3,
-    fjordFloorM: -180,            // drowned coasts, not abyssal trenches
-    floodCarve: 0.5,
+    glacialFjordIceMin: 0.25,
+    glacialSmooth: 0.22,
+    fjordFloorM: -55,             // drowned coasts, not abyssal trenches
+    floodCarve: 0.18,
     floodMidFrac: 0.75,
-    floodMidCarve: 0.85,
+    floodMidCarve: 0.28,
     floodEpsM: 0.25,
-    floodNoiseM: 12,
-    floodCarveRadius: 0.3,
+    floodNoiseM: 8,
+    floodCarveRadius: 0.22,
     creepIters: 3,
     creepStrength: 0.11,
     noiseBaseM: 35,               // craton grain
@@ -100,6 +113,11 @@ function noiseFrequency(wavelengthKm) {
     return 2 * Math.PI * EARTH_RADIUS_KM / wavelengthKm;
 }
 
+function smoothstep(x, edge0, edge1) {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+}
+
 
 /* World Orogen warpTerrain, almost line-for-line.
  *
@@ -107,7 +125,7 @@ function noiseFrequency(wavelengthKm) {
  * the displaced point, copy that cell's elevation, blend back. Frequency 4
  * and a 0.13 rad cap (times the slider) are theirs. Pole is Z here, so
  * east is cross(north, pos) rather than their Y-up frame. */
-function warpTerrain(mesh, r_xyz, r_elevation, seed, r_hotspot, opts) {
+function warpTerrain(mesh, r_xyz, r_elevation, seed, r_hotspot, opts, r_temperature) {
     const strength = opts.warpStrength;
     if (strength <= 0) return r_elevation;
 
@@ -116,6 +134,9 @@ function warpTerrain(mesh, r_xyz, r_elevation, seed, r_hotspot, opts) {
     const fbm = Tectonics.makeFbm(noise, opts.warpOctaves, 2 / 3);
     const freq = opts.warpFreq;
     const maxAmp = opts.warpMaxAmp * strength;
+    const iceTemp = opts.iceTemp;
+    const iceRamp = opts.iceRamp;
+    const iceDamp = opts.iceWarpDamp;
     const out = new Float32Array(r_elevation);
     const neighbors = [];
 
@@ -134,8 +155,13 @@ function warpTerrain(mesh, r_xyz, r_elevation, seed, r_hotspot, opts) {
         const nnx = nx / nlen, nny = ny / nlen, nnz = nz / nlen;
 
         const pfx = px * freq, pfy = py * freq, pfz = pz * freq;
-        const d1 = fbm(pfx, pfy, pfz) * maxAmp;
-        const d2 = fbm(pfx + 31.7, pfy + 47.3, pfz + 19.1) * maxAmp;
+        let amp = maxAmp;
+        if (r_temperature && iceDamp < 1) {
+            const ice = smoothstep(r_temperature[r], iceTemp, iceTemp - iceRamp);
+            amp *= 1 - (1 - iceDamp) * ice;
+        }
+        const d1 = fbm(pfx, pfy, pfz) * amp;
+        const d2 = fbm(pfx + 31.7, pfy + 47.3, pfz + 19.1) * amp;
 
         let wx = px + ex * d1 + nnx * d2;
         let wy = py + ey * d1 + nny * d2;
@@ -171,6 +197,10 @@ function warpTerrain(mesh, r_xyz, r_elevation, seed, r_hotspot, opts) {
             const hotFrac = Math.min(1, Math.abs(r_hotspot[r]) / (Math.abs(orig) || 1));
             bias *= 1 - opts.warpHotspotDampen * hotFrac;
         }
+        /* Warp is texture, not a new geography. An 800 km lookup will
+         * otherwise close the Med and Drake Passage by sampling a
+         * continent onto a strait. */
+        if ((orig >= 0) !== (warped >= 0)) bias *= opts.warpCoastKeep != null ? opts.warpCoastKeep : 0.12;
         r_elevation[r] = orig + (warped - orig) * bias;
     }
     return r_elevation;
@@ -446,7 +476,8 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
     for (let r = 0; r < numRegions; r++) {
         r_elevation[r] = Tectonics.metersToElevation(meters[r]);
     }
-    warpTerrain(detailMesh, detailXyz, r_elevation, seed, hasHot ? r_hotspot : null, opts);
+    warpTerrain(detailMesh, detailXyz, r_elevation, seed, hasHot ? r_hotspot : null, opts,
+        hasTemperature ? r_temperature : null);
     for (let r = 0; r < numRegions; r++) {
         meters[r] = Tectonics.elevationToMeters(r_elevation[r]);
     }
@@ -491,6 +522,8 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
         r_elevation[r] = Tectonics.metersToElevation(meters[r]);
         if (hasTemperature) r_temperature[r] -= lapse * (r_elevation[r] - prevElev);
     }
+
+    Tectonics.polarStraits(detailMesh, detailXyz, r_elevation, tectOpts, meters);
 
     return {
         plates: simMap.plates,

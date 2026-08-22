@@ -162,8 +162,13 @@ function scatterSites(count, randFloat) {
 }
 
 
+function q9(x) {
+    return Math.round(x * 1e9) / 1e9;
+}
+
 function angleBetween(a, b) {
-    return Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])));
+    const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+    return q9(Math.acos(dot));
 }
 
 
@@ -202,7 +207,7 @@ function assignSitesToPlates(sites, nuclei, targets) {
             pairs.push({d: angleBetween(sites[s], nuclei[p]), s, p});
         }
     }
-    pairs.sort((a, b) => a.d - b.d);
+    pairs.sort((a, b) => a.d - b.d || a.s - b.s || a.p - b.p);
 
     const owner = new Int32Array(n).fill(-1);
     const held = new Int32Array(nuclei.length);
@@ -251,7 +256,7 @@ function generatePlates(mesh, numPlates, seed, options) {
             const c = randomUnitVector(randFloat);
             let gap = Infinity;
             for (const o of nuclei) gap = Math.min(gap, angleBetween(c, o));
-            if (gap > bestGap) { bestGap = gap; best = c; }
+            if (gap > bestGap || (gap === bestGap && best == null)) { bestGap = gap; best = c; }
             if (gap > opts.nucleusSeparation) break;
         }
         nuclei.push(best);
@@ -304,12 +309,12 @@ function carveMicroplates(plates, sites, owner, minorTargets, opts, randFloat, n
         for (let t = 0; t < n; t++) {
             if (owner[t] === owner[s]) continue;
             const d = angleBetween(sites[s], sites[t]);
-            if (d < bestD) { bestD = d; best = t; }
+            if (d < bestD || (d === bestD && t < best)) { bestD = d; best = t; }
         }
         if (best !== -1 && s < best) pairs.push({s, t: best, d: bestD});
         else if (best !== -1 && !pairs.some(q => q.s === best && q.t === s)) pairs.push({s: best, t: s, d: bestD});
     }
-    pairs.sort((a, b) => a.d - b.d);
+    pairs.sort((a, b) => a.d - b.d || a.s - b.s || a.t - b.t);
     /* the tightest pairs straddle the boundary; the loose tail merely faces
        it from a distance */
     const candidates = pairs.slice(0, Math.max(minorTargets.length * 3, pairs.length >> 1));
@@ -326,11 +331,11 @@ function carveMicroplates(plates, sites, owner, minorTargets, opts, randFloat, n
         plateVelocity(va, A.pole, A.omega, mid);
         plateVelocity(vb, B.pole, B.omega, mid);
         /* positive when the two majors are closing on each other here */
-        c.closing = vec3.dot(vec3.subtract([], va, vb), across);
+        c.closing = q9(vec3.dot(vec3.subtract([], va, vb), across));
         c.mid = mid;
         c.across = across;
     }
-    const ranked = candidates.filter(c => c.mid).sort((a, b) => b.closing - a.closing);
+    const ranked = candidates.filter(c => c.mid).sort((a, b) => b.closing - a.closing || a.s - b.s || a.t - b.t);
 
     const taken = new Uint8Array(n);
     const used = [];
@@ -365,9 +370,9 @@ function carveMicroplates(plates, sites, owner, minorTargets, opts, randFloat, n
             let a = 0;
             if (vec3.length(e) > 1e-9) a = Math.abs(vec3.dot(vec3.normalize(e, e), along)) * d;
             const x = Math.sqrt(Math.max(0, d * d - a * a));
-            cost.push(Math.hypot(a / opts.microplateElongation, x));
+            cost.push(q9(Math.hypot(a / opts.microplateElongation, x)));
         }
-        const order = Array.from({length: n}, (_, i) => i).sort((a, b) => cost[a] - cost[b]);
+        const order = Array.from({length: n}, (_, i) => i).sort((a, b) => cost[a] - cost[b] || a - b);
 
         const p = plates.length;
         plates.push({
@@ -411,12 +416,17 @@ function makeBoundaryWarp(mesh, r_xyz, seed, opts) {
 
 /* A small binary heap, so ownership can be grown outwards from the sites
  * rather than by testing every cell against every site. */
+function heapLess(a, b) {
+    if (a.cost !== b.cost) return a.cost < b.cost;
+    return a.value < b.value;
+}
+
 function heapPush(heap, cost, value) {
     heap.push({cost, value});
     let i = heap.length - 1;
     while (i > 0) {
         const parent = (i - 1) >> 1;
-        if (heap[parent].cost <= heap[i].cost) break;
+        if (!heapLess(heap[i], heap[parent])) break;
         const t = heap[parent]; heap[parent] = heap[i]; heap[i] = t;
         i = parent;
     }
@@ -431,8 +441,8 @@ function heapPop(heap) {
         for (;;) {
             const l = 2 * i + 1, r = l + 1;
             let small = i;
-            if (l < heap.length && heap[l].cost < heap[small].cost) small = l;
-            if (r < heap.length && heap[r].cost < heap[small].cost) small = r;
+            if (l < heap.length && heapLess(heap[l], heap[small])) small = l;
+            if (r < heap.length && heapLess(heap[r], heap[small])) small = r;
             if (small === i) break;
             const t = heap[small]; heap[small] = heap[i]; heap[i] = t;
             i = small;
@@ -491,8 +501,11 @@ function assignPlateOwnership(mesh, r_xyz, plates, warp, out) {
                 + r_xyz[3 * r + 1] * r_xyz[3 * nb + 1]
                 + r_xyz[3 * r + 2] * r_xyz[3 * nb + 2];
             const step = Math.acos(dot < -1 ? -1 : dot > 1 ? 1 : dot);
-            const next = here + step * k * warp(r, nb);
-            if (next < cost[nb]) {
+            /* integer costs: 1-ulp sin/cos differences between JS engines
+               must not flip a boundary cell, or 20 steps later the planet
+               is a different world */
+            const next = here + Math.round(step * k * warp(r, nb) * 1e7);
+            if (next < cost[nb] || (next === cost[nb] && p < r_plate[nb])) {
                 cost[nb] = next;
                 r_plate[nb] = p;
                 heapPush(heap, next, nb);
@@ -614,13 +627,14 @@ function rotateAbout(out, v, axis, angle) {
  * before the clock started, and only at high resolution. */
 function nearestRegion(mesh, r_xyz, x, start, out_r) {
     let current_r = start;
-    let best = x[0] * r_xyz[3 * current_r] + x[1] * r_xyz[3 * current_r + 1] + x[2] * r_xyz[3 * current_r + 2];
+    const dotQ = (r) => Math.round((x[0] * r_xyz[3 * r] + x[1] * r_xyz[3 * r + 1] + x[2] * r_xyz[3 * r + 2]) * 1e12);
+    let best = dotQ(current_r);
     const limit = 8 * Math.sqrt(mesh.numRegions);
     for (let guard = 0; guard < limit; guard++) {
         let moved = -1;
         mesh.r_circulate_r(out_r, current_r);
         for (const neighbor_r of out_r) {
-            const d = x[0] * r_xyz[3 * neighbor_r] + x[1] * r_xyz[3 * neighbor_r + 1] + x[2] * r_xyz[3 * neighbor_r + 2];
+            const d = dotQ(neighbor_r);
             if (d > best) { best = d; moved = neighbor_r; }
         }
         if (moved === -1) break;
@@ -820,6 +834,18 @@ const DEFAULTS = {
                                   // land it is perturbing: it stops roughening the coast
                                   // and starts punching holes in it, which is what
                                   // shredded continents into strings and speckle
+    polarStraits: true,           // isolate a continent that sits on a pole with a
+                                  // high-latitude seaway, the way Drake Passage cuts
+                                  // Antarctica off from the Americas. Off leaves the
+                                  // land bridge if the cratons grew one
+    polarCapLat: 70,              // degrees; a polar continent is land covering this cap
+    polarCapLand: 0.50,           // fraction of the cap that must be land to count
+    polarStraitLat: 52,           // degrees; cut in this band (Earth: Drake ~60°S)
+    polarStraitBand: 16,          // band width in degrees (52–68)
+    polarStraitM: -140,           // metres; shallow water, not an abyssal trench
+    polarStraitMaxFrac: 0.015,    // never drown more than this of the surface to cut
+    polarStraitOnPole: true,      // the pole cell itself must be land; Arctic islands
+                                  // reaching 80°N are not a polar continent
 };
 
 
@@ -862,6 +888,25 @@ function radiiFromShares(shares, continentFraction) {
 }
 
 
+/* Angular distance from a cap's centre, stretched into an ellipse and
+ * tapered so one end can come to a point. Shared by cratons and the
+ * basins punched into them. */
+function capDistance(p, centre, axis, elong, taper, scratch) {
+    const t = scratch || [0, 0, 0];
+    const dot = Math.max(-1, Math.min(1, vec3.dot(p, centre)));
+    const a = Math.acos(dot);
+    if (a <= 1e-6) return 0;
+    t[0] = p[0] - dot * centre[0];
+    t[1] = p[1] - dot * centre[1];
+    t[2] = p[2] - dot * centre[2];
+    vec3.normalize(t, t);
+    const along = vec3.dot(t, axis.u), across = vec3.dot(t, axis.v);
+    const stretch = Math.sqrt(along * along / elong + across * across * elong)
+        / (1 + taper * along);
+    return a * stretch;
+}
+
+
 /* Authored cratons skip the random huddle. Same primitive otherwise:
  * spherical caps, unequal shares, a stretch axis and a taper. */
 function placementFromSpec(spec, opts) {
@@ -881,7 +926,7 @@ function placeCratons(mesh, r_xyz, count, randFloat, opts) {
     if (opts.cratonPlacement) return placementFromSpec(opts.cratonPlacement, opts);
 
     const centres = [];
-    const angle = (a, b) => Math.acos(Math.max(-1, Math.min(1, vec3.dot(a, b))));
+    const angle = (a, b) => angleBetween(a, b);
 
     for (let k = 0; k < count; k++) {
         if (centres.length === 0) { centres.push(randomUnitVector(randFloat)); continue; }
@@ -895,11 +940,13 @@ function placeCratons(mesh, r_xyz, count, randFloat, opts) {
             let nearest = Infinity;
             for (const o of centres) nearest = Math.min(nearest, angle(c, o));
             if (nearest < opts.cratonMinSeparation) continue;
-            candidates.push({c, nearest});
+            candidates.push({c, nearest, i: candidates.length});
         }
         if (candidates.length === 0) { centres.push(randomUnitVector(randFloat)); continue; }
         const huddle = randFloat() < opts.cratonClustering;
-        candidates.sort((a, b) => huddle ? a.nearest - b.nearest : b.nearest - a.nearest);
+        candidates.sort((a, b) => huddle
+            ? (a.nearest - b.nearest || a.i - b.i)
+            : (b.nearest - a.nearest || a.i - b.i));
         centres.push(candidates[0].c);
     }
 
@@ -972,24 +1019,8 @@ function initCrust(mesh, r_xyz, seed, opts) {
             p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
             let best = Infinity;
             for (let k = 0; k < centres.length; k++) {
-                const c = centres[k];
-                const dot = Math.max(-1, Math.min(1, vec3.dot(p, c)));
-                const a = Math.acos(dot);
-                /* Direction of this point as seen from the craton's centre,
-                 * in the centre's tangent plane. Along the craton's axis
-                 * distances count for less (the mass reaches further) and
-                 * across it for more; the taper shifts where "further" is,
-                 * turning the ellipse into a wedge. */
-                let stretch = 1;
-                if (a > 1e-6) {
-                    t[0] = p[0] - dot * c[0]; t[1] = p[1] - dot * c[1]; t[2] = p[2] - dot * c[2];
-                    vec3.normalize(t, t);
-                    const along = vec3.dot(t, axes[k].u), across = vec3.dot(t, axes[k].v);
-                    const e = elong[k];
-                    stretch = Math.sqrt(along * along / e + across * across * e)
-                        / (1 + taper[k] * along);
-                }
-                best = Math.min(best, a * stretch / (radii[k] * scale));
+                const d = capDistance(p, centres[k], axes[k], elong[k], taper[k], t);
+                best = Math.min(best, d / (radii[k] * scale));
             }
             depth[r] = best * warp[r];
             if (depth[r] < 1) inside++;
@@ -1040,7 +1071,39 @@ function initCrust(mesh, r_xyz, seed, opts) {
             /* the shelf, between the shoreline and the edge of the craton */
             : opts.crustShelfKm + (opts.seaLevelThicknessKm - opts.crustShelfKm) * (1 - d) / (1 - shore);
     }
+    applyBasins(r_xyz, r_thickness, r_crust_type, opts, null);
     return {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_orogenyDir, r_arc, r_hotspot};
+}
+
+
+/* Enclosed seas — Mediterranean, Hudson Bay — are drowned continental
+ * crust, not ocean floor. A basin is the same stretched cap as a craton
+ * but it thins the column until it sits below sea level. Authored for the
+ * Earth seed; the random path has none unless a caller passes them. */
+function applyBasins(r_xyz, r_thickness, r_crust_type, opts, r_orogeny) {
+    const basins = opts.basinPlacement;
+    if (!basins || !basins.centres || basins.centres.length === 0) return;
+    const {centres, radii, axes, elong, taper, floorKm} = basins;
+    const n = r_thickness.length;
+    const p = [0, 0, 0], t = [0, 0, 0];
+    for (let r = 0; r < n; r++) {
+        if (r_crust_type[r] !== CRUST_CONTINENTAL) continue;
+        p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
+        let drown = 0, floor = opts.crustShelfKm;
+        for (let k = 0; k < centres.length; k++) {
+            const d = capDistance(p, centres[k], axes[k], elong[k], taper[k], t) / radii[k];
+            if (d >= 1) continue;
+            const w = Math.pow(1 - d, 1.5);
+            if (w > drown) {
+                drown = w;
+                floor = floorKm[k];
+            }
+        }
+        if (drown > 0) {
+            r_thickness[r] = r_thickness[r] * (1 - drown) + floor * drown;
+            if (r_orogeny) r_orogeny[r] *= 1 - drown;
+        }
+    }
 }
 
 
@@ -1089,7 +1152,11 @@ function despeckle(mesh, r_plate, opts) {
             }
         }
         let best = -1, bestCount = 0;
-        for (const [p, count] of tally) if (count > bestCount) { bestCount = count; best = p; }
+        for (const [p, count] of tally) {
+            if (count > bestCount || (count === bestCount && (best === -1 || p < best))) {
+                bestCount = count; best = p;
+            }
+        }
         if (best !== -1) for (const r of group) r_plate[r] = best;
     }
 }
@@ -1520,7 +1587,11 @@ function resolvePlateBodies(mesh, map, randFloat, opts) {
         const tally = adopter.get(c);
         if (!tally || tally.size === 0) continue;
         let best = -1, bestCount = -1;
-        for (const [q, count] of tally) if (count > bestCount) { bestCount = count; best = q; }
+        for (const [q, count] of tally) {
+            if (count > bestCount || (count === bestCount && (best === -1 || q < best))) {
+                bestCount = count; best = q;
+            }
+        }
         r_plate[r] = best;
         changed = true;
     }
@@ -1788,14 +1859,14 @@ function spawnBackArcPlate(mesh, map, randFloat, opts) {
     let totalSites = 0;
     for (const plate of plates) totalSites += plate.sites.length;
     const quota = Math.max(5, Math.round(0.012 * totalSites));
-    const scored = parent.sites.map(s => {
+    const scored = parent.sites.map((s, i) => {
         const d = angleBetween(s, mid);
         const e = vec3.scaleAndAdd([], s, mid, -vec3.dot(s, mid));
         let a = 0;
         if (vec3.length(e) > 1e-9) a = Math.abs(vec3.dot(vec3.normalize(e, e), along)) * d;
         const x = Math.sqrt(Math.max(0, d * d - a * a));
-        return {s, cost: Math.hypot(a / opts.microplateElongation, x)};
-    }).sort((a, b) => a.cost - b.cost);
+        return {s, i, cost: q9(Math.hypot(a / opts.microplateElongation, x))};
+    }).sort((a, b) => a.cost - b.cost || a.i - b.i);
 
     const split = [], keep = [];
     for (const {s, cost} of scored) {
@@ -2058,6 +2129,114 @@ function crustToElevation(mesh, map, seed, opts) {
         r_elevation[r] = metersToElevation(meters[r]) +
             opts.detailNoise * detail(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
     }
+    polarStraits(mesh, r_xyz, r_elevation, opts, meters);
+}
+
+
+/* A continent sitting on a pole is cut off from lower-latitude land by a
+ * high-latitude seaway. Earth does this at both ends: Drake Passage in the
+ * south, and the Arctic Ocean in the north (no polar continent at all).
+ * The test is "does land fill the polar cap", not "does some land reach
+ * high latitude" — otherwise North America, which merely has Arctic
+ * islands, would be sliced through at 60°N. */
+function polarStraits(mesh, r_xyz, r_elevation, opts, r_meters) {
+    if (!opts.polarStraits) return;
+    const n = mesh.numRegions;
+    const capLat = opts.polarCapLat;
+    const capNeed = opts.polarCapLand;
+    const bandLo = opts.polarStraitLat;
+    const bandHi = opts.polarStraitLat + opts.polarStraitBand;
+    const straitM = opts.polarStraitM;
+    const straitE = metersToElevation(straitM);
+    const maxDrown = Math.max(8, (n * opts.polarStraitMaxFrac) | 0);
+    const lat = new Float32Array(n);
+    for (let r = 0; r < n; r++) {
+        lat[r] = Math.asin(Math.max(-1, Math.min(1, r_xyz[3 * r + 2]))) * 180 / Math.PI;
+    }
+    const out_r = [];
+    const isLand = (r) => r_elevation[r] >= 0;
+
+    for (const sign of [1, -1]) {
+        let capCells = 0, capLand = 0;
+        for (let r = 0; r < n; r++) {
+            if (sign * lat[r] < capLat) continue;
+            capCells++;
+            if (isLand(r)) capLand++;
+        }
+        if (capCells === 0 || capLand / capCells < capNeed) continue;
+        if (opts.polarStraitOnPole !== false) {
+            let poleR = 0, poleDot = -2;
+            for (let r = 0; r < n; r++) {
+                const d = sign * r_xyz[3 * r + 2];
+                if (d > poleDot) { poleDot = d; poleR = r; }
+            }
+            if (!isLand(poleR)) continue;
+        }
+
+        let reachesLow = false;
+        const seen = new Uint8Array(n);
+        const q = [];
+        for (let r = 0; r < n; r++) {
+            if (sign * lat[r] < capLat || !isLand(r)) continue;
+            seen[r] = 1;
+            q.push(r);
+        }
+        for (let h = 0; h < q.length; h++) {
+            if (sign * lat[q[h]] < bandLo) reachesLow = true;
+            mesh.r_circulate_r(out_r, q[h]);
+            for (const nb of out_r) {
+                if (seen[nb] || !isLand(nb)) continue;
+                seen[nb] = 1;
+                q.push(nb);
+            }
+        }
+        if (!reachesLow) continue;
+
+        /* Cut a latitude ring through the polar mass. Lowest-first drowning
+         * prefers coastal plains over a high isthmus, so the Andes can
+         * keep Chile glued to Antarctica; a ring at ~60° is the Drake
+         * Passage shape and only fires when the neck is actually a neck
+         * (wider than maxFrac and we leave it — that is a pole-to-equator
+         * supercontinent, not a strait). */
+        const target = bandLo + opts.polarStraitBand * 0.5;
+        const halfW = Math.max(3.5, opts.polarStraitBand * 0.4);
+        const toDrown = [];
+        for (let r = 0; r < n; r++) {
+            if (!seen[r]) continue;
+            if (Math.abs(sign * lat[r] - target) > halfW) continue;
+            /* Only the neck: land both toward the pole and toward the
+             * equator. A polar coast facing open ocean is not a land
+             * bridge, and drowning it would saw-tooth Antarctica. */
+            let towardPole = false, towardEq = false;
+            mesh.r_circulate_r(out_r, r);
+            for (const nb of out_r) {
+                if (!isLand(nb) && !seen[nb]) continue;
+                if (!isLand(nb)) continue;
+                if (sign * lat[nb] > sign * lat[r] + 0.15) towardPole = true;
+                if (sign * lat[nb] < sign * lat[r] - 0.15) towardEq = true;
+            }
+            if (towardPole && towardEq) toDrown.push(r);
+        }
+        if (toDrown.length === 0 || toDrown.length > maxDrown) continue;
+        const marked = new Uint8Array(n);
+        for (const r of toDrown) marked[r] = 1;
+        for (const r of toDrown) {
+            mesh.r_circulate_r(out_r, r);
+            for (const nb of out_r) {
+                if (marked[nb] || !seen[nb] || !isLand(nb)) continue;
+                if (Math.abs(sign * lat[nb] - target) > halfW) continue;
+                marked[nb] = 1;
+            }
+        }
+        let nDrown = 0;
+        for (let r = 0; r < n; r++) if (marked[r]) nDrown++;
+        if (nDrown === 0 || nDrown > maxDrown) continue;
+        for (let r = 0; r < n; r++) {
+            if (!marked[r]) continue;
+            r_elevation[r] = straitE;
+            if (r_meters) r_meters[r] = straitM;
+        }
+    }
 }
 
 
@@ -2153,8 +2332,8 @@ module.exports = {
     generatePlates, removeNetRotation, absorbEnclaves,
     plateVelocity, rotateAbout, nearestRegion,
     classifyBoundaries, paintConvergentMargins,
-    placeCratons, initCrust,
+    placeCratons, initCrust, applyBasins,
     oceanDepthMeters, continentHeightMeters,
-    crustToMeters, applyIslandCrests, crustToElevation,
+    crustToMeters, applyIslandCrests, crustToElevation, polarStraits,
     simulateTectonics,
 };

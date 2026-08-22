@@ -21,16 +21,14 @@ let seed = seedFromUrl();
 const LAND_ICE = 0.28;
 const SEA_ICE = 0.18;
 
-const SimplexNoise = require('simplex-noise');
 const colormap = require('./colormap');
 const {vec3, vec4, mat4, quat} = require('gl-matrix');
-const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
-const SphereMesh = require('./sphere-mesh');
 const Tectonics = require('./tectonics');
 const EarthFixture = require('./earth-fixture');
-const Climate = require('./climate');
 const Detail = require('./detail');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
+const Planet = require('./planet');
+const {clamp01} = Tectonics;
 
 const regl = require('regl')({
     canvas: "#output",
@@ -85,6 +83,7 @@ let draw_plateVectors = false;
 let draw_plateBoundaries = false;
 let merge_ocean_plates = false;
 let connect_oceans = false;
+let polar_straits = true;
 let simulate_tectonics = true;
 let sim_steps = Tectonics.DEFAULTS.steps;
 let detail_pass = true;
@@ -124,6 +123,7 @@ window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
 window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(); };
 window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
+window.setPolarStraits = flag => { polar_straits = !!flag; generateMap(); };
 window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
 window.setSimSteps = steps => { sim_steps = Math.max(0, steps | 0); generateMap(); };
 window.setDetailPass = flag => { detail_pass = !!flag; generateMap(); };
@@ -376,12 +376,6 @@ void main() {
  * Geometry
  */
 
-function noiseSeedOf(value) {
-    return EarthFixture.numericSeed(value);
-}
-
-let _randomNoise = new SimplexNoise(makeRandFloat(noiseSeedOf(seed)));
-
 function parseSeed(raw) {
     const text = String(raw).trim();
     if (EarthFixture.isEarthSeed(text)) return EarthFixture.TOKEN;
@@ -397,7 +391,6 @@ function applySeed(next) {
         seed = (next | 0);
         if (seed === 0) seed = 1;
     }
-    _randomNoise = new SimplexNoise(makeRandFloat(noiseSeedOf(seed)));
     const input = document.getElementById('seed-input');
     if (input) input.value = String(seed);
     syncSavedSeedsUI();
@@ -618,37 +611,6 @@ function setupSavedSeeds() {
     syncSavedSeedsUI();
 }
 
-const persistence = 2/3;
-const amplitudes = Array.from({length: 5}, (_, octave) => Math.pow(persistence, octave));
-
-function fbm_noise(nx, ny, nz) {
-    let sum = 0, sumOfAmplitudes = 0;
-    for (let octave = 0; octave < amplitudes.length; octave++) {
-        let frequency = 1 << octave;
-        sum += amplitudes[octave] * _randomNoise.noise3D(nx * frequency, ny * frequency, nz * frequency);
-        sumOfAmplitudes += amplitudes[octave];
-    }
-    return sum / sumOfAmplitudes;
-}
-
-function generateTriangleCenters(mesh, {r_xyz}) {
-    let {numTriangles} = mesh;
-    let t_xyz = new Float32Array(3 * numTriangles);
-    for (let t = 0; t < numTriangles; t++) {
-        let a = mesh.s_begin_r(3*t),
-            b = mesh.s_begin_r(3*t+1),
-            c = mesh.s_begin_r(3*t+2);
-        // Calculate centroid
-        let ax = r_xyz[3*a], ay = r_xyz[3*a+1], az = r_xyz[3*a+2],
-            bx = r_xyz[3*b], by = r_xyz[3*b+1], bz = r_xyz[3*b+2],
-            cx = r_xyz[3*c], cy = r_xyz[3*c+1], cz = r_xyz[3*c+2];
-        t_xyz[3*t  ] = (ax+bx+cx)/3;
-        t_xyz[3*t+1] = (ay+by+cy)/3;
-        t_xyz[3*t+2] = (az+bz+cz)/3;
-    }
-    return t_xyz;
-}
-
 function generateVoronoiGeometry(mesh, {r_xyz, t_xyz}, r_color_fn) {
     const {numSides} = mesh;
     let xyz = new Float32Array(3 * 3 * numSides),
@@ -677,427 +639,6 @@ function generateVoronoiGeometry(mesh, {r_xyz, t_xyz}, r_color_fn) {
     return {xyz, tm};
 }
 
-class QuadGeometry {
-    constructor () {
-        /* xyz = position in 3-space;
-           tm = elevation, moisture, temperature
-           I = indices for indexed drawing mode */
-    }
-
-    setMesh({numSides, numRegions, numTriangles}) {
-        this.I = new Int32Array(3 * numSides);
-        this.xyz = new Float32Array(3 * (numRegions + numTriangles));
-        this.tm = new Float32Array(3 * (numRegions + numTriangles));
-    }
-
-    setMap(mesh, {r_xyz, t_xyz, r_elevation, t_elevation, r_moisture, t_moisture, r_temperature, t_temperature}) {
-        const V = 0.95;
-        const {numSides, numRegions, numTriangles} = mesh;
-        const {xyz, tm, I} = this;
-
-        xyz.set(r_xyz);
-        xyz.set(t_xyz, r_xyz.length);
-        // TODO: multiply all the r, t points by the elevation, taking V into account
-
-        let p = 0;
-        for (let r = 0; r < numRegions; r++) {
-            tm[p++] = r_elevation[r];
-            tm[p++] = r_moisture[r];
-            tm[p++] = r_temperature[r];
-        }
-        for (let t = 0; t < numTriangles; t++) {
-            tm[p++] = t_elevation[t];
-            tm[p++] = t_moisture[t];
-            tm[p++] = t_temperature[t];
-        }
-
-        let i = 0, count_valley = 0, count_ridge = 0;
-        for (let s = 0; s < numSides; s++) {
-            let opposite_s = mesh.s_opposite_s(s),
-                r1 = mesh.s_begin_r(s),
-                r2 = mesh.s_begin_r(opposite_s),
-                t1 = mesh.s_inner_t(s),
-                t2 = mesh.s_inner_t(opposite_s);
-            
-            // Each quadrilateral is turned into two triangles, so each
-            // half-edge gets turned into one. There are two ways to fold
-            // a quadrilateral. This is usually a nuisance but in this
-            // case it's a feature. See the explanation here
-            // https://www.redblobgames.com/x/1725-procedural-elevation/#rendering
-            let coast = r_elevation[r1] < 0.0 || r_elevation[r2] < 0.0;
-            if (coast) {
-                I[i++] = r1; I[i++] = numRegions+t2; I[i++] = numRegions+t1;
-                count_valley++;
-            } else {
-                I[i++] = r1; I[i++] = r2; I[i++] = numRegions+t1;
-                count_ridge++;
-            }
-        }
-
-        console.log('ridge=', count_ridge, ', valley=', count_valley);
-    }
-}
-
-/**********************************************************************
- * Plates
- */
-
-/* Plates, their Euler poles and their motion all live in ./tectonics.js so
- * they can be run and measured outside the browser. */
-function generatePlates(mesh, r_xyz) {
-    return Tectonics.generatePlates(mesh, P, seed);
-}
-
-
-/* The 1843 collision test wants one vector per plate. Rigid rotation has no
- * such thing, so hand it the velocity at each plate's centroid; that is the
- * closest a single vector gets to describing the plate's motion. */
-function plateVectorsFromPoles(mesh, r_xyz, plates, r_plate) {
-    const centroid = plateCentroids(mesh, r_xyz, plates, r_plate);
-    const plate_vec = [];
-    for (let p = 0; p < plates.length; p++) {
-        plate_vec[p] = Tectonics.plateVelocity([], plates[p].pole, plates[p].omega, centroid[p]);
-        const speed = vec3.length(plate_vec[p]);
-        if (speed > 1e-12) vec3.scale(plate_vec[p], plate_vec[p], 1 / speed);
-    }
-    return plate_vec;
-}
-
-
-/* Adjacent ocean plates become one plate so the 1843 path doesn't get fake
- * ocean-ocean ridges and trenches. Land plates stay as they are. Only that
- * path uses this; the simulation has no need of it. */
-function mergeOceanPlates(mesh, r_plate, plate_is_ocean) {
-    const parent = new Map();
-    const find = (p) => { while (parent.has(p) && parent.get(p) !== p) p = parent.get(p); return p; };
-    for (const p of plate_is_ocean) parent.set(p, p);
-
-    const out_r = [];
-    for (let r = 0; r < mesh.numRegions; r++) {
-        const p = r_plate[r];
-        if (!plate_is_ocean.has(p)) continue;
-        mesh.r_circulate_r(out_r, r);
-        for (const n of out_r) {
-            const q = r_plate[n];
-            if (q === p || !plate_is_ocean.has(q)) continue;
-            const a = find(p), b = find(q);
-            if (a !== b) parent.set(b, a);
-        }
-    }
-    for (let r = 0; r < mesh.numRegions; r++) {
-        if (plate_is_ocean.has(r_plate[r])) r_plate[r] = find(r_plate[r]);
-    }
-    const nextOcean = new Set();
-    for (const p of plate_is_ocean) nextOcean.add(find(p));
-    return {plate_is_ocean: nextOcean};
-}
-
-
-function plateCentroids(mesh, r_xyz, plates, r_plate) {
-    const centroid = plates.map(() => [0, 0, 0]);
-    for (let r = 0; r < mesh.numRegions; r++) {
-        const c = centroid[r_plate[r]];
-        c[0] += r_xyz[3 * r]; c[1] += r_xyz[3 * r + 1]; c[2] += r_xyz[3 * r + 2];
-    }
-    for (const c of centroid) vec3.normalize(c, c);
-    return centroid;
-}
-
-
-/* Distance from any point in seeds_r to all other points, but 
- * don't go past any point in stop_r */
-function assignDistanceField(mesh, seeds_r, stop_r) {
-    const randInt = makeRandInt(seed);
-    let {numRegions} = mesh;
-    let r_distance = new Float32Array(numRegions);
-    r_distance.fill(Infinity);
-    
-    let queue = [];
-    for (let r of seeds_r) {
-        queue.push(r);
-        r_distance[r] = 0;
-    }
-
-    /* Random search adapted from breadth first search */
-    let out_r = [];
-    for (let queue_out = 0; queue_out < queue.length; queue_out++) {
-        let pos = queue_out + randInt(queue.length - queue_out);
-        let current_r = queue[pos];
-        queue[pos] = queue[queue_out];
-        mesh.r_circulate_r(out_r, current_r);
-        for (let neighbor_r of out_r) {
-            if (r_distance[neighbor_r] === Infinity && !stop_r.has(neighbor_r)) {
-                r_distance[neighbor_r] = r_distance[current_r] + 1;
-                queue.push(neighbor_r);
-            }
-        }
-    }
-    return r_distance;
-    // TODO: possible enhancement: keep track of which seed is closest
-    // to this point, so that we can assign variable mountain/ocean
-    // elevation to each seed instead of them always being +1/-1
-}
-
-
-/* Calculate the collision measure, which is the amount
- * that any neighbor's plate vector is pushing against 
- * the current plate vector. */
-const COLLISION_THRESHOLD = 0.75;
-function findCollisions(mesh, r_xyz, plate_is_ocean, r_plate, plate_vec) {
-    const deltaTime = 1e-2; // simulate movement
-    let {numRegions} = mesh;
-    let mountain_r = new Set(),
-        coastline_r = new Set(),
-        ocean_r = new Set();
-    let r_out = [];
-    /* For each region, I want to know how much it's being compressed
-       into an adjacent region. The "compression" is the change in
-       distance as the two regions move. I'm looking for the adjacent
-       region from a different plate that pushes most into this one*/
-    for (let current_r = 0; current_r < numRegions; current_r++) {
-        let bestCompression = Infinity, best_r = -1;
-        mesh.r_circulate_r(r_out, current_r);
-        for (let neighbor_r of r_out) {
-            if (r_plate[current_r] !== r_plate[neighbor_r]) {
-                /* sometimes I regret storing xyz in a compact array... */
-                let current_pos = r_xyz.slice(3 * current_r, 3 * current_r + 3),
-                    neighbor_pos = r_xyz.slice(3 * neighbor_r, 3 * neighbor_r + 3);
-                /* simulate movement for deltaTime seconds */
-                let distanceBefore = vec3.distance(current_pos, neighbor_pos),
-                    distanceAfter = vec3.distance(vec3.add([], current_pos, vec3.scale([], plate_vec[r_plate[current_r]], deltaTime)),
-                                                  vec3.add([], neighbor_pos, vec3.scale([], plate_vec[r_plate[neighbor_r]], deltaTime)));
-                /* how much closer did these regions get to each other? */
-                let compression = distanceBefore - distanceAfter;
-                /* keep track of the adjacent region that gets closest */
-                // TODO: shouldn't this be > ? need to re-tune all the parameters for the page after changing this
-                if (compression < bestCompression) {
-                    best_r = neighbor_r;
-                    bestCompression = compression;
-                }
-            }
-        }
-        if (best_r !== -1) {
-            /* at this point, bestCompression tells us how much closer
-               we are getting to the region that's pushing into us the most */
-            let collided = bestCompression > COLLISION_THRESHOLD * deltaTime;
-            let current_plate = r_plate[current_r],
-                best_plate = r_plate[best_r];
-            if (plate_is_ocean.has(current_plate) && plate_is_ocean.has(best_plate)) {
-                (collided? coastline_r : ocean_r).add(current_r);
-            } else if (!plate_is_ocean.has(current_plate) && !plate_is_ocean.has(best_plate)) {
-                if (collided) mountain_r.add(current_plate);
-            } else {
-                (collided? mountain_r : coastline_r).add(current_r);
-            }
-        }
-    }
-    return {mountain_r, coastline_r, ocean_r};
-}
-
-
-function assignRegionElevation(mesh, {r_xyz, plate_is_ocean, r_plate, plate_vec, extra_ocean_seeds, /* out */ r_elevation}) {
-    const epsilon = 1e-3;
-    let {numRegions} = mesh;
-
-    let {mountain_r, coastline_r, ocean_r} = findCollisions(
-        mesh, r_xyz, plate_is_ocean, r_plate, plate_vec);
-
-    for (let r = 0; r < numRegions; r++) {
-        if (r_plate[r] === r) {
-            (plate_is_ocean.has(r)? ocean_r : coastline_r).add(r);
-        }
-    }
-    if (extra_ocean_seeds) {
-        for (let r of extra_ocean_seeds) ocean_r.add(r);
-    }
-
-    let stop_r = new Set();
-    for (let r of mountain_r) { stop_r.add(r); }
-    for (let r of coastline_r) { stop_r.add(r); }
-    for (let r of ocean_r) { stop_r.add(r); }
-
-    console.log('seeds mountain/coastline/ocean:', mountain_r.size, coastline_r.size, ocean_r.size, 'plate_is_ocean', plate_is_ocean.size,'/', P);
-    let r_distance_a = assignDistanceField(mesh, mountain_r, ocean_r);
-    let r_distance_b = assignDistanceField(mesh, ocean_r, coastline_r);
-    let r_distance_c = assignDistanceField(mesh, coastline_r, stop_r);
-
-    for (let r = 0; r < numRegions; r++) {
-        let a = r_distance_a[r] + epsilon,
-            b = r_distance_b[r] + epsilon,
-            c = r_distance_c[r] + epsilon;
-        if (a === Infinity && b === Infinity) {
-            r_elevation[r] = 0.1;
-        } else {
-            r_elevation[r] = (1/a - 1/b) / (1/a + 1/b + 1/c);
-        }
-        r_elevation[r] += 0.1 * fbm_noise(r_xyz[3*r], r_xyz[3*r+1], r_xyz[3*r+2]);
-    }
-}
-
-
-const STRAIT = -0.05;
-const LAKE_FILL = 0.08;
-
-function labelOceanComponents(mesh, r_elevation) {
-    const {numRegions} = mesh;
-    const comp = new Int32Array(numRegions);
-    comp.fill(-1);
-    const r_out = [];
-    const sizes = [];
-    let ncomp = 0;
-    for (let s = 0; s < numRegions; s++) {
-        if (r_elevation[s] >= 0 || comp[s] !== -1) continue;
-        const q = [s];
-        comp[s] = ncomp;
-        let sz = 1;
-        for (let i = 0; i < q.length; i++) {
-            mesh.r_circulate_r(r_out, q[i]);
-            for (let n of r_out) {
-                if (r_elevation[n] < 0 && comp[n] === -1) {
-                    comp[n] = ncomp;
-                    q.push(n);
-                    sz++;
-                }
-            }
-        }
-        sizes.push(sz);
-        ncomp++;
-    }
-    let main = 0;
-    for (let i = 1; i < ncomp; i++) {
-        if (sizes[i] > sizes[main]) main = i;
-    }
-    return {comp, ncomp, sizes, main};
-}
-
-function heapPush(h, node) {
-    h.push(node);
-    let i = h.length - 1;
-    while (i > 0) {
-        const p = (i - 1) >> 1;
-        if (h[p].key <= h[i].key) break;
-        const t = h[p];
-        h[p] = h[i];
-        h[i] = t;
-        i = p;
-    }
-}
-
-function heapPop(h) {
-    const out = h[0];
-    const last = h.pop();
-    if (!h.length) return out;
-    h[0] = last;
-    let i = 0;
-    for (;;) {
-        const l = i * 2 + 1, rgt = l + 1;
-        let s = i;
-        if (l < h.length && h[l].key < h[s].key) s = l;
-        if (rgt < h.length && h[rgt].key < h[s].key) s = rgt;
-        if (s === i) break;
-        const t = h[s];
-        h[s] = h[i];
-        h[i] = t;
-        i = s;
-    }
-    return out;
-}
-
-/* Make every below-sea-level cell part of one world ocean: fill tiny
- * inland seas, punch a shallow strait through the lowest saddle between
- * large basins. */
-function connectWorldOcean(mesh, r_elevation) {
-    const {numRegions} = mesh;
-    let labeled = labelOceanComponents(mesh, r_elevation);
-    if (labeled.ncomp <= 1) return;
-
-    const fillMax = Math.max(36, (labeled.sizes[labeled.main] * 0.08) | 0);
-    for (let r = 0; r < numRegions; r++) {
-        const c = labeled.comp[r];
-        if (c >= 0 && c !== labeled.main && labeled.sizes[c] <= fillMax) {
-            r_elevation[r] = LAKE_FILL;
-        }
-    }
-
-    const r_out = [];
-    for (let guard = 0; guard < 24; guard++) {
-        labeled = labelOceanComponents(mesh, r_elevation);
-        if (labeled.ncomp <= 1) return;
-        const {comp, main} = labeled;
-
-        const d = new Float32Array(numRegions);
-        d.fill(Infinity);
-        const parent = new Int32Array(numRegions);
-        parent.fill(-1);
-        const heap = [];
-        for (let r = 0; r < numRegions; r++) {
-            if (comp[r] === main) {
-                d[r] = -1;
-                heapPush(heap, {r, key: -1});
-            }
-        }
-
-        let hit = -1;
-        while (heap.length) {
-            const {r, key} = heapPop(heap);
-            if (key > d[r]) continue;
-            if (comp[r] >= 0 && comp[r] !== main) {
-                hit = r;
-                break;
-            }
-            mesh.r_circulate_r(r_out, r);
-            for (let n of r_out) {
-                const step = r_elevation[n] < 0 ? d[r] : Math.max(d[r], r_elevation[n]);
-                if (step < d[n]) {
-                    d[n] = step;
-                    parent[n] = r;
-                    heapPush(heap, {r: n, key: step});
-                }
-            }
-        }
-        if (hit < 0) return;
-
-        let p = hit;
-        let carved = false;
-        while (p !== -1) {
-            if (r_elevation[p] >= 0) {
-                r_elevation[p] = STRAIT;
-                carved = true;
-            }
-            if (comp[p] === main) break;
-            p = parent[p];
-        }
-        if (!carved) return;
-    }
-}
-
-
-/* Shared with the models, which need it outside the browser. */
-const {clamp01} = Tectonics;
-
-/* Winds, moisture advection and temperature all live in ./climate.js so they
- * can be run and measured outside the browser. */
-function assignClimate(mesh, map) {
-    Climate.assignClimate(mesh, map, noiseSeedOf(seed));
-}
-
-
-function assignTriangleValues(mesh, {r_elevation, r_moisture, r_temperature, /* out */ t_elevation, t_moisture, t_temperature}) {
-    const {numTriangles} = mesh;
-    for (let t = 0; t < numTriangles; t++) {
-        let s0 = 3*t;
-        let r1 = mesh.s_begin_r(s0),
-            r2 = mesh.s_begin_r(s0+1),
-            r3 = mesh.s_begin_r(s0+2);
-        t_elevation[t] = 1/3 * (r_elevation[r1] + r_elevation[r2] + r_elevation[r3]);
-        t_moisture[t] = 1/3 * (r_moisture[r1] + r_moisture[r2] + r_moisture[r3]);
-        t_temperature[t] = 1/3 * (r_temperature[r1] + r_temperature[r2] + r_temperature[r3]);
-    }
-}
-
-
-
-
 /**********************************************************************
  * Main
  */
@@ -1105,241 +646,49 @@ function assignTriangleValues(mesh, {r_elevation, r_moisture, r_temperature, /* 
 // ugh globals, sorry
 var mesh, map = {};
 var simMesh, simMap;
-var quadGeometry = new QuadGeometry();
-var detailCache = null;
+var quadGeometry = {xyz: null, tm: null, I: null};
+var planetCache = {};
 
 function generateMesh() {
-    let result = SphereMesh.makeSphere(N, jitter, makeRandFloat(noiseSeedOf(seed)));
-    simMesh = result.mesh;
-    simMap = {
-        r_elevation: new Float32Array(simMesh.numRegions),
-        t_elevation: new Float32Array(simMesh.numTriangles),
-        r_moisture: new Float32Array(simMesh.numRegions),
-        t_moisture: new Float32Array(simMesh.numTriangles),
-        r_temperature: new Float32Array(simMesh.numRegions),
-        t_temperature: new Float32Array(simMesh.numTriangles),
-        r_xyz: result.r_xyz,
-    };
-    simMap.t_xyz = generateTriangleCenters(simMesh, simMap);
+    planetCache.sim = null;
     generateMap();
 }
 
-function ensureDetailMesh() {
-    if (detailCache && detailCache.n === detailN && detailCache.jitter === jitter) {
-        return detailCache;
-    }
-    const result = SphereMesh.makeSphere(
-        detailN, jitter, makeRandFloat(0x9e3779b9), {lat: [], lon: []});
-    const r_xyz = Float32Array.from(result.r_xyz);
-    detailCache = {
-        n: detailN,
-        jitter,
-        mesh: result.mesh,
-        r_xyz,
-        t_xyz: generateTriangleCenters(result.mesh, {r_xyz}),
-    };
-    return detailCache;
-}
-
-function useDetailPass() {
-    return detail_pass && detailN > (simMesh ? simMesh.numRegions : N);
-}
-
 function generateMap() {
-    if (EarthFixture.isEarthSeed(seed)) {
-        EarthFixture.buildEarthMap(simMesh, simMap, {
-            seed,
-            deferCrests: useDetailPass(),
-        });
-        simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
-    } else {
-        Object.assign(simMap, generatePlates(simMesh, simMap.r_xyz));
-
-        if (simulate_tectonics) {
-            Tectonics.simulateTectonics(simMesh, simMap, seed, {
-                steps: sim_steps,
-                deferCrests: useDetailPass(),
-            });
-            simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
-        } else {
-            /* The 1843 path wants a static partition and a coin flip for which
-             * plates are oceanic. */
-            simMap.boundaryWarp = Tectonics.makeBoundaryWarp(simMesh, simMap.r_xyz, seed, Tectonics.DEFAULTS);
-            simMap.tectonicFieldsFor = `${simMesh.numRegions}:${seed}`;
-            simMap.r_plate = Tectonics.plateOwnership(simMesh, simMap, Tectonics.DEFAULTS);
-            simMap.plate_is_ocean = new Set();
-            for (let p = 0; p < simMap.plates.length; p++) {
-                if (makeRandInt(simMap.plates[p].id + 1)(10) < 5) simMap.plate_is_ocean.add(p);
-            }
-            if (merge_ocean_plates) {
-                simMap.plate_is_ocean = mergeOceanPlates(simMesh, simMap.r_plate, simMap.plate_is_ocean).plate_is_ocean;
-            }
-            simMap.extra_ocean_seeds = [];
-            simMap.plate_vec = plateVectorsFromPoles(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
-            assignRegionElevation(simMesh, simMap);
-            simMap.r_boundary = null;
-            simMap.r_crust_age = null;
-            simMap.r_meters = null;
-        }
-    }
-    simMap.plate_centroid = plateCentroids(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
-    if (connect_oceans) connectWorldOcean(simMesh, simMap.r_elevation);
-    assignClimate(simMesh, simMap);
-
-    if (useDetailPass()) {
-        const built = ensureDetailMesh();
-        map = Detail.applyDetailPass(simMesh, simMap, built.mesh, built.r_xyz, noiseSeedOf(seed));
-        map.t_xyz = built.t_xyz;
-        map.t_elevation = new Float32Array(built.mesh.numTriangles);
-        map.t_moisture = new Float32Array(built.mesh.numTriangles);
-        map.t_temperature = new Float32Array(built.mesh.numTriangles);
-        mesh = built.mesh;
-        if (connect_oceans) connectWorldOcean(mesh, map.r_elevation);
-    } else {
-        mesh = simMesh;
-        map = simMap;
-    }
-    assignTriangleValues(mesh, map);
-
-    quadGeometry.setMesh(mesh);
-    quadGeometry.setMap(mesh, map);
+    const result = Planet.generatePlanet({
+        seed,
+        n: N,
+        p: P,
+        jitter,
+        simulateTectonics: simulate_tectonics,
+        simSteps: sim_steps,
+        polarStraits: polar_straits,
+        mergeOceanPlates: merge_ocean_plates,
+        connectOceans: connect_oceans,
+        detailPass: detail_pass,
+        detailN,
+    }, planetCache);
+    simMesh = result.simMesh;
+    simMap = result.simMap;
+    mesh = result.mesh;
+    map = result.map;
+    quadGeometry = result.geometry;
     overlayColorCache.clear();
     mapId++;
     equirectCache = null;
     draw();
 }
 
-/* A plate counts as oceanic when most of the crust it carries is oceanic.
- * After the simulation this is a property of the crust, not a coin flip on
- * the plate, so a plate can be mostly ocean and still carry a continent. */
-function oceanicPlates(mesh, {r_plate, r_crust_type, plates}) {
-    const total = new Int32Array(plates.length);
-    const continental = new Int32Array(plates.length);
-    for (let r = 0; r < mesh.numRegions; r++) {
-        total[r_plate[r]]++;
-        if (r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) continental[r_plate[r]]++;
-    }
-    const ocean = new Set();
-    for (let p = 0; p < plates.length; p++) {
-        if (continental[p] / Math.max(1, total[p]) < 0.5) ocean.add(p);
-    }
-    return ocean;
-}
-
-
-
-function hsvRgb(h, s, v) {
-    const i = Math.floor(h * 6);
-    const f = h * 6 - i;
-    const p = v * (1 - s);
-    const q = v * (1 - f * s);
-    const t = v * (1 - (1 - f) * s);
-    switch (i % 6) {
-        case 0: return [v, t, p];
-        case 1: return [q, v, p];
-        case 2: return [p, v, t];
-        case 3: return [p, q, v];
-        case 4: return [t, p, v];
-        default: return [v, p, q];
-    }
-}
-
-function colorForPlate(index, ocean) {
-    const h = (index * 0.618033988749895) % 1;
-    return hsvRgb(h, ocean ? 0.5 : 0.58, ocean ? 0.48 : 0.94);
-}
-
-function plateColorForRegion(r) {
-    /* colour by the plate's permanent id, so a plate keeps its colour as
-       others come and go around it */
-    return colorForPlate(map.plates[map.r_plate[r]].id, map.r_elevation[r] < 0);
-}
-
 function overlayColorForRegion(r) {
-    const mode = overlayMode();
-    if (mode === 'crust') return crustColorForRegion(r, map);
-    if (mode === 'climate') return climateColorForRegion(r, map);
-    return plateColorForRegion(r);
+    return Planet.overlayColorForRegion(r, map, overlayMode() || 'plates');
 }
-
-/* Sea floor by age, land by how recently it was built up: the fields the
- * simulation actually works in, so they can be judged directly rather than
- * inferred from the finished relief. */
-function crustColorForRegion(r, map) {
-    const {r_crust_type, r_crust_age, r_orogeny, r_arc, r_boundary} = map;
-    if (r_boundary && r_boundary[r] === BOUNDARY_DIVERGENT) return [1.0, 0.35, 0.2];
-    if (r_boundary && r_boundary[r] === BOUNDARY_CONVERGENT) return [0.25, 0.9, 1.0];
-    if (r_boundary && r_boundary[r] === BOUNDARY_TRANSFORM) return [1.0, 0.95, 0.35];
-    if (r_crust_type && r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) {
-        const relief = clamp01(r_orogeny[r] * 0.7 + r_arc[r] * 0.3);
-        return [0.35 + 0.6 * relief, 0.5 - 0.18 * relief, 0.3 - 0.1 * relief];
-    }
-    /* young sea floor pale, old sea floor dark: the ridge-to-abyss gradient */
-    const young = 1 - clamp01((r_crust_age ? r_crust_age[r] : 0) / 200);
-    return [0.05 + 0.15 * young, 0.15 + 0.45 * young, 0.3 + 0.6 * young];
-}
-
-
-/* The moisture field on its own, with none of the biome table's
- * interpretation in the way. Rendering the finished colours and reasoning
- * backwards about what moisture must have been is how you end up tuning the
- * wrong thing. */
-function climateColorForRegion(r, map) {
-    if (map.r_elevation[r] <= 0) return [0.13, 0.15, 0.2];
-    const m = clamp01(map.r_moisture[r]);
-    /* dry sand -> steppe -> forest -> saturated */
-    const stops = [
-        [0.00, [0.85, 0.72, 0.42]],
-        [0.35, [0.76, 0.70, 0.34]],
-        [0.55, [0.55, 0.68, 0.30]],
-        [0.75, [0.24, 0.56, 0.28]],
-        [1.00, [0.05, 0.32, 0.45]],
-    ];
-    for (let i = 1; i < stops.length; i++) {
-        if (m <= stops[i][0] || i === stops.length - 1) {
-            const [a, ca] = stops[i - 1], [b, cb] = stops[i];
-            const t = clamp01((m - a) / (b - a));
-            return [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t];
-        }
-    }
-    return stops[stops.length - 1][1];
-}
-
-
-function buildOverlayColorTm(mesh, map, mode) {
-    const {r_plate, r_elevation} = map;
-    const {numRegions, numTriangles} = mesh;
-    const rgb = new Float32Array(3 * (numRegions + numTriangles));
-    const regionColor = [];
-    for (let r = 0; r < numRegions; r++) {
-        const c = mode === 'crust' ? crustColorForRegion(r, map)
-            : mode === 'climate' ? climateColorForRegion(r, map)
-            : colorForPlate(map.plates[r_plate[r]].id, r_elevation[r] < 0);
-        regionColor[r] = c;
-        rgb[3 * r] = c[0];
-        rgb[3 * r + 1] = c[1];
-        rgb[3 * r + 2] = c[2];
-    }
-    for (let t = 0; t < numTriangles; t++) {
-        const r1 = mesh.s_begin_r(3 * t),
-            r2 = mesh.s_begin_r(3 * t + 1),
-            r3 = mesh.s_begin_r(3 * t + 2);
-        const a = regionColor[r1], b = regionColor[r2], c = regionColor[r3];
-        const p = 3 * (numRegions + t);
-        rgb[p] = (a[0] + b[0] + c[0]) / 3;
-        rgb[p + 1] = (a[1] + b[1] + c[1]) / 3;
-        rgb[p + 2] = (a[2] + b[2] + c[2]) / 3;
-    }
-    return rgb;
-}
-
 
 const overlayColorCache = new Map();
 
 function overlayColorTm() {
     const mode = overlayMode() || 'plates';
     if (!overlayColorCache.has(mode)) {
-        overlayColorCache.set(mode, buildOverlayColorTm(mesh, map, mode));
+        overlayColorCache.set(mode, Planet.buildOverlayColorTm(mesh, map, mode));
     }
     return overlayColorCache.get(mode);
 }
@@ -1401,6 +750,10 @@ function drawPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
 }
 
 function applyGlobeOrientation(out) {
+    /* ECEF is Z-up, X at lon 0, Y at 90°E. Rx(-90) stands the globe
+     * north-up and looks at 90°E, but a rotation-only view puts east on
+     * the left. Negate X so east is right, matching the equirect. */
+    mat4.scale(out, out, [-1, 1, 1]);
     mat4.rotate(out, out, -Math.PI / 2, [1, 0, 0]);
     mat4.rotate(out, out, -rotation + previewYaw, [0, 0, 1]);
 }
@@ -1982,140 +1335,12 @@ function f32ToB64(arr) {
     return btoa(s);
 }
 
-function lonLatOfRegion(r, lon0) {
-    const x = map.r_xyz[3 * r], y = map.r_xyz[3 * r + 1], z = map.r_xyz[3 * r + 2];
-    let lon = Math.atan2(y, x) - lon0;
-    while (lon < -PI) lon += TWO_PI;
-    while (lon > PI) lon -= TWO_PI;
-    const lat = Math.asin(Math.max(-1, Math.min(1, z)));
-    return {lon, lat, e: map.r_elevation[r], m: map.r_moisture[r], t: map.r_temperature[r]};
-}
-
-function unwrapTriangleLons(a, b, c) {
-    const pts = [
-        {lon: a.lon, lat: a.lat, e: a.e, m: a.m, t: a.t},
-        {lon: b.lon, lat: b.lat, e: b.e, m: b.m, t: b.t},
-        {lon: c.lon, lat: c.lat, e: c.e, m: c.m, t: c.t},
-    ];
-    for (let i = 1; i < 3; i++) {
-        while (pts[i].lon - pts[0].lon > PI) pts[i].lon -= TWO_PI;
-        while (pts[0].lon - pts[i].lon > PI) pts[i].lon += TWO_PI;
-    }
-    return pts;
-}
-
-function rasterizeTriangle(elev, moist, temp, filled, width, height, toPixel, a, b, c) {
-    const pa = toPixel(a), pb = toPixel(b), pc = toPixel(c);
-    const minX = Math.max(0, Math.floor(Math.min(pa.x, pb.x, pc.x)));
-    const maxX = Math.min(width - 1, Math.ceil(Math.max(pa.x, pb.x, pc.x)));
-    const minY = Math.max(0, Math.floor(Math.min(pa.y, pb.y, pc.y)));
-    const maxY = Math.min(height - 1, Math.ceil(Math.max(pa.y, pb.y, pc.y)));
-    if (maxX < minX || maxY < minY) return;
-
-    const v0x = pb.x - pa.x, v0y = pb.y - pa.y;
-    const v1x = pc.x - pa.x, v1y = pc.y - pa.y;
-    const den = v0x * v1y - v1x * v0y;
-    if (Math.abs(den) < 1e-12) return;
-
-    for (let y = minY; y <= maxY; y++) {
-        const py = y + 0.5;
-        for (let x = minX; x <= maxX; x++) {
-            const px = x + 0.5;
-            const v2x = px - pa.x, v2y = py - pa.y;
-            const v = (v2x * v1y - v1x * v2y) / den;
-            const w = (v0x * v2y - v2x * v0y) / den;
-            const u = 1 - v - w;
-            if (u < -1e-4 || v < -1e-4 || w < -1e-4) continue;
-            const i = y * width + x;
-            elev[i] = u * a.e + v * b.e + w * c.e;
-            moist[i] = u * a.m + v * b.m + w * c.m;
-            temp[i] = u * a.t + v * b.t + w * c.t;
-            filled[i] = 1;
-        }
-    }
-}
-
-function fillRasterHoles(elev, moist, temp, filled, width, height) {
-    const q = [];
-    for (let i = 0; i < filled.length; i++) {
-        if (filled[i]) q.push(i);
-    }
-    if (!q.length) return;
-    const dirs = [-1, 1, -width, width];
-    for (let qi = 0; qi < q.length; qi++) {
-        const i = q[qi];
-        const x = i % width;
-        for (const d of dirs) {
-            if (d === -1 && x === 0) continue;
-            if (d === 1 && x === width - 1) continue;
-            const n = i + d;
-            if (n < 0 || n >= filled.length || filled[n]) continue;
-            elev[n] = elev[i];
-            moist[n] = moist[i];
-            temp[n] = temp[i];
-            filled[n] = 1;
-            q.push(n);
-        }
-    }
-}
-
-function rasterizeSphereGrid(width, height, toPixel, lon0, wrapShifts) {
-    const elev = new Float32Array(width * height);
-    const moist = new Float32Array(width * height);
-    const temp = new Float32Array(width * height);
-    const filled = new Uint8Array(width * height);
-    const {numTriangles} = mesh;
-    for (let t = 0; t < numTriangles; t++) {
-        const r1 = mesh.s_begin_r(3 * t);
-        const r2 = mesh.s_begin_r(3 * t + 1);
-        const r3 = mesh.s_begin_r(3 * t + 2);
-        const tri = unwrapTriangleLons(
-            lonLatOfRegion(r1, lon0),
-            lonLatOfRegion(r2, lon0),
-            lonLatOfRegion(r3, lon0),
-        );
-        const minL = Math.min(tri[0].lon, tri[1].lon, tri[2].lon);
-        const maxL = Math.max(tri[0].lon, tri[1].lon, tri[2].lon);
-        const shifts = wrapShifts(minL, maxL);
-        for (const shift of shifts) {
-            const a = {lon: tri[0].lon + shift, lat: tri[0].lat, e: tri[0].e, m: tri[0].m, t: tri[0].t};
-            const b = {lon: tri[1].lon + shift, lat: tri[1].lat, e: tri[1].e, m: tri[1].m, t: tri[1].t};
-            const c = {lon: tri[2].lon + shift, lat: tri[2].lat, e: tri[2].e, m: tri[2].m, t: tri[2].t};
-            rasterizeTriangle(elev, moist, temp, filled, width, height, toPixel, a, b, c);
-        }
-    }
-    fillRasterHoles(elev, moist, temp, filled, width, height);
-    return {elev, moist, temp, width, height};
-}
-
 function rasterizeEquirect(width, height, lon0) {
-    return rasterizeSphereGrid(width, height, (p) => ({
-        x: (p.lon + PI) / TWO_PI * width,
-        y: (PI / 2 - p.lat) / PI * height,
-    }), lon0, (minL, maxL) => {
-        const shifts = [0];
-        if (minL < -PI) shifts.push(TWO_PI);
-        if (maxL > PI) shifts.push(-TWO_PI);
-        return shifts;
-    });
+    return Planet.rasterizeEquirect(mesh, map, width, height, lon0);
 }
 
 function rasterizeLonLatBox(westDeg, southDeg, eastDeg, northDeg, width, height, lon0) {
-    const west = westDeg * PI / 180;
-    const east = eastDeg * PI / 180;
-    const south = southDeg * PI / 180;
-    const north = northDeg * PI / 180;
-    const lonSpan = east - west;
-    const latSpan = north - south;
-    return rasterizeSphereGrid(width, height, (p) => ({
-        x: (p.lon - west) / lonSpan * width,
-        y: (north - p.lat) / latSpan * height,
-    }), lon0, (minL, maxL) => {
-        const shifts = [0];
-        if (minL < west) shifts.push(TWO_PI);
-        if (maxL > east) shifts.push(-TWO_PI);
-        return shifts;
-    });
+    return Planet.rasterizeLonLatBox(mesh, map, westDeg, southDeg, eastDeg, northDeg, width, height, lon0);
 }
 
 function latOfRow(y, height) {

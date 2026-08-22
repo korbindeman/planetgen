@@ -9,6 +9,12 @@
  * Inland seas are left alone. The flood seeds from the world ocean, never
  * from a closed basin, and does not fill depressions the way a topology
  * fixup would.
+ *
+ * A live ice sheet is not a Norway coast. Stream power and fjord drowning
+ * are suppressed there — there is no running water, and the visible edge
+ * is an ice shelf, not a drowned glacial valley. Fjords are cut from
+ * *paleo* ice (the last-glacial line), so Canada and Scandinavia keep
+ * them after the ice has gone.
  */
 'use strict';
 
@@ -128,7 +134,7 @@ function cellNoise(r, amp) {
 /* Barnes priority-flood from the world ocean, carve-biased so spill points
  * become canyons instead of filled lake beds. Land stays land: this is
  * drainage, not a new coastline. */
-function priorityFloodCarve(mesh, meters, ocean, carveStrength, opts) {
+function priorityFloodCarve(mesh, meters, ocean, carveStrength, opts, protect) {
     const n = mesh.numRegions;
     const open = worldOceanMask(mesh, ocean);
     const neighbors = [];
@@ -201,6 +207,7 @@ function priorityFloodCarve(mesh, meters, ocean, carveStrength, opts) {
         }
         if (kernelSum > 0) {
             for (let k = startIdx; k <= endIdx; k++) {
+                if (protect && protect[path[k]] > 0.4) continue;
                 const weight = (1 - Math.abs(k - peakIdx) / (radius + 1)) / kernelSum;
                 meters[path[k]] -= carveAmount * weight;
                 if (meters[path[k]] < 0) meters[path[k]] = 0;
@@ -268,22 +275,29 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
     const delta = new Float32Array(n);
     const areaKm2 = cellAreaKm2(n);
 
-    if (hIters > 0) {
-        priorityFloodCarve(mesh, meters, ocean, opts.floodCarve, opts);
-    }
-
-    let glacIdx = null, iceTo = null, iceFlow = null, iceUp = null;
+    let glacIdx = null, paleoIdx = null, iceSheet = null;
+    let iceTo = null, iceFlow = null, iceUp = null;
     if (gIters > 0 && opts.glacialStrength > 0 && temperature) {
         glacIdx = new Float32Array(n);
+        paleoIdx = new Float32Array(n);
+        iceSheet = new Float32Array(n);
         const iceTemp = opts.iceTemp;
         const iceRamp = opts.iceRamp;
+        const paleoTemp = opts.paleoIceTemp != null ? opts.paleoIceTemp : iceTemp + 0.32;
+        const paleoRamp = opts.paleoIceRamp != null ? opts.paleoIceRamp : iceRamp;
         for (let r = 0; r < n; r++) {
             if (ocean[r]) continue;
             glacIdx[r] = smoothstep(temperature[r], iceTemp, iceTemp - iceRamp) * opts.glacialStrength;
+            paleoIdx[r] = smoothstep(temperature[r], paleoTemp, paleoTemp - paleoRamp) * opts.glacialStrength;
+            iceSheet[r] = glacIdx[r];
         }
         iceTo = new Int32Array(n);
         iceFlow = new Float32Array(n);
         iceUp = new Uint8Array(n);
+    }
+
+    if (hIters > 0) {
+        priorityFloodCarve(mesh, meters, ocean, opts.floodCarve, opts, iceSheet);
     }
 
     const gScale = gIters > 0 ? 1 / gIters : 0;
@@ -298,7 +312,7 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
     for (let iter = 0; iter < htIters; iter++) {
         if (!midFloodDone && iter >= midFloodAt && hIters > 0) {
             midFloodDone = true;
-            priorityFloodCarve(mesh, meters, ocean, opts.floodMidCarve, opts);
+            priorityFloodCarve(mesh, meters, ocean, opts.floodMidCarve, opts, iceSheet);
         }
 
         const hydraulicNow = iter < hIters;
@@ -326,7 +340,10 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
                 const r = land[i];
                 const t = drainTo[r];
                 if (t < 0 || distKm[r] <= 0) continue;
-                let factor = opts.streamK * Math.pow(flow[r], opts.streamM) * opts.streamDt / distKm[r];
+                const iceFluvial = iceSheet
+                    ? 1 - iceSheet[r] * (1 - (opts.iceSheetFluvial != null ? opts.iceSheetFluvial : 0.06))
+                    : 1;
+                let factor = opts.streamK * iceFluvial * Math.pow(flow[r], opts.streamM) * opts.streamDt / distKm[r];
                 if (factor > opts.streamCap) factor = opts.streamCap;
                 const hRecv = Math.max(meters[t], 0);
                 let hNew = (meters[r] + factor * hRecv) / (1 + factor);
@@ -403,18 +420,27 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
         }
     }
 
-    /* Glacial last, so stream-power does not fill the fjords it just cut. */
-    if (glacIdx) {
+    /* Glacial last, so stream-power does not fill the fjords it just cut.
+     * Route paleo ice so Canada and Norway still cut after the ice
+     * retreated; scale the cut down on a live ice sheet so Antarctica
+     * stays a dome. */
+    if (paleoIdx) {
+        const sheetCarve = opts.iceSheetCarveScale != null ? opts.iceSheetCarveScale : 0.12;
+        const sheetFjord = opts.iceSheetFjordScale != null ? opts.iceSheetFjordScale : 0.10;
+        const lat0 = Math.sin((opts.iceSheetFjordLat0 != null ? opts.iceSheetFjordLat0 : 65) * Math.PI / 180);
+        const lat1 = Math.sin((opts.iceSheetFjordLat1 != null ? opts.iceSheetFjordLat1 : 73) * Math.PI / 180);
+        const flowCap = opts.glacialFlowCap != null ? opts.glacialFlowCap : 6;
+        const flowAt = (r) => iceFlow[r] < flowCap ? iceFlow[r] : flowCap;
         for (let iter = 0; iter < gIters; iter++) {
             land.sort((a, b) => meters[b] - meters[a]);
             iceTo.fill(-1);
             iceUp.fill(0);
             for (let i = 0; i < land.length; i++) {
                 const r = land[i];
-                if (glacIdx[r] <= 0) continue;
+                if (paleoIdx[r] <= 0) continue;
                 iceTo[r] = steepestDown(mesh, meters, r, neighbors);
             }
-            for (let r = 0; r < n; r++) iceFlow[r] = glacIdx[r];
+            for (let r = 0; r < n; r++) iceFlow[r] = paleoIdx[r];
             for (let i = 0; i < land.length; i++) {
                 const r = land[i];
                 const t = iceTo[r];
@@ -426,7 +452,11 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
             for (let i = 0; i < land.length; i++) {
                 const r = land[i];
                 if (iceFlow[r] <= opts.glacialFlowMin) continue;
-                const deepening = gCarve * Math.pow(iceFlow[r], 0.6);
+                const sheet = iceSheet ? iceSheet[r] : 0;
+                const latGate = smoothstep(Math.abs(r_xyz[3 * r + 2]), lat0, lat1);
+                const protect = Math.max(sheet, latGate);
+                const scale = 1 - protect * (1 - sheetCarve);
+                const deepening = gCarve * scale * Math.pow(flowAt(r), 0.6);
                 meters[r] -= deepening;
                 mesh.r_circulate_r(neighbors, r);
                 for (let k = 0; k < neighbors.length; k++) {
@@ -437,7 +467,7 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
                     meters[nb] -= deepening * opts.glacialWiden * Math.max(0, 1 - slope);
                 }
                 if (iceUp[r] >= 2) {
-                    meters[r] -= gConverge * Math.pow(iceFlow[r], 0.4);
+                    meters[r] -= gConverge * scale * Math.pow(flowAt(r), 0.4);
                 }
             }
             for (let i = 0; i < land.length; i++) {
@@ -445,26 +475,33 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
                 if (iceFlow[r] <= opts.glacialFlowMin) continue;
                 const t = iceTo[r];
                 if (t < 0 || ocean[t]) continue;
-                if (glacIdx[t] < glacIdx[r] * opts.glacialTerminus) {
-                    meters[t] += gDeposit * Math.pow(iceFlow[r], 0.3);
+                if (paleoIdx[t] < paleoIdx[r] * opts.glacialTerminus) {
+                    meters[t] += gDeposit * Math.pow(flowAt(r), 0.3);
                 }
             }
             /* Fjords are allowed to drown the coast. That indent is the
-             * feature; hydraulic and flood carving are not. */
+             * feature; hydraulic and flood carving are not. A live ice
+             * sheet does not get them: its coast is an ice shelf. Polar
+             * coasts past ~65° are ice-sheet even when the temperature
+             * at the waterline is a shade above iceTemp. */
             for (let r = 0; r < n; r++) {
                 if (ocean[r]) continue;
-                if (glacIdx[r] <= opts.glacialFjordIceMin || iceFlow[r] <= opts.glacialFjordMin) continue;
+                const sheet = iceSheet ? iceSheet[r] : 0;
+                const latGate = smoothstep(Math.abs(r_xyz[3 * r + 2]), lat0, lat1);
+                const protect = Math.max(sheet, latGate);
+                const fjordIce = paleoIdx[r] * (1 - protect * (1 - sheetFjord));
+                if (fjordIce <= opts.glacialFjordIceMin || iceFlow[r] <= opts.glacialFjordMin) continue;
                 mesh.r_circulate_r(neighbors, r);
                 let coastal = false;
                 for (let k = 0; k < neighbors.length; k++) {
                     if (ocean[neighbors[k]]) { coastal = true; break; }
                 }
                 if (!coastal) continue;
-                meters[r] -= gFjord * Math.pow(iceFlow[r], 0.5);
+                meters[r] -= gFjord * (1 - protect * (1 - sheetFjord)) * Math.pow(flowAt(r), 0.5);
                 if (meters[r] < opts.fjordFloorM) meters[r] = opts.fjordFloorM;
             }
             for (let r = 0; r < n; r++) {
-                if (!ocean[r] && meters[r] < 0 && glacIdx[r] <= 0) meters[r] = 0;
+                if (!ocean[r] && meters[r] < 0 && paleoIdx[r] <= 0) meters[r] = 0;
             }
         }
 
