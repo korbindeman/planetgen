@@ -1,6 +1,6 @@
 # Preparing for terrain-diffusion
 
-Planetgen is the coarse planetary **base**: plates, a heightmap, and climate on the sphere. [terrain-diffusion](https://github.com/xandergos/terrain-diffusion) turns a **planar sketch** of that base into a high-resolution DEM. Hydrology and other post-processing run **after** that DEM exists. None of those later stages live in this repo.
+Planetgen is the coarse planetary **base**: plates, a heightmap, and climate on the sphere. The detail pass already roughs in valleys and fjords. [terrain-diffusion](https://github.com/xandergos/terrain-diffusion) turns a **planar sketch** of that base into a high-resolution DEM. Fine hydrology (real river networks, discharge, lakes) and other post-processing run **after** that DEM exists.
 
 This note is the handoff: what the model reads, how planetgen writes it, what actually works as a sketch, and what to do once you have 90 m (or 30 m) elevation.
 
@@ -190,7 +190,7 @@ Canyons in the Grand Canyon sense need **relief + concentrated drainage + drynes
 
 ## Hydrology pass (after diffusion)
 
-This is the stage that **actually cuts rivers**. It does not belong in planetgen (mesh too coarse) and it is not what `tiff-export` does (that only paints drainage *texture*).
+This is the stage that **actually cuts rivers**. Planetgen's detail pass only roughs in drainage texture on a 50 km mesh; this pass belongs on the DEM, and it is not what `tiff-export` does (that only paints drainage *texture*).
 
 Run it on the **90 m / 30 m DEM**, sea level still at 0.
 

@@ -117,7 +117,7 @@ try {
   const pageUrl = seed == null ? origin : `${origin}/?seed=${seed}`;
   await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForFunction(() => window.__PLANET_READY__ === true, null, {
-    timeout: 60_000,
+    timeout: 180_000,
   });
   if (noTectonics) {
     await page.evaluate(() => window.setSimulateTectonics(false));

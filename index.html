@@ -303,6 +303,7 @@
         <label><input type="checkbox" oninput="setConnectOceans(this.checked)">Connect oceans</label>
         <br>
         <label><input type="checkbox" checked oninput="setSimulateTectonics(this.checked)">Simulate tectonics</label>
+        <label><input type="checkbox" checked oninput="setDetailPass(this.checked)">Detail pass</label>
         <br>
         Tectonic history (<span id="sim-steps-label">200</span> Myr):
         <input id="sim-steps" type="range" min="0" max="40" value="20" oninput="document.getElementById('sim-steps-label').textContent = this.valueAsNumber * 10; setSimSteps(this.valueAsNumber)">

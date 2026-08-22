@@ -562,6 +562,32 @@ function plateVelocity(out, pole, omega, pos) {
     return vec3.scale(out, out, omega);
 }
 
+/* Compression axis at a converging margin: relative velocity of `other`
+ * minus `mine`, projected into the tangent plane. Weighted by `amount`
+ * so later mixing is just addition. */
+function addOrogenyDir(dir, r, r_xyz, plates, mine, other, amount, va, vb, rel) {
+    const px = r_xyz[3 * r], py = r_xyz[3 * r + 1], pz = r_xyz[3 * r + 2];
+    const pos = addOrogenyDir._pos;
+    pos[0] = px; pos[1] = py; pos[2] = pz;
+    const pa = plates[mine], pb = plates[other];
+    plateVelocity(va, pa.pole, pa.omega, pos);
+    plateVelocity(vb, pb.pole, pb.omega, pos);
+    rel[0] = vb[0] - va[0];
+    rel[1] = vb[1] - va[1];
+    rel[2] = vb[2] - va[2];
+    const rad = rel[0] * px + rel[1] * py + rel[2] * pz;
+    rel[0] -= rad * px;
+    rel[1] -= rad * py;
+    rel[2] -= rad * pz;
+    const len = Math.hypot(rel[0], rel[1], rel[2]);
+    if (len < 1e-12) return;
+    const s = amount / len;
+    dir[3 * r]     += rel[0] * s;
+    dir[3 * r + 1] += rel[1] * s;
+    dir[3 * r + 2] += rel[2] * s;
+}
+addOrogenyDir._pos = [0, 0, 0];
+
 
 /* Rotate v about a unit axis by `angle` radians (Rodrigues). */
 function rotateAbout(out, v, axis, angle) {
@@ -698,13 +724,31 @@ const DEFAULTS = {
     stepMyr: 10,                  // 200 Myr of history
     cratons: 6,                   // continental nuclei; Earth has about this many blocks
     cratonSigma: 0.55,            // spread of craton sizes, so they are not all alike
-    cratonWarp: 0.68,             // how ragged the edge of a craton is
+    cratonWarp: 0.5,              // how ragged the edge of a craton is. This multiplies
+                                  // the normalised distance, so it moves the whole
+                                  // margin in or out; pushed too far it detaches lobes
+                                  // and strings the continent out
+    cratonElongation: 0.38,       // log-sigma of how stretched a craton is along its
+                                  // axis; discs make blobs, slivers make Americas, and
+                                  // too much of it makes noodles
+    cratonTaper: 0.35,            // how much one end of a craton narrows, so a mass
+                                  // can come to a point the way South America does
+    coastContrast: 0.4,           // regional variation in coast raggedness: some
+                                  // margins calm, some shattered
     cratonClustering: 0.62,       // chance a craton huddles against the others
     cratonMinSeparation: 0.55,    // radians; stops two cratons landing on each other
     crustSmoothing: 1,            // smoothing of the craton edge warp
-    continentFraction: 0.44,      // Earth: continental crust is ~41% of the
-                                  // surface, of which ~29% is dry land
-    crustReferenceKm: 31,         // thickness undisturbed continental crust relaxes towards
+    continentFraction: 0.57,      // Earth: continental crust is ~41% of the surface, of
+                                  // which ~29% is dry land. Set well above 0.41 because
+                                  // this is the fraction the planet is *born* with and
+                                  // rifting consumes roughly a quarter of it over the
+                                  // run; the target is where the planet ends up
+    crustReferenceKm: 33.5,       // thickness undisturbed continental crust relaxes towards.
+                                  // Sets how high a quiet interior stands: at 145 m per km
+                                  // above sea-level thickness, 33.5 km is ~650 m, near
+                                  // Earth's mean land elevation. Lower than this and the
+                                  // whole continent hovers at the waterline, where any
+                                  // noise at all decides the coastline
     seaLevelThicknessKm: 29,      // thickness that floats exactly at sea level
     crustOceanKm: 7,
     crustTypeKm: 18,              // thicker than this is continental crust. This is
@@ -712,9 +756,16 @@ const DEFAULTS = {
                                   // threshold, or the rift branch keeps crust the
                                   // derived type then calls ocean
     crustMinKm: 22,               // fully rifted margin
+    crustShelfKm: 26.5,           // the rim an undisturbed craton is born with. Starting
+                                  // it at crustMinKm gave every continent a pre-rifted
+                                  // margin, so the first rift to touch a coast converted
+                                  // the whole shelf ring to ocean and the continent shrank
+                                  // by its rim. A margin should have to be stretched down
+                                  // to crustMinKm before it breaks
     crustMaxKm: 68,               // Tibet
-    crustInitialPeakKm: 33,       // craton cores; Earth's interiors are a few hundred
-                                  // metres up, not the kilometres a thicker core implies
+    crustInitialPeakKm: 36,       // craton cores stand ~1 km up, so the interior is
+                                  // unambiguously dry and only the margin sits near
+                                  // the waterline
     shelfThinningKm: 0.15,         // per step, at a rifting margin
     collisionThickenKm: 0.9,      // per step, continent against continent
     collisionThrust: 0.34,        // share of an overridden column thrust onto the winner
@@ -723,14 +774,32 @@ const DEFAULTS = {
                                   // step it spends on a divergent boundary, which leaves
                                   // half the continental crust too thin to stand above
                                   // sea level
-    riftIntactShare: 0.80,        // only crust this fraction of reference thickness stretches
-    emergentFraction: 0.71,       // share of continental crust starting above sea level
+    riftIntactShare: 0.75,        // a margin stretches until it thins to this fraction of
+                                  // reference thickness, then it has broken and the
+                                  // opening floods. Was declared but never used: the rift
+                                  // branch tested against crustTypeKm instead, so crust
+                                  // kept being drawn into new area almost indefinitely
+    emergentFraction: 0.68,       // share of continental crust starting above sea level.
+                                  // The rest is shelf: now that interiors stand a
+                                  // kilometre up, a craton needs a wider drowned rim to
+                                  // land at Earth's ~30% submerged, and that rim is what
+                                  // reads as a continental shelf rather than a cliff
     orogenyDecay: 0.88,           // erosion between steps
     orogenyReliefM: 2200,         // extra relief at full orogeny, on top of isostasy
     rootRelax: 0.030,             // crustal roots relax back towards normal
     arcUpliftM: 2400,             // how far a full-strength arc lifts the sea floor
-    arcOceanic: 0.55,             // island arc over ocean-ocean subduction
+    arcOceanic: 0.8,              // island arc over ocean-ocean subduction
     arcContinental: 0.85,         // Andean arc over ocean-continent
+    arcCrestM: 9000,              // height of the volcanic crest itself, applied
+                                  // after the coastal blend so an island survives it
+    arcEmergeThreshold: 0.35,     // arc or hotspot strength below this builds only
+                                  // seamounts, never islands
+    hotspots: 3,                  // mantle plumes, fixed while the plates slide over
+                                  // them; each writes an age-progressive island chain
+    hotspotRadius: 0.07,          // radians; the footprint of a plume head
+    hotspotStrength: 0.6,         // per step, while a cell sits over the plume
+    hotspotDecay: 0.965,          // per step; an old chain subsides into seamounts
+    hotspotUpliftM: 6000,         // crest height over a full-strength hotspot
     orogenyAndean: 0.5,
     orogenyCollision: 1.0,
     weldContact: 0.30,            // accumulated contact needed to fuse two plates,
@@ -746,7 +815,11 @@ const DEFAULTS = {
     healPasses: 2,                // majority-filter passes that keep plates coherent
     minFragment: 0.014,           // a detached piece smaller than this is absorbed by
                                   // its neighbours instead of becoming a plate
-    detailNoise: 0.06,
+    detailNoise: 0.035,           // added in elevation units, where near-shore land sits
+                                  // around 0.05. Any larger and the noise outweighs the
+                                  // land it is perturbing: it stops roughening the coast
+                                  // and starts punching holes in it, which is what
+                                  // shredded continents into strings and speckle
 };
 
 
@@ -818,7 +891,22 @@ function placeCratons(mesh, r_xyz, count, randFloat, opts) {
         const share = opts.continentFraction * w / total;
         return Math.acos(Math.max(-1, 1 - 2 * share));
     });
-    return {centres, radii};
+
+    /* A cap is a disc, and a planet of discs reads as a planet of blobs.
+     * Earth's masses have a grain: the Americas are a sliver, Africa a
+     * wedge. So stretch each craton along a random axis and taper it
+     * towards one end. */
+    const axes = centres.map(c => {
+        const ref = Math.abs(c[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        let u = vec3.normalize([], vec3.cross([], c, ref));
+        const spin = 2 * Math.PI * randFloat();
+        u = rotateAbout([], u, c, spin);
+        const v = vec3.cross([], c, u);
+        return {u, v};
+    });
+    const elong = centres.map(() => Math.exp(opts.cratonElongation * Math.abs(gauss())));
+    const taper = centres.map(() => opts.cratonTaper * (2 * randFloat() - 1));
+    return {centres, radii, axes, elong, taper};
 }
 
 
@@ -831,29 +919,55 @@ function initCrust(mesh, r_xyz, seed, opts) {
     const r_crust_age = new Float32Array(numRegions);
     const r_thickness = new Float32Array(numRegions);
     const r_orogeny = new Float32Array(numRegions);
+    const r_orogenyDir = new Float32Array(numRegions * 3);
     const r_arc = new Float32Array(numRegions);
+    const r_hotspot = new Float32Array(numRegions);
 
-    const {centres, radii} = placeCratons(mesh, r_xyz, opts.cratons, randFloat, opts);
+    const {centres, radii, axes, elong, taper} = placeCratons(mesh, r_xyz, opts.cratons, randFloat, opts);
 
     /* Distance to the nearest craton centre, in units of that craton's radius,
      * warped by noise so the coastline is ragged rather than circular.
-     * Below 1 is continental crust; 0 is the deep interior. */
+     * Below 1 is continental crust; 0 is the deep interior.
+     *
+     * The warp amplitude itself varies over the sphere: Earth's coasts are
+     * not uniformly wiggly — Africa's Atlantic side is calm while Norway's
+     * is shattered — and a single amplitude gives every margin the same
+     * texture. */
     const depth = new Float32Array(numRegions);
     const warp = new Float32Array(numRegions);
+    const contrastNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x9e3779b9)), 2, 0.6);
     for (let r = 0; r < numRegions; r++) {
-        warp[r] = 1 + opts.cratonWarp * warpNoise(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
+        const x = r_xyz[3 * r], y = r_xyz[3 * r + 1], z = r_xyz[3 * r + 2];
+        const amp = 1 + opts.coastContrast * contrastNoise(x, y, z);
+        warp[r] = 1 + opts.cratonWarp * amp * warpNoise(x, y, z);
     }
     smoothField(mesh, warp, null, opts.crustSmoothing);
 
-    const p = [0, 0, 0];
+    const p = [0, 0, 0], t = [0, 0, 0];
     const measure = (scale) => {
         let inside = 0;
         for (let r = 0; r < numRegions; r++) {
             p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
             let best = Infinity;
             for (let k = 0; k < centres.length; k++) {
-                const a = Math.acos(Math.max(-1, Math.min(1, vec3.dot(p, centres[k]))));
-                best = Math.min(best, a / (radii[k] * scale));
+                const c = centres[k];
+                const dot = Math.max(-1, Math.min(1, vec3.dot(p, c)));
+                const a = Math.acos(dot);
+                /* Direction of this point as seen from the craton's centre,
+                 * in the centre's tangent plane. Along the craton's axis
+                 * distances count for less (the mass reaches further) and
+                 * across it for more; the taper shifts where "further" is,
+                 * turning the ellipse into a wedge. */
+                let stretch = 1;
+                if (a > 1e-6) {
+                    t[0] = p[0] - dot * c[0]; t[1] = p[1] - dot * c[1]; t[2] = p[2] - dot * c[2];
+                    vec3.normalize(t, t);
+                    const along = vec3.dot(t, axes[k].u), across = vec3.dot(t, axes[k].v);
+                    const e = elong[k];
+                    stretch = Math.sqrt(along * along / e + across * across * e)
+                        / (1 + taper[k] * along);
+                }
+                best = Math.min(best, a * stretch / (radii[k] * scale));
             }
             depth[r] = best * warp[r];
             if (depth[r] < 1) inside++;
@@ -871,9 +985,24 @@ function initCrust(mesh, r_xyz, seed, opts) {
     }
     measure((lo + hi) / 2);
 
-    /* Sea level sits at the radius enclosing `emergentFraction` of a craton's
-     * area. Area grows as the square of the radius, hence the square root. */
-    const shore = Math.sqrt(clamp01(opts.emergentFraction));
+    /* Sea level sits at the depth enclosing `emergentFraction` of the
+     * continental crust, found the same way the radii were: by bisection on
+     * the field we actually built.
+     *
+     * Taking it as sqrt(emergentFraction) instead assumes a craton's area
+     * grows as the square of its radius, which is only true of a lone circular
+     * one. Cratons that cluster and merge share a single deep interior, so that
+     * proxy handed those seeds far more emergent land than asked for — which is
+     * why some planets came out as ocean worlds and others as near-total land. */
+    const emergentTarget = opts.continentFraction * clamp01(opts.emergentFraction);
+    let slo = 0, shi = 1;
+    for (let iter = 0; iter < 20; iter++) {
+        const mid = (slo + shi) / 2;
+        let above = 0;
+        for (let r = 0; r < numRegions; r++) if (depth[r] < mid) above++;
+        if (above / numRegions < emergentTarget) slo = mid; else shi = mid;
+    }
+    const shore = (slo + shi) / 2;
     for (let r = 0; r < numRegions; r++) {
         const d = depth[r];
         if (d >= 1) {
@@ -887,9 +1016,9 @@ function initCrust(mesh, r_xyz, seed, opts) {
             ? opts.seaLevelThicknessKm + (opts.crustInitialPeakKm - opts.seaLevelThicknessKm) *
               Math.pow(1 - d / shore, 0.7)
             /* the shelf, between the shoreline and the edge of the craton */
-            : opts.crustMinKm + (opts.seaLevelThicknessKm - opts.crustMinKm) * (1 - d) / (1 - shore);
+            : opts.crustShelfKm + (opts.seaLevelThicknessKm - opts.crustShelfKm) * (1 - d) / (1 - shore);
     }
-    return {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_arc};
+    return {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_orogenyDir, r_arc, r_hotspot};
 }
 
 
@@ -995,6 +1124,29 @@ function sampleField(field, cells, weights) {
     return sum;
 }
 
+function samplePacked3(field, cells, weights, out) {
+    let x = 0, y = 0, z = 0;
+    for (let i = 0; i < cells.length; i++) {
+        const c = 3 * cells[i], w = weights[i];
+        x += w * field[c];
+        y += w * field[c + 1];
+        z += w * field[c + 2];
+    }
+    out[0] = x; out[1] = y; out[2] = z;
+    return out;
+}
+
+/* A tangent vector riding with a plate: rotate with the plate, then drop
+ * the radial component at the new position so it stays in the tangent plane. */
+function advectTangent(out, v, pole, angle, pos) {
+    rotateAbout(out, v, pole, angle);
+    const d = out[0] * pos[0] + out[1] * pos[1] + out[2] * pos[2];
+    out[0] -= d * pos[0];
+    out[1] -= d * pos[1];
+    out[2] -= d * pos[2];
+    return out;
+}
+
 
 /* One timestep.
  *
@@ -1014,7 +1166,9 @@ function stepTectonics(mesh, map, opts) {
 
     const prevPlate = map.r_plate;
     const prevType = map.r_crust_type, prevAge = map.r_crust_age,
-          prevThickness = map.r_thickness, prevOrogeny = map.r_orogeny, prevArc = map.r_arc;
+          prevThickness = map.r_thickness, prevOrogeny = map.r_orogeny, prevArc = map.r_arc,
+          prevHotspot = map.r_hotspot,
+          prevOrogenyDir = map.r_orogenyDir || new Float32Array(numRegions * 3);
 
     /* Which way is each boundary moving, before anything turns? */
     const {r_boundary} = classifyBoundaries(mesh, map);
@@ -1030,13 +1184,17 @@ function stepTectonics(mesh, map, opts) {
     const nextAge = new Float32Array(numRegions);
     const nextThickness = new Float32Array(numRegions);
     const nextOrogeny = new Float32Array(numRegions);
+    const nextOrogenyDir = new Float32Array(numRegions * 3);
     const nextArc = new Float32Array(numRegions);
+    const nextHotspot = new Float32Array(numRegions);
 
     const collisions = new Map();     // "a,b" -> cells of continent-continent contact
     const gained = new Int32Array(plates.length);
     const lost = new Int32Array(plates.length);
     const out_r = [], cells = [], weights = [];
     const back = [0, 0, 0], x = [0, 0, 0];
+    const sampledDir = [0, 0, 0], rotatedDir = [0, 0, 0];
+    const va = [0, 0, 0], vb = [0, 0, 0], rel = [0, 0, 0];
 
     for (let r = 0; r < numRegions; r++) {
         const now = nextPlate[r];
@@ -1058,14 +1216,30 @@ function stepTectonics(mesh, map, opts) {
              * continent out into it, thinning it. That stretched crust is a
              * hyperextended margin, and it is what gives a passive margin its
              * width. Only once it has thinned past breaking does the opening
-             * flood. */
+             * flood.
+             *
+             * Breaking point is `riftIntactShare` of reference thickness, not
+             * the ocean/continent threshold. Stretching all the way down to the
+             * latter lets a margin keep drawing continental crust into new area
+             * for the whole run: the model has no conservation law, so each
+             * step clones the source column rather than dividing it, and
+             * continental crust grows without bound. That is what took some
+             * seeds from the 47% they are built with to over 60%. */
+            const intactKm = opts.riftIntactShare * opts.crustReferenceKm;
             const stretched = prevType[source_r] === CRUST_CONTINENTAL
                 ? prevThickness[source_r] - opts.riftThinKm : 0;
-            if (stretched > opts.crustTypeKm) {
+            if (stretched > intactKm) {
                 nextType[r] = CRUST_CONTINENTAL;
                 nextThickness[r] = stretched;
                 nextAge[r] = prevAge[source_r] + dtMyr;
                 nextOrogeny[r] = prevOrogeny[source_r] * opts.orogenyDecay;
+                sampledDir[0] = prevOrogenyDir[3 * source_r];
+                sampledDir[1] = prevOrogenyDir[3 * source_r + 1];
+                sampledDir[2] = prevOrogenyDir[3 * source_r + 2];
+                advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
+                nextOrogenyDir[3 * r]     = rotatedDir[0] * opts.orogenyDecay;
+                nextOrogenyDir[3 * r + 1] = rotatedDir[1] * opts.orogenyDecay;
+                nextOrogenyDir[3 * r + 2] = rotatedDir[2] * opts.orogenyDecay;
             } else {
                 nextType[r] = CRUST_OCEANIC;
                 nextAge[r] = 0;
@@ -1081,7 +1255,26 @@ function stepTectonics(mesh, map, opts) {
         nextThickness[r] = sampleField(prevThickness, cells, weights);
         nextOrogeny[r] = sampleField(prevOrogeny, cells, weights) * opts.orogenyDecay;
         nextArc[r] = sampleField(prevArc, cells, weights) * opts.orogenyDecay;
+        nextHotspot[r] = sampleField(prevHotspot, cells, weights) * opts.hotspotDecay;
+        samplePacked3(prevOrogenyDir, cells, weights, sampledDir);
+        advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
+        nextOrogenyDir[3 * r]     = rotatedDir[0] * opts.orogenyDecay;
+        nextOrogenyDir[3 * r + 1] = rotatedDir[1] * opts.orogenyDecay;
+        nextOrogenyDir[3 * r + 2] = rotatedDir[2] * opts.orogenyDecay;
         if (r_boundary[r] === BOUNDARY_CONVERGENT) lost[nextPlate[r]]++;
+    }
+
+    /* Mantle plumes sit still while the plates slide over them, which is what
+     * writes an age-progressive chain of volcanoes onto the moving floor. */
+    if (map.hotspots) {
+        const cosR = Math.cos(opts.hotspotRadius);
+        for (const plume of map.hotspots) {
+            for (let r = 0; r < numRegions; r++) {
+                const d = r_xyz[3 * r] * plume[0] + r_xyz[3 * r + 1] * plume[1]
+                        + r_xyz[3 * r + 2] * plume[2];
+                if (d > cosR) nextHotspot[r] = Math.min(2, nextHotspot[r] + opts.hotspotStrength);
+            }
+        }
     }
 
     /* Crust type follows from how thick the column is, rather than being
@@ -1117,13 +1310,17 @@ function stepTectonics(mesh, map, opts) {
             if (nextType[r] === CRUST_CONTINENTAL && facingContinental) {
                 /* two continents meeting: the crust shortens and thickens */
                 nextThickness[r] = Math.min(opts.crustMaxKm, nextThickness[r] + opts.collisionThickenKm);
-                nextOrogeny[r] = Math.min(2, nextOrogeny[r] + opts.orogenyCollision);
+                const added = Math.min(opts.orogenyCollision, 2 - nextOrogeny[r]);
+                nextOrogeny[r] += added;
+                if (added > 0) addOrogenyDir(nextOrogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
                 const key = other < mine ? `${other},${mine}` : `${mine},${other}`;
                 collisions.set(key, (collisions.get(key) || 0) + 1);
             } else if (nextType[r] === CRUST_CONTINENTAL && facingOceanic) {
                 /* ocean going down beneath a continent: an Andean margin */
                 nextArc[r] = Math.min(2, nextArc[r] + opts.arcContinental);
-                nextOrogeny[r] = Math.min(2, nextOrogeny[r] + opts.orogenyAndean);
+                const added = Math.min(opts.orogenyAndean, 2 - nextOrogeny[r]);
+                nextOrogeny[r] += added;
+                if (added > 0) addOrogenyDir(nextOrogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
                 nextThickness[r] = Math.min(opts.crustMaxKm, nextThickness[r] + 0.35);
             } else if (nextType[r] === CRUST_OCEANIC && facingOceanic && nextAge[r] < oldestFacing) {
                 /* the younger, lighter slab stays up and carries the arc */
@@ -1143,8 +1340,15 @@ function stepTectonics(mesh, map, opts) {
                 break;
             }
         }
-        /* roots relax back towards normal as the belt above them erodes */
-        nextThickness[r] += (opts.crustReferenceKm - nextThickness[r]) * opts.rootRelax;
+        /* Roots relax back towards normal as the belt above them erodes. Only
+         * downwards: a thickened root sinks and erodes away, but crust that has
+         * been stretched thin does not re-thicken on its own. Relaxing both ways
+         * makes this term fight the margin-thinning above — at shelf thickness
+         * the two nearly cancel, margins stop thinning, and continental crust
+         * grows without limit instead of being rifted away. */
+        if (nextThickness[r] > opts.crustReferenceKm) {
+            nextThickness[r] += (opts.crustReferenceKm - nextThickness[r]) * opts.rootRelax;
+        }
     }
 
     /* A plate grows at its ridges and shrinks at its trenches. Let that feed
@@ -1174,7 +1378,9 @@ function stepTectonics(mesh, map, opts) {
     map.r_crust_age = nextAge;
     map.r_thickness = nextThickness;
     map.r_orogeny = nextOrogeny;
+    map.r_orogenyDir = nextOrogenyDir;
     map.r_arc = nextArc;
+    map.r_hotspot = nextHotspot;
     return collisions;
 }
 
@@ -1724,10 +1930,9 @@ function continentHeightMeters(thicknessKm, opts) {
 }
 
 
-function crustToElevation(mesh, map, seed, opts) {
-    const {r_xyz, r_crust_type, r_crust_age, r_thickness, r_orogeny, r_arc, r_boundary, r_elevation} = map;
+function crustToMeters(mesh, map, opts) {
+    const {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_arc, r_hotspot, r_boundary} = map;
     const {numRegions} = mesh;
-    const detail = makeFbm(new SimplexNoise(makeRandFloat(seed)), 5);
 
     /* Smooth thickness within each crust type, so a margin keeps its taper
        instead of being averaged against 7 km of ocean crust. */
@@ -1742,14 +1947,10 @@ function crustToElevation(mesh, map, seed, opts) {
                 + opts.orogenyReliefM * r_orogeny[r] + 700 * r_arc[r];
         } else {
             meters[r] = -oceanDepthMeters(r_crust_age[r]);
-            /* volcanic arcs build islands out of the sea floor */
-            /* An island arc is a narrow ridge; on Earth only its crest
-             * breaks the surface. At 226 km per cell the ridge itself is
-             * sub-resolution, so an arc that lifts freely puts an island in
-             * every cell along a subduction zone. Raise the sea floor, but
-             * make emerging take a strong, sustained arc. */
+            /* the broad base of an arc or a hotspot swell shallows the floor */
             meters[r] += opts.arcUpliftM * r_arc[r] * r_arc[r];
-            /* and the trench in front of one is the deepest thing on the planet */
+            if (r_hotspot) meters[r] += 0.35 * opts.hotspotUpliftM * Math.min(1, r_hotspot[r]);
+            /* and the trench in front of an arc is the deepest thing on the planet */
             if (r_boundary && r_boundary[r] === BOUNDARY_CONVERGENT) {
                 meters[r] -= 1500 * (1 - clamp01(r_arc[r]));
             }
@@ -1762,7 +1963,51 @@ function crustToElevation(mesh, map, seed, opts) {
        crust-type boundary — let alone a plate outline. Keep it narrow: a
        wide blend averages a margin against the abyssal plain and drowns it. */
     smoothField(mesh, meters, null, opts.coastBlend);
+    return meters;
+}
 
+
+/* Volcanic crests go on after the blend. An island arc is a ridge narrower
+ * than a sim cell; averaged against the abyssal plain beside it, no island
+ * it builds would survive — which is exactly what left the oceans empty.
+ * Noise decides which stretches of a front crest the surface, so what
+ * emerges is a chain of islands, not a wall of land.
+ *
+ * On the simulation mesh a cell is ~226 km, so this can only paint one
+ * blob per island. The detail pass runs the same function on a finer mesh
+ * with `crestFrequency` raised to match, which is the size it was written
+ * for. Frequency 8 on the unit sphere is the original 10k tuning. */
+function applyIslandCrests(mesh, r_xyz, meters, r_crust_type, r_arc, r_hotspot, seed, opts) {
+    if (!r_arc) return meters;
+    const {numRegions} = mesh;
+    const crestNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x1c8f4a2d)), 3, 0.5);
+    const freq = opts.crestFrequency != null ? opts.crestFrequency : 8;
+    for (let r = 0; r < numRegions; r++) {
+        if (r_crust_type && r_crust_type[r] !== CRUST_OCEANIC) continue;
+        const arc = Math.max(0, r_arc[r] - opts.arcEmergeThreshold);
+        const hot = r_hotspot ? Math.max(0, r_hotspot[r] - opts.arcEmergeThreshold) : 0;
+        if (arc === 0 && hot === 0) continue;
+        const x = freq * r_xyz[3 * r], y = freq * r_xyz[3 * r + 1], z = freq * r_xyz[3 * r + 2];
+        const ridge = 1.6 * crestNoise(x, y, z);
+        if (ridge <= 0) continue;
+        meters[r] += ridge * (opts.arcCrestM * arc + opts.hotspotUpliftM * hot);
+    }
+    return meters;
+}
+
+
+function crustToElevation(mesh, map, seed, opts) {
+    const {r_xyz, r_elevation} = map;
+    const {numRegions} = mesh;
+    const meters = crustToMeters(mesh, map, opts);
+    map.r_meters = meters;
+    /* The detail pass takes the crests: on this mesh they are one cell
+     * wide, which is far too big. Leave them here only when nothing finer
+     * is going to run. */
+    if (!opts.deferCrests) {
+        applyIslandCrests(mesh, r_xyz, meters, map.r_crust_type, map.r_arc, map.r_hotspot, seed, opts);
+    }
+    const detail = makeFbm(new SimplexNoise(makeRandFloat(seed)), 5);
     for (let r = 0; r < numRegions; r++) {
         r_elevation[r] = metersToElevation(meters[r]) +
             opts.detailNoise * detail(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
@@ -1803,6 +2048,8 @@ function simulateTectonics(mesh, map, seed, options) {
     }
     removeNetRotation(mesh, map.plates, map.r_plate);
     Object.assign(map, initCrust(mesh, map.r_xyz, seed, opts));
+    map.hotspots = Array.from({length: opts.hotspots},
+        () => randomUnitVector(randFloat));
 
     for (let step = 0; step < opts.steps; step++) {
         map.elapsedMyr += opts.stepMyr;
@@ -1855,10 +2102,12 @@ module.exports = {
     CRUST_OCEANIC, CRUST_CONTINENTAL,
     LAND_PEAK_M, LAND_POWER, OCEAN_DEPTH_M, OCEAN_POWER,
     elevationToMeters, metersToElevation,
-    clamp01, smoothField,
+    clamp01, smoothField, makeFbm,
+    sampleWeights, sampleField, samplePacked3,
     generatePlates, removeNetRotation, absorbEnclaves,
     plateVelocity, rotateAbout, nearestRegion,
     classifyBoundaries,
     oceanDepthMeters, continentHeightMeters,
+    crustToMeters, applyIslandCrests,
     simulateTectonics,
 };

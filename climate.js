@@ -45,10 +45,12 @@ const DEFAULTS = {
     rainEfficiency: 0.14,         // share of the passing air that rains out per cell;
                                   // at ~226 km per cell this empties a parcel over a
                                   // continent's width rather than in a few steps
-    recycling: 0.55,              // share of rain that the land returns to the passing
+    recycling: 0.64,              // share of rain that the land returns to the passing
                                   // air; without it every interior is a desert, because
                                   // about half the Amazon's rain is water the forest
-                                  // itself evaporated back
+                                  // itself evaporated back. Raised when continents became
+                                  // solid masses rather than strings: air now crosses far
+                                  // more land before it reaches an interior
     evaporation: 0.55,            // ocean humidity at freezing
     evaporationWarm: 0.60,        // extra ocean humidity when warm
     moistureGain: 1.62,           // maps delivered rain onto the 0..1 biome axis

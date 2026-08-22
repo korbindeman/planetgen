@@ -36,10 +36,10 @@ collisions. Plates rotate about Euler poles in a no-net-rotation frame; the crus
 
 ## Downstream
 
-1. **Hydrology** — rivers, erosion, drainage. Lives in a later sim, not this generator.
+1. **Hydrology** — real river networks, discharge, lakes and canyons. The detail pass does a first-stage shaping (priority-flood, stream power, glacial fjords) so slopes and coasts have drainage texture; the fine network is cut after diffusion.
 2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. Export Azgaar-style conditioning GeoTIFFs with `bun run export:td` (regional `crop-*` folders). Do not run `tiff-export` on the whole-world raster.
 
-Keep the base honest enough that those stages have something real to work with: continents carried by plates, mountain belts at collisions, ocean floor that deepens away from its ridge, and coasts that come from elevation interpolation rather than plate outlines. Leave river valleys, dendritic coasts, and eroded slopes to the later passes.
+Keep the base honest enough that those stages have something real to work with: continents carried by plates, mountain belts at collisions, ocean floor that deepens away from its ridge, and coasts that come from elevation interpolation rather than plate outlines. The detail pass roughs in valleys and fjords; leave the real river network to the later pass.
 
 Do not flatten ocean basins, floor continental plates, or grow land as blobs that fill a plate. That is what made coasts snap to plate edges. Crust type is seeded from noise, independent of the plate partition, so a plate can carry a continent and an ocean at once.
 
@@ -54,7 +54,7 @@ The original 1843 distance-field blend is still available for comparison: the **
 
 ## Out of scope
 
-- Rivers, flow accumulation, or carving valleys into the heightmap
+- Real river networks, discharge, lakes and canyons (those wait for the post-diffusion hydrology pass)
 - Photographic globe effects (atmosphere, clouds, specular water) unless we are judging the base
 - Integrating terrain-diffusion or the hydrology sim into this tree
 

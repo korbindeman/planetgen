@@ -1,0 +1,83 @@
+# The full-planet pipeline
+
+Planetgen makes the coarse base. This note records the plan for everything after it: how one planetgen seed becomes a real-scale, pre-baked planet, which tools were chosen for each stage, and which alternatives were surveyed and rejected (Aug 2026). The regional sketch → diffusion handoff mechanics live in [preparing-for-diffusion.md](preparing-for-diffusion.md); this doc is the planet-scale architecture around it.
+
+Status labels: **decided** (settled), **recommended** (researched, needs a trial before committing), **open** (known problem, no chosen answer).
+
+## Shape of the pipeline
+
+```
+planetgen (sphere, ~220 km cells)                    base: plates, heightmap, climate
+    → coarse conditioning map (23 km/px, 5 channels)  sketch + bake-time climate
+    → terrain-diffusion coarse model                  realism pass, weak SNR
+    → base + decoder cascade                          90 m (or 30 m) DEM, per cubesphere face
+    → hydrology / erosion                             rivers, canyons, lakes
+    → amplification below 90 m                        non-ML, procedural
+    → cubesphere quadtree store                       what the game streams
+```
+
+Offline bake of one reference planet first. On-demand generation (the model's InfiniteDiffusion random access makes it possible) is a later project; nothing here should preclude it, so tiles are deterministic functions of (seed, face, level, i, j) wherever we can manage it.
+
+## Stage decisions
+
+### Base: planetgen — decided
+
+A survey of alternatives (Aug 2026) found nothing better than continuing here:
+
+| Alternative | Verdict |
+| --- | --- |
+| World Orogen (orogen.studio, GPL-3, spherical) | Only maintained open-source contender. Judged not more realistic than planetgen's output. |
+| Cortial et al. 2019 "Procedural Tectonic Planets" | No public implementation exists. |
+| Borg et al., Eurographics 2026 (sketch → quadsphere planet diffusion) | Closest published system to this whole pipeline. No code released. **Watch.** |
+| Songs of the Eons / Gleba | SOTE dead, worldgen never open-sourced; Gleba active but closed source, pre-alpha. Watch. |
+| tectonics.js / tectonics.cpp | Dormant / incomplete; documented hypsometry blowups; successor is CC-NC. |
+| ASPECT / StagYY geodynamics | Emergent plate tectonics costs months of supercomputer time and yields muted dynamic topography. |
+| GPlates + pyGPlates/gplately bridge | Considered seriously, then dropped: its value (Euler-pole kinematics, seafloor age grids, half-space cooling bathymetry, plate history bookkeeping) is exactly what planetgen already implements. Remaining value is the desktop app as a visual inspector, which `bun run preview` covers. Not worth an export format. |
+
+The realism division of labor stands: planetgen owes the diffusion model correct *layout* (plate-shaped continents, belts at collisions, age-graded ocean floor), not pretty pixels. The coarse model redraws local statistics regardless (see the SNR findings in preparing-for-diffusion.md).
+
+### Climate: two tiers — recommended
+
+`climate.js` stays the in-loop model: fast, browser-free, judged by `bun run climate`. It is a heuristic (advected moisture, latitude temperature), which is right for iteration but is not where final realism should come from.
+
+For the bake, run **ExoPlaSim** on the planetgen heightmap and derive the conditioning channels from physics:
+
+- ExoPlaSim = PlaSim (Univ. Hamburg intermediate-complexity GCM) wrapped for arbitrary planets: `pip install exoplasim`, custom topography + land/sea mask as `.sra` files, `Model.configure(topomap=…, landmap=…)`, `runtobalance()` to energy equilibrium, monthly `tas`/`pr` out as netCDF. T42 = 64×128 Gaussian grid (~310 km cells), ~15 min per model year on 16 cores; whole run is an overnight CPU job, well under $50 on a cloud node. GPL-2, maintenance mode (v3.4.2, Jan 2025), needs gfortran; Apple Silicon untested — run it on Linux.
+- All four climate channels drop out of the 12-month climatology: mean temp, temp std, annual precip, precip CV. This replaces the current latitude/dryness heuristics for `temperature_std` and `precipitation_cv` in the export mapping.
+- Downscale T42 → 23 km/px with a CHELSA-V2-style pass (no off-the-shelf library handles a planet with no weather stations): interpolate monthly fields; temperature corrected by lapse rate, ideally diagnosed per-cell/month from the GCM's own vertical levels; precipitation redistributed by a windward/leeward orographic index from the GCM winds against the fine heightmap. `koppenpasta` (github.com/hersfeldtn/koppenpasta) already does the lapse-rate-only variant on ExoPlaSim output and is the reference.
+
+Why bother: real circulation (Hadley cells, monsoons, rain shadows, wet-west/dry-east asymmetry) — and it plugs the diffusion model's one structural blind spot. terrain-diffusion's training data was clipped to ±60° latitude; its worlds are statistically mid-latitude everywhere. Physics-derived climate channels, pinned at high SNR, are what make the output read as a planet with tropics and poles rather than endless temperate terrain.
+
+Trial before committing: one T21 run (minutes/year) on a planetgen heightmap, eyeball the precip/temp fields against `climate.js`. If ExoPlaSim's fields are not clearly more believable, drop this stage and export from `climate.js` as today.
+
+### Detail: terrain-diffusion at planet scale — decided approach, open engineering
+
+Regional crops work today (preparing-for-diffusion.md). The full planet is different: `tiff-export` on the whole equirect raster is explicitly wrong (pole distortion, one giant job). The plan:
+
+- **Cubesphere, equal-angle mapping.** Six square faces, quadtree per face, 512² tiles. Equal-angle keeps pixel scale within ~1.3× worst case (raw gnomonic hits ~2.3× at corners); a "90 m" corner tile is really ~115 m/px, within tolerance for the model's learned statistics. The face-adjacency table (edges, rotations) is the foundation everything shares: conditioning margins, hydrology routing, rendering skirts.
+- **Generate per face** on the face's raster via `WorldPipeline` + `set_custom_conditioning_import()`, not `tiff-export`: conditioning for each face is the coarse map reprojected into that face's projection, extended past the edges with reprojected neighbor-face data so the 64-cell context pad sees real terrain, not `mode="edge"` repetition.
+- **Seams**: overlap generation bands across face edges and blend elevation in the overlap; corners (three faces meet) are the ugly case. The unmerged terrain-diffusion PR #15 "Sphere export" does cube-face sampling and is prior art to read, not code to trust. This is the one piece of genuinely novel engineering in the whole pipeline — **open** until proven on one edge and one corner.
+- **Poles**: cubesphere kills the equirect-distortion problem, but the ±60° training clip remains. Mitigation: pin climate channels cold at high SNR (the model saw cold-dry terrain south of 60°) and treat ice sheets as a post-pass. **Open** until a polar face looks right.
+- **Scale of the bake** (90 m model): ~10¹¹ output px ≈ 200 GB int16; on the order of 600k tile-samples with overlap ≈ single-digit GPU-days on a rented card. Feasible, not casual — which is why every stage upstream gets validated on crops first. 200 GB does not ship in a game client; the bake targets server-side streaming, and the on-demand variant is the later answer for shipped clients.
+
+### Hydrology and post — decided (documented elsewhere)
+
+Fine drainage — real river networks, discharge, lakes, canyons — runs on the baked DEM, never as a substitute for the planetgen mesh. The detail pass already does a first-stage shaping (priority-flood, stream power, glacial fjords) so the sketch the diffusion model sees has valleys and a coast that drains somewhere; that is rough texture, not the network. The pass structure for the fine stage (priority-flood, D8 accumulation, stream-power incision, hillslope) is in preparing-for-diffusion.md. Planet-scale addendum: flow routing must run on the cubesphere adjacency graph so rivers cross face edges; route at full resolution per drainage basin, or at an intermediate global level (~1 km) with carving applied to the fine tiles.
+
+### Below 90 m — open, later
+
+The model floor is 90 m (30 m). Ground-level gameplay needs ~1 m. That layer is non-ML amplification (erosion-aware detail noise, slope/material displacement) and is out of scope until the bake exists.
+
+## Where things live
+
+- **planetgen (this repo)**: the base, unchanged scope. The only change this plan asks of it: when ExoPlaSim graduates from trial, `export:td` grows a mode that takes bake-time climate rasters instead of deriving channels from `climate.js`.
+- **~/dev/terrain-diffusion**: sibling checkout, upstream untouched.
+- **Bake pipeline** (cubesphere store, face generation, seam blending, ExoPlaSim driver, hydrology): a new sibling repo when the work starts. Integrating it here is explicitly out of scope per CLAUDE.md. (`~/dev/fomel` was created for this and abandoned empty; start fresh when the time comes.)
+
+## Order of attack
+
+1. ExoPlaSim trial on one planetgen heightmap (T21, then T42 if promising). Cheapest stage, biggest realism swing, zero coupling to the hard engineering.
+2. Cubesphere face raster + adjacency table, and one face generated via `WorldPipeline` with imported conditioning — compare against a `tiff-export` crop of the same region.
+3. One face edge + one corner, seam-blended. This proves or reshapes the whole bake plan.
+4. Full coarse planet (all six faces at 23 km conditioning, coarse model only) — cheap, and the first look at the planet as a planet.
+5. Scale out: full 90 m bake on rented GPUs, then hydrology.

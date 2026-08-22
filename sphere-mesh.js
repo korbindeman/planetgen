@@ -10,7 +10,7 @@ const TriangleMesh = require('@redblobgames/dual-mesh');
 
 
 let _randomLat = [], _randomLon = [];
-function generateFibonacciSphere(N, jitter, randFloat) {
+function generateFibonacciSphere(N, jitter, randFloat, randomLat, randomLon) {
     let a_latlong = [];
 
     // Second algorithm from http://web.archive.org/web/20120421191837/http://www.cgafaq.info/wiki/Evenly_distributed_points_on_sphere
@@ -21,10 +21,10 @@ function generateFibonacciSphere(N, jitter, randFloat) {
         let r = Math.sqrt(1 - z*z);
         let latDeg = Math.asin(z) * 180 / Math.PI;
         let lonDeg = long * 180 / Math.PI;
-        if (_randomLat[k] === undefined) _randomLat[k] = randFloat() - randFloat();
-        if (_randomLon[k] === undefined) _randomLon[k] = randFloat() - randFloat();
-        latDeg += jitter * _randomLat[k] * (latDeg - Math.asin(Math.max(-1, z - dz * 2 * Math.PI * r / s)) * 180 / Math.PI);
-        lonDeg += jitter * _randomLon[k] * (s/r * 180 / Math.PI);
+        if (randomLat[k] === undefined) randomLat[k] = randFloat() - randFloat();
+        if (randomLon[k] === undefined) randomLon[k] = randFloat() - randFloat();
+        latDeg += jitter * randomLat[k] * (latDeg - Math.asin(Math.max(-1, z - dz * 2 * Math.PI * r / s)) * 180 / Math.PI);
+        lonDeg += jitter * randomLon[k] * (s/r * 180 / Math.PI);
         a_latlong.push(latDeg, lonDeg % 360.0);
         long += dlong;
     }
@@ -121,8 +121,10 @@ function stereographicProjection(r_xyz) {
 }
 
 
-function makeSphere(N, jitter, randFloat) {
-    let latlong = generateFibonacciSphere(N, jitter, randFloat);
+function makeSphere(N, jitter, randFloat, jitterState) {
+    const randomLat = (jitterState && jitterState.lat) || _randomLat;
+    const randomLon = (jitterState && jitterState.lon) || _randomLon;
+    let latlong = generateFibonacciSphere(N, jitter, randFloat, randomLat, randomLon);
     let r_xyz = [];
     for (let r = 0; r < latlong.length/2; r++) {
         pushCartesianFromSpherical(r_xyz, latlong[2*r], latlong[2*r+1]);

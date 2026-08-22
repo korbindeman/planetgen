@@ -57,7 +57,7 @@ try {
     deviceScaleFactor: 1,
   });
   await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 60_000 });
-  await page.waitForFunction(() => window.__PLANET_READY__ === true, null, { timeout: 60_000 });
+  await page.waitForFunction(() => window.__PLANET_READY__ === true, null, { timeout: 180_000 });
   if (noTectonics) await page.evaluate(() => window.setSimulateTectonics(false));
 
   const tiles = [];

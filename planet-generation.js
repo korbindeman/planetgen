@@ -27,6 +27,7 @@ const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
 const Tectonics = require('./tectonics');
 const Climate = require('./climate');
+const Detail = require('./detail');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 
 const regl = require('regl')({
@@ -84,6 +85,8 @@ let merge_ocean_plates = false;
 let connect_oceans = false;
 let simulate_tectonics = true;
 let sim_steps = Tectonics.DEFAULTS.steps;
+let detail_pass = true;
+let detailN = Detail.DEFAULTS.n;
 let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate'
 let previewYaw = 0;
 
@@ -121,6 +124,8 @@ window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(
 window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
 window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
 window.setSimSteps = steps => { sim_steps = Math.max(0, steps | 0); generateMap(); };
+window.setDetailPass = flag => { detail_pass = !!flag; generateMap(); };
+window.setDetailN = n => { detailN = Math.max(0, n | 0); generateMap(); };
 window.getSeed = () => seed;
 
 const renderPoints = regl({
@@ -428,6 +433,12 @@ window.setTectonicOption = (key, value) => {
     if (!(key in Tectonics.DEFAULTS)) throw new Error(`unknown tectonic option: ${key}`);
     Tectonics.DEFAULTS[key] = value;
     generateMesh();
+};
+window.setDetailOption = (key, value) => {
+    if (!(key in Detail.DEFAULTS)) throw new Error(`unknown detail option: ${key}`);
+    Detail.DEFAULTS[key] = value;
+    if (key === 'n') detailN = value | 0;
+    generateMap();
 };
 window.shuffleSeed = () => {
     let next;
@@ -1081,55 +1092,96 @@ function assignTriangleValues(mesh, {r_elevation, r_moisture, r_temperature, /* 
 
 // ugh globals, sorry
 var mesh, map = {};
+var simMesh, simMap;
 var quadGeometry = new QuadGeometry();
+var detailCache = null;
 
 function generateMesh() {
     let result = SphereMesh.makeSphere(N, jitter, makeRandFloat(seed));
-    mesh = result.mesh;
-    quadGeometry.setMesh(mesh);
-    
-    map.r_elevation = new Float32Array(mesh.numRegions);
-    map.t_elevation = new Float32Array(mesh.numTriangles);
-    map.r_moisture = new Float32Array(mesh.numRegions);
-    map.t_moisture = new Float32Array(mesh.numTriangles);
-    map.r_temperature = new Float32Array(mesh.numRegions);
-    map.t_temperature = new Float32Array(mesh.numTriangles);
-
-    map.r_xyz = result.r_xyz;
-    map.t_xyz = generateTriangleCenters(mesh, map);
+    simMesh = result.mesh;
+    simMap = {
+        r_elevation: new Float32Array(simMesh.numRegions),
+        t_elevation: new Float32Array(simMesh.numTriangles),
+        r_moisture: new Float32Array(simMesh.numRegions),
+        t_moisture: new Float32Array(simMesh.numTriangles),
+        r_temperature: new Float32Array(simMesh.numRegions),
+        t_temperature: new Float32Array(simMesh.numTriangles),
+        r_xyz: result.r_xyz,
+    };
+    simMap.t_xyz = generateTriangleCenters(simMesh, simMap);
     generateMap();
 }
 
+function ensureDetailMesh() {
+    if (detailCache && detailCache.n === detailN && detailCache.jitter === jitter) {
+        return detailCache;
+    }
+    const result = SphereMesh.makeSphere(
+        detailN, jitter, makeRandFloat(0x9e3779b9), {lat: [], lon: []});
+    const r_xyz = Float32Array.from(result.r_xyz);
+    detailCache = {
+        n: detailN,
+        jitter,
+        mesh: result.mesh,
+        r_xyz,
+        t_xyz: generateTriangleCenters(result.mesh, {r_xyz}),
+    };
+    return detailCache;
+}
+
+function useDetailPass() {
+    return detail_pass && detailN > (simMesh ? simMesh.numRegions : N);
+}
+
 function generateMap() {
-    Object.assign(map, generatePlates(mesh, map.r_xyz));
+    Object.assign(simMap, generatePlates(simMesh, simMap.r_xyz));
 
     if (simulate_tectonics) {
-        Tectonics.simulateTectonics(mesh, map, seed, {steps: sim_steps});
-        map.plate_is_ocean = oceanicPlates(mesh, map);
+        Tectonics.simulateTectonics(simMesh, simMap, seed, {
+            steps: sim_steps,
+            deferCrests: useDetailPass(),
+        });
+        simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
     } else {
         /* The 1843 path wants a static partition and a coin flip for which
          * plates are oceanic. */
-        map.boundaryWarp = Tectonics.makeBoundaryWarp(mesh, map.r_xyz, seed, Tectonics.DEFAULTS);
-        map.tectonicFieldsFor = `${mesh.numRegions}:${seed}`;
-        map.r_plate = Tectonics.plateOwnership(mesh, map, Tectonics.DEFAULTS);
-        map.plate_is_ocean = new Set();
-        for (let p = 0; p < map.plates.length; p++) {
-            if (makeRandInt(map.plates[p].id + 1)(10) < 5) map.plate_is_ocean.add(p);
+        simMap.boundaryWarp = Tectonics.makeBoundaryWarp(simMesh, simMap.r_xyz, seed, Tectonics.DEFAULTS);
+        simMap.tectonicFieldsFor = `${simMesh.numRegions}:${seed}`;
+        simMap.r_plate = Tectonics.plateOwnership(simMesh, simMap, Tectonics.DEFAULTS);
+        simMap.plate_is_ocean = new Set();
+        for (let p = 0; p < simMap.plates.length; p++) {
+            if (makeRandInt(simMap.plates[p].id + 1)(10) < 5) simMap.plate_is_ocean.add(p);
         }
         if (merge_ocean_plates) {
-            map.plate_is_ocean = mergeOceanPlates(mesh, map.r_plate, map.plate_is_ocean).plate_is_ocean;
+            simMap.plate_is_ocean = mergeOceanPlates(simMesh, simMap.r_plate, simMap.plate_is_ocean).plate_is_ocean;
         }
-        map.extra_ocean_seeds = [];
-        map.plate_vec = plateVectorsFromPoles(mesh, map.r_xyz, map.plates, map.r_plate);
-        assignRegionElevation(mesh, map);
-        map.r_boundary = null;
-        map.r_crust_age = null;
+        simMap.extra_ocean_seeds = [];
+        simMap.plate_vec = plateVectorsFromPoles(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
+        assignRegionElevation(simMesh, simMap);
+        simMap.r_boundary = null;
+        simMap.r_crust_age = null;
+        simMap.r_meters = null;
     }
-    map.plate_centroid = plateCentroids(mesh, map.r_xyz, map.plates, map.r_plate);
-    if (connect_oceans) connectWorldOcean(mesh, map.r_elevation);
-    assignClimate(mesh, map);
+    simMap.plate_centroid = plateCentroids(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
+    if (connect_oceans) connectWorldOcean(simMesh, simMap.r_elevation);
+    assignClimate(simMesh, simMap);
+
+    if (useDetailPass()) {
+        const built = ensureDetailMesh();
+        map = Detail.applyDetailPass(simMesh, simMap, built.mesh, built.r_xyz, seed);
+        map.t_xyz = built.t_xyz;
+        map.t_elevation = new Float32Array(built.mesh.numTriangles);
+        map.t_moisture = new Float32Array(built.mesh.numTriangles);
+        map.t_temperature = new Float32Array(built.mesh.numTriangles);
+        mesh = built.mesh;
+        if (connect_oceans) connectWorldOcean(mesh, map.r_elevation);
+    } else {
+        mesh = simMesh;
+        map = simMap;
+    }
     assignTriangleValues(mesh, map);
 
+    quadGeometry.setMesh(mesh);
     quadGeometry.setMap(mesh, map);
     overlayColorCache.clear();
     mapId++;
@@ -1728,7 +1780,7 @@ function drawEquirect() {
         const u_projection = equirectProjection(xshift);
         drawSurface(u_projection, geo.xyz, geo.tm, geo.count);
         if (!overlay && draw_plateVectors) {
-            drawEquirectPlateVectors(u_projection, mesh, map);
+            drawEquirectPlateVectors(u_projection, simMesh, simMap);
         }
         if (overlay || draw_plateBoundaries) {
             drawEquirectPlateBoundaries(u_projection, mesh, map);
@@ -1839,7 +1891,7 @@ function _draw() {
     if (!overlay) drawNorthPole(u_projection);
 
     if (!overlay && draw_plateVectors) {
-        drawPlateVectors(u_projection, mesh, map);
+        drawPlateVectors(u_projection, simMesh, simMap);
     }
     if (overlay || draw_plateBoundaries) {
         drawPlateBoundaries(u_projection, mesh, map);
