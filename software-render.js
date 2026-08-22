@@ -1,18 +1,17 @@
 /*
- * CPU renderer for headless captures. Same mesh and colormap as the WebGL
- * path: barycentric interpolation across the quad geometry, then the
- * surfaceAlbedo lookup and a screen-space hillshade. No browser, no GL.
+ * CPU renderer for headless captures. Same mesh, colormap and look as the
+ * WebGL path: barycentric interpolation across the quad geometry, then
+ * Look.surfaceAlbedo and a screen-space hillshade. No browser, no GL.
+ * Palette, ice, lighting and overlay colours live in look.js.
  */
 'use strict';
 
 const {mat4, vec4} = require('gl-matrix');
-const colormap = require('./colormap');
 const Tectonics = require('./tectonics');
 const Planet = require('./planet');
+const Look = require('./look');
 const {encodePng, decodePng} = require('./png');
 
-const LAND_ICE = 0.28;
-const SEA_ICE = 0.18;
 const GLOBE_SIZE = 1024;
 const EQUIRECT_W = 2048;
 const EQUIRECT_H = 1024;
@@ -20,83 +19,8 @@ const PI = Math.PI;
 const TWO_PI = 2 * PI;
 const POLE_LAT = PI / 2 - 1e-6;
 const POLE_SNAP = 3 * PI / 180;
-const PLATE_ARROW_SCALE = 0.38;
-const PLATE_ARROW_REFERENCE_OMEGA = 0.006;
-const LIGHT_X = Math.cos(Math.PI / 3);
-const LIGHT_Y = Math.sin(Math.PI / 3);
-const U_D = 60;
-const U_INV_TEX = 1 / 2048;
-const U_C = 0.15;
-const U_SLOPE = 6;
-const U_FLAT = 2.5;
-
-const OVERLAY_LEGEND = {
-    plates: 'color = plate   dark = underwater   arrow = motion   age = time since the plate formed',
-    crust: 'sea floor: pale = young, dark = old   land: red = orogeny   orange = ridge   cyan = trench   yellow = transform',
-    climate: 'moisture only: sand = arid   olive = steppe   green = forest   teal = saturated',
-};
-
-const CM_W = colormap.width;
-const CM_H = colormap.height;
-const CM = colormap.data;
-
-function sampleColormap(u, v) {
-    const x = Math.max(0, Math.min(CM_W - 1, Math.floor(u * CM_W)));
-    const y = Math.max(0, Math.min(CM_H - 1, Math.floor(v * CM_H)));
-    const p = (y * CM_W + x) * 4;
-    return [CM[p] / 255, CM[p + 1] / 255, CM[p + 2] / 255];
-}
-
-const SNOW_RGB = sampleColormap(0.51, 0.92);
-
-function smoothstep(edge0, edge1, x) {
-    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-    return t * t * (3 - 2 * t);
-}
-
-function surfaceAlbedo(e, m, temp) {
-    m = Math.max(0, Math.min(1, m));
-    if (e < 0) {
-        const ocean = sampleColormap(0.5 * (e + 1), m);
-        const ice = smoothstep(SEA_ICE + 0.06, SEA_ICE - 0.08, temp);
-        return [
-            ocean[0] + (SNOW_RGB[0] - ocean[0]) * ice,
-            ocean[1] + (SNOW_RGB[1] - ocean[1]) * ice,
-            ocean[2] + (SNOW_RGB[2] - ocean[2]) * ice,
-        ];
-    }
-    const t = Math.max(0, Math.min(1, temp));
-    const elev = Math.max(0, Math.min(1, e));
-    const moisture = m * (1 - 0.5 * elev);
-    const biome = sampleColormap(0.51 + 0.48 * t, moisture);
-    const alpine = smoothstep(0.28, 0.72, elev);
-    const rockMix = alpine * (0.4 + 0.45 * t);
-    let r = biome[0] + (0.45 - biome[0]) * rockMix;
-    let g = biome[1] + (0.40 - biome[1]) * rockMix;
-    let b = biome[2] + (0.34 - biome[2]) * rockMix;
-    const snowMix = alpine * (1 - t) * 0.65;
-    r += (SNOW_RGB[0] - r) * snowMix;
-    g += (SNOW_RGB[1] - g) * snowMix;
-    b += (SNOW_RGB[2] - b) * snowMix;
-    const ice = smoothstep(LAND_ICE + 0.07, LAND_ICE - 0.07, temp);
-    return [
-        r + (SNOW_RGB[0] - r) * ice,
-        g + (SNOW_RGB[1] - g) * ice,
-        b + (SNOW_RGB[2] - b) * ice,
-    ];
-}
-
-function hillshade(dedx, dedy) {
-    const k = U_D * 2 * U_INV_TEX;
-    const slx = dedy, sly = dedx, slz = k;
-    const slLen = Math.hypot(slx, sly, slz) || 1;
-    const sx = slx / slLen, sy = sly / slLen, sz = slz / slLen;
-    const lz = U_SLOPE + (U_FLAT - U_SLOPE) * sz;
-    const lLen = Math.hypot(LIGHT_X, LIGHT_Y, lz) || 1;
-    const lx = LIGHT_X / lLen, ly = LIGHT_Y / lLen, lzN = lz / lLen;
-    const light = U_C + Math.max(0, lx * sx + ly * sy + lzN * sz);
-    return light;
-}
+const {OVERLAY_LEGEND, PLATE_ARROW, BOUNDARY_INK} = Look;
+const {surfaceAlbedo, hillshade, northPoleLines} = Look;
 
 function globeProjection(yaw, rotation, zoom) {
     const u = mat4.create();
@@ -312,30 +236,6 @@ function drawBoundariesGlobe(target, segs, matrix, ink) {
         const b = toScreen(project(s[3], s[4], s[5], matrix), width, height);
         drawLine(target, a.x, a.y, a.z, b.x, b.y, b.z, ink[0], ink[1], ink[2], ink[3], 1.4);
     }
-}
-
-function northPoleLines() {
-    const red = [0.89, 0.18, 0.14, 1];
-    const redFade = [0.89, 0.18, 0.14, 0.2];
-    const lines = [
-        {a: [0, 0, 0.78], b: [0, 0, 1.18], ca: redFade, cb: red},
-    ];
-    const tip = 1.18, base = 1.04, s = 0.05;
-    const arms = [[s, 0, base], [-s, 0, base], [0, s, base], [0, -s, base]];
-    for (const p of arms) lines.push({a: [0, 0, tip], b: p, ca: red, cb: red});
-    const lat = 78 * Math.PI / 180;
-    const ringZ = Math.sin(lat), ringR = Math.cos(lat);
-    const steps = 48;
-    for (let i = 0; i < steps; i++) {
-        const a0 = (i / steps) * Math.PI * 2;
-        const a1 = ((i + 1) / steps) * Math.PI * 2;
-        lines.push({
-            a: [ringR * Math.cos(a0), ringR * Math.sin(a0), ringZ],
-            b: [ringR * Math.cos(a1), ringR * Math.sin(a1), ringZ],
-            ca: red, cb: red,
-        });
-    }
-    return lines;
 }
 
 function drawNorthPole(target, matrix) {
@@ -632,9 +532,9 @@ function paintPlateAnnotations(rgba, width, height, planet, mode, projection, xs
         const c = map.plate_centroid[p];
         if (!c || area[p] / mesh.numRegions < 0.012) continue;
         const v = Tectonics.plateVelocity([], plate.pole, plate.omega, c);
-        v[0] /= PLATE_ARROW_REFERENCE_OMEGA;
-        v[1] /= PLATE_ARROW_REFERENCE_OMEGA;
-        v[2] /= PLATE_ARROW_REFERENCE_OMEGA;
+        v[0] /= PLATE_ARROW.referenceOmega;
+        v[1] /= PLATE_ARROW.referenceOmega;
+        v[2] /= PLATE_ARROW.referenceOmega;
         const start = toCanvas(c);
         if (!Number.isFinite(start.x) || !Number.isFinite(start.y)) continue;
         if (mode === 'globe' && start.z > 0.02) continue;
@@ -642,14 +542,16 @@ function paintPlateAnnotations(rgba, width, height, planet, mode, projection, xs
         start.x = Math.min(width - 16, Math.max(16, start.x));
         start.y = Math.min(height - 16, Math.max(16, start.y));
         const tip = [
-            c[0] + v[0] * PLATE_ARROW_SCALE,
-            c[1] + v[1] * PLATE_ARROW_SCALE,
-            c[2] + v[2] * PLATE_ARROW_SCALE,
+            c[0] + v[0] * PLATE_ARROW.scale,
+            c[1] + v[1] * PLATE_ARROW.scale,
+            c[2] + v[2] * PLATE_ARROW.scale,
         ];
         let end = toCanvas(tip);
         const drawBoth = (sx, sy, ex, ey) => {
-            strokeArrow(rgba, width, height, sx, sy, ex, ey, 17, 17, 17, 6);
-            strokeArrow(rgba, width, height, sx, sy, ex, ey, 255, 225, 74, 2.4);
+            const [hr, hg, hb] = PLATE_ARROW.halo;
+            const [ar, ag, ab] = PLATE_ARROW.rgb;
+            strokeArrow(rgba, width, height, sx, sy, ex, ey, hr, hg, hb, 6);
+            strokeArrow(rgba, width, height, sx, sy, ex, ey, ar, ag, ab, 2.4);
         };
         if (mode === 'equirect' && Math.abs(end.x - start.x) > width * 0.5) {
             const shift = end.x > start.x ? -width : width;
@@ -666,11 +568,12 @@ function paintPlateAnnotations(rgba, width, height, planet, mode, projection, xs
         }
         const name = String(plate.name);
         const tw = textWidth(name, 2);
-        drawText(rgba, width, height, name, start.x - tw / 2, start.y - 22, 255, 255, 255, 2, true);
+        const [lr, lg, lb] = PLATE_ARROW.label;
+        drawText(rgba, width, height, name, start.x - tw / 2, start.y - 22, lr, lg, lb, 2, true);
         if (plate.bornMyr > 0) {
             const age = `${(map.elapsedMyr - plate.bornMyr).toFixed(0)} Myr`;
             const aw = textWidth(age, 1);
-            drawText(rgba, width, height, age, start.x - aw / 2, start.y + 8, 255, 255, 255, 1, true);
+            drawText(rgba, width, height, age, start.x - aw / 2, start.y + 8, lr, lg, lb, 1, true);
         }
     }
 }
@@ -690,7 +593,7 @@ function renderGlobe(planet, opts = {}) {
     const target = makeTarget(size, size);
     const tm = surfaceTm(planet, overlay);
     drawIndexed(target, planet.geometry.xyz, tm, planet.geometry.I, matrix, !!overlay);
-    const ink = overlay ? [0.06, 0.06, 0.08, 1] : [1, 1, 1, 1];
+    const ink = overlay ? BOUNDARY_INK : [1, 1, 1, 1];
     if (overlay) drawBoundariesGlobe(target, plateBoundarySegments(planet.mesh, planet.map), matrix, ink);
     if (!overlay) drawNorthPole(target, matrix);
     if (overlay === 'plates') {
@@ -710,7 +613,7 @@ function renderEquirect(planet, opts = {}) {
     const target = makeTarget(width, height);
     drawEquirectSurface(target, tris, panX, !!overlay);
     if (overlay) {
-        const ink = [0.06, 0.06, 0.08, 1];
+        const ink = BOUNDARY_INK;
         drawEquirectBoundaries(target, plateBoundarySegments(planet.mesh, planet.map), panX, ink);
     }
     if (overlay === 'plates') {
@@ -808,56 +711,8 @@ function seedSheet(tiles, view) {
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
-function lerpRgb(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
 
-const TD_LAND_PEAK_M = Tectonics.LAND_PEAK_M;
-const TD_OCEAN_DEPTH_M = Tectonics.OCEAN_DEPTH_M;
-
-function elevRgb(m) {
-    if (m < 0) {
-        const t = Math.min(1, -m / TD_OCEAN_DEPTH_M);
-        return lerpRgb([72, 130, 176], [12, 28, 58], t);
-    }
-    const t = Math.min(1, m / TD_LAND_PEAK_M);
-    if (t < 0.35) return lerpRgb([92, 148, 78], [196, 196, 118], t / 0.35);
-    if (t < 0.7) return lerpRgb([196, 196, 118], [142, 104, 64], (t - 0.35) / 0.35);
-    return lerpRgb([142, 104, 64], [244, 244, 248], (t - 0.7) / 0.3);
-}
-
-function tempRgb(c) {
-    const t = Math.max(0, Math.min(1, (c + 20) / 50));
-    if (t < 0.5) return lerpRgb([40, 70, 170], [240, 240, 240], t / 0.5);
-    return lerpRgb([240, 240, 240], [190, 40, 30], (t - 0.5) / 0.5);
-}
-
-function precipRgb(mm) {
-    const t = Math.max(0, Math.min(1, Math.sqrt(mm / 3200)));
-    if (t < 0.5) return lerpRgb([214, 196, 150], [120, 168, 92], t / 0.5);
-    return lerpRgb([120, 168, 92], [28, 92, 150], (t - 0.5) / 0.5);
-}
-
-function hillshadeField(elev, width, height) {
-    const out = new Float32Array(width * height);
-    const zenith = 45 * Math.PI / 180;
-    const azimuth = 315 * Math.PI / 180;
-    const zcos = Math.cos(zenith), zsin = Math.sin(zenith);
-    const cell = 220;
-    for (let y = 0; y < height; y++) {
-        const y0 = y === 0 ? y : y - 1;
-        const y1 = y === height - 1 ? y : y + 1;
-        for (let x = 0; x < width; x++) {
-            const x0 = x === 0 ? x : x - 1;
-            const x1 = x === width - 1 ? x : x + 1;
-            const dzdx = (elev[y * width + x1] - elev[y * width + x0]) / (2 * cell);
-            const dzdy = (elev[y1 * width + x] - elev[y0 * width + x]) / (2 * cell);
-            const slope = Math.atan(Math.hypot(dzdx, dzdy));
-            const aspect = Math.atan2(-dzdy, dzdx);
-            let shade = zcos * Math.cos(slope) + zsin * Math.sin(slope) * Math.cos(azimuth - aspect);
-            out[y * width + x] = Math.max(0.15, Math.min(1, shade));
-        }
-    }
-    return out;
-}
+const {elevRgb, tempRgb, precipRgb, hillshadeField, CROP_COLORS} = Look;
 
 function putLayerRgb(rgba, width, x, y, w, h, rgbAt, shade) {
     for (let i = 0, py = 0; py < h; py++) {
@@ -931,7 +786,7 @@ function drawWorldSheet(world, crops, cropLayers) {
     drawText(rgba, width, height, 'Crop windows on elevation', w + gap, row2 - 22, 17, 17, 17, 2, false);
     putLayerRgb(rgba, width, w + gap, row2, w, h, (i) => elevRgb(world.heightmap[i]), shade);
 
-    const colors = [[245, 217, 10], [255, 90, 54], [90, 210, 255]];
+    const colors = CROP_COLORS;
     crops.forEach((crop, i) => {
         const [r, g, b] = colors[i % colors.length];
         strokeRect(rgba, width, height, w + gap + crop.x, row2 + crop.y, crop.winW, crop.winH, r, g, b);

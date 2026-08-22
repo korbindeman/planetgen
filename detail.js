@@ -18,6 +18,7 @@ const SimplexNoise = require('simplex-noise');
 const {makeRandFloat} = require('@redblobgames/prng');
 const Climate = require('./climate');
 const Tectonics = require('./tectonics');
+const Look = require('./look');
 const Erosion = require('./erosion');
 
 const EARTH_RADIUS_KM = 6371;
@@ -27,7 +28,9 @@ const DEFAULTS = {
     /* World Orogen warpTerrain (terrain-post.js / terrain-config.js). */
     warpStrength: 0.75,           // their Terrain Warp slider default
     warpFreq: 4,                  // unit-sphere; ~10000 km wavelength
-    warpOctaves: 5,
+    warpOctaves: 4,               // the 5th octave put ±100 km of wiggle at 600 km
+                                  // wavelength on every coast; real coasts are far
+                                  // cleaner than that
     warpMaxAmp: 0.13,             // radians at strength=1 (~830 km)
     warpBiasBase: 0.25,
     warpBiasStrengthScale: 0.5,
@@ -68,7 +71,7 @@ const DEFAULTS = {
     thermalShare: 0.4,
     glacialIters: 3,
     glacialStrength: 0.55,
-    iceTemp: 0.28,                // matches LAND_ICE in the renderer
+    iceTemp: Look.LAND_ICE,
     iceRamp: 0.18,
     paleoIceTemp: 0.58,           // last-glacial ice line; fjords on the high-latitude coasts
     paleoIceRamp: 0.16,
@@ -94,11 +97,13 @@ const DEFAULTS = {
     floodMidFrac: 0.75,
     floodMidCarve: 0.28,
     floodEpsM: 0.25,
-    floodNoiseM: 8,
+    floodNoiseM: 4,
     floodCarveRadius: 0.22,
     creepIters: 3,
     creepStrength: 0.11,
-    noiseBaseM: 35,               // craton grain
+    noiseBaseM: 16,               // craton grain. On a coastal plain sloping ~1 m/km,
+                                  // 35 m of noise moved the shoreline ±40 km at 120 km
+                                  // wavelength — uniform fuzz on every coast
     noiseActivityM: 160,          // extra on belts
     noiseOctaves: 4,
     noiseWavelengthKm: 120,

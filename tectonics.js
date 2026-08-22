@@ -766,6 +766,14 @@ const DEFAULTS = {
                                   // This replaces the generated inland-sea caps
     oceanGap: 0.07,               // radians of sea a growing block must keep from
                                   // every other continent
+    blockFacets: 1.0,             // straight-margin cuts and pointed tips on blocks.
+                                  // An ellipse's level set can never come to a point;
+                                  // real margins are line-derived — rift scars and
+                                  // trenches — and their intersections are what make
+                                  // an India or a Patagonia. 0 disables
+    facetCalm: 0.35,              // gain on the gulf/bay noise along a faceted margin.
+                                  // A rift scar is a calm, straight coast; full noise
+                                  // wobbles the straightness back into a blob
     gulfCut: 0.72,                // deep but sparse inlets; weak noise is ignored
     bayCut: 0.16,                 // smaller bays
     coastGrain: 0.06,             // a little edge grain; wiggly blobs are not the goal
@@ -949,6 +957,7 @@ function placementFromSpec(spec, opts) {
         axes: spec.axes,
         elong: spec.elong,
         taper: spec.taper,
+        facets: spec.facets,
         shares: shares.slice(),
     };
 }
@@ -1244,7 +1253,37 @@ function planBlocks(continents, randFloat, opts) {
      * valid parent so the chain positions stay defined. */
     for (let b = 0; b < nB; b++) if (parent[b] === -2) parent[b] = firstBlock[continent[b]];
 
-    return {radii, elong, taper, materialize, sutureType: drawSutureTypes(nB, randFloat), nB};
+    /* Facets: straight-margin cuts, and pairs of cuts that converge into a
+     * pointed tip. An ellipse can never come to a point, and real sharp
+     * coasts are intersections of line-derived margins. A tip continues
+     * the block's grown end — the last block of a chain is a peninsula
+     * end, so it gets one most often. */
+    const facets = [];
+    const gain = opts.blockFacets;
+    for (let b = 0; b < nB; b++) {
+        const list = [];
+        facets.push(list);
+        if (!(radii[b] > 0) || !gain) continue;
+        const tail = b + 1 === nB || continent[b + 1] !== continent[b];
+        if (randFloat() < gain * (tail ? 0.40 : 0.15)) {
+            const az = (taper[b] >= 0 ? 0 : Math.PI) + 1.0 * (randFloat() - 0.5);
+            const phi = 0.30 + 0.25 * randFloat();
+            const reach = 0.85 + 0.25 * randFloat();
+            /* Reach is against the ellipse's extent along the azimuth, so
+             * a stretched block keeps its full length. */
+            const ca = Math.cos(az), sa = Math.sin(az);
+            const stretch = Math.sqrt(ca * ca / elong[b] + sa * sa * elong[b])
+                / (1 + taper[b] * ca);
+            const off = reach * Math.sin(phi) / stretch;
+            list.push({theta: az + (Math.PI / 2 - phi), off, gate: az});
+            list.push({theta: az - (Math.PI / 2 - phi), off, gate: az});
+        }
+        if (randFloat() < gain * 0.30) {
+            list.push({theta: 2 * Math.PI * randFloat(), off: 0.55 + 0.30 * randFloat()});
+        }
+    }
+
+    return {radii, elong, taper, facets, materialize, sutureType: drawSutureTypes(nB, randFloat), nB};
 }
 
 
@@ -1255,6 +1294,7 @@ function planFromSpec(placement, randFloat) {
         radii: placement.radii,
         elong: placement.elong,
         taper: placement.taper,
+        facets: placement.facets || placement.centres.map(() => []),
         materialize: () => ({centres: placement.centres, axes: placement.axes}),
         sutureType: drawSutureTypes(nB, randFloat),
         nB,
@@ -1315,19 +1355,54 @@ function initCrust(mesh, r_xyz, seed, opts) {
     const sagKm = opts.sutures * opts.sutureSagKm;
     const measure = (scale, record) => {
         const {centres, axes} = plan.materialize(scale);
+        /* Facet cut planes, as tangent vectors in each block's frame. A
+         * facet with a gate also gets the gate's direction vector: the cut
+         * only binds toward that end of the block. Without the gate a
+         * tip's two planes clip a corridor down the block's whole length —
+         * that is what pinched Patagonia into a neck. */
+        const tangent = (k, theta) => {
+            const c = Math.cos(theta), s = Math.sin(theta);
+            const u = axes[k].u, v = axes[k].v;
+            return [u[0] * c + v[0] * s, u[1] * c + v[1] * s, u[2] * c + v[2] * s];
+        };
+        const facetM = plan.facets.map((list, k) => list.map(f => tangent(k, f.theta)));
+        const facetG = plan.facets.map((list, k) =>
+            list.map(f => f.gate != null ? tangent(k, f.gate) : null));
         let inside = 0;
         for (let r = 0; r < numRegions; r++) {
             p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
-            let d1 = Infinity, d2 = Infinity, b1 = -1, b2 = -1;
+            let d1 = Infinity, d2 = Infinity, b1 = -1, b2 = -1, facet1 = false;
             for (let k = 0; k < nB; k++) {
                 if (!(radii[k] > 0)) continue;
-                const d = capDistance(p, centres[k], axes[k], elong[k], taper[k], t)
+                let d = capDistance(p, centres[k], axes[k], elong[k], taper[k], t)
                     / (radii[k] * scale);
-                if (d < d1) { d2 = d1; b2 = b1; d1 = d; b1 = k; }
+                /* A facet trims the cap with a straight edge: everything
+                 * past `off` block radii in the cut's direction is ocean.
+                 * The gradient matches the cap's, so the shelf keeps its
+                 * width along a faceted margin. */
+                let faceted = false;
+                const list = plan.facets[k], ms = facetM[k], gs = facetG[k];
+                for (let j = 0; j < list.length; j++) {
+                    const m = ms[j];
+                    const s = Math.asin(Math.max(-1, Math.min(1,
+                        p[0] * m[0] + p[1] * m[1] + p[2] * m[2])));
+                    let off = list[j].off;
+                    if (gs[j]) {
+                        const g = gs[j];
+                        const ag = Math.asin(Math.max(-1, Math.min(1,
+                            p[0] * g[0] + p[1] * g[1] + p[2] * g[2])));
+                        off += 1.2 * (1 - smooth01(-0.1, 0.5, ag / (radii[k] * scale)));
+                    }
+                    const df = 1 + (s / (radii[k] * scale) - off);
+                    if (df > d) { d = df; faceted = true; }
+                }
+                if (d < d1) { d2 = d1; b2 = b1; d1 = d; b1 = k; facet1 = faceted; }
                 else if (d < d2) { d2 = d; b2 = k; }
             }
             const raw = d1;
-            const w = opts.cratonWarp * contrast[r];
+            /* A faceted margin is a rift scar or a trench line: straight
+             * and calm. Full-strength noise would wobble it back round. */
+            const w = opts.cratonWarp * contrast[r] * (facet1 ? opts.facetCalm : 1);
             const g = gulf[r], b = bay[r];
             const mGulf = smooth01(0.22, 0.85, raw);
             const mBay = smooth01(0.48, 1.00, raw);

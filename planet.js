@@ -13,6 +13,7 @@ const Tectonics = require('./tectonics');
 const EarthFixture = require('./earth-fixture');
 const Climate = require('./climate');
 const Detail = require('./detail');
+const Look = require('./look');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 
 const {clamp01} = Tectonics;
@@ -419,33 +420,31 @@ function hsvRgb(h, s, v) {
 }
 
 function colorForPlate(index, ocean) {
-    const h = (index * 0.618033988749895) % 1;
-    return hsvRgb(h, ocean ? 0.5 : 0.58, ocean ? 0.48 : 0.94);
+    const h = (index * Look.PLATE.hueStep) % 1;
+    const sv = ocean ? Look.PLATE.ocean : Look.PLATE.land;
+    return hsvRgb(h, sv.s, sv.v);
 }
 
 function crustColorForRegion(r, map) {
     const {r_crust_type, r_crust_age, r_orogeny, r_arc, r_boundary} = map;
-    if (r_boundary && r_boundary[r] === BOUNDARY_DIVERGENT) return [1.0, 0.35, 0.2];
-    if (r_boundary && r_boundary[r] === BOUNDARY_CONVERGENT) return [0.25, 0.9, 1.0];
-    if (r_boundary && r_boundary[r] === BOUNDARY_TRANSFORM) return [1.0, 0.95, 0.35];
+    const C = Look.CRUST;
+    if (r_boundary && r_boundary[r] === BOUNDARY_DIVERGENT) return C.ridge;
+    if (r_boundary && r_boundary[r] === BOUNDARY_CONVERGENT) return C.trench;
+    if (r_boundary && r_boundary[r] === BOUNDARY_TRANSFORM) return C.transform;
     if (r_crust_type && r_crust_type[r] === Tectonics.CRUST_CONTINENTAL) {
-        const relief = clamp01(r_orogeny[r] * 0.7 + r_arc[r] * 0.3);
-        return [0.35 + 0.6 * relief, 0.5 - 0.18 * relief, 0.3 - 0.1 * relief];
+        const relief = clamp01(r_orogeny[r] * C.orogenyW + r_arc[r] * C.arcW);
+        const {base, relief: d} = C.continent;
+        return [base[0] + d[0] * relief, base[1] + d[1] * relief, base[2] + d[2] * relief];
     }
-    const young = 1 - clamp01((r_crust_age ? r_crust_age[r] : 0) / 200);
-    return [0.05 + 0.15 * young, 0.15 + 0.45 * young, 0.3 + 0.6 * young];
+    const young = 1 - clamp01((r_crust_age ? r_crust_age[r] : 0) / C.ageMyr);
+    const {base, young: y} = C.ocean;
+    return [base[0] + y[0] * young, base[1] + y[1] * young, base[2] + y[2] * young];
 }
 
 function climateColorForRegion(r, map) {
-    if (map.r_elevation[r] <= 0) return [0.13, 0.15, 0.2];
+    if (map.r_elevation[r] <= 0) return Look.CLIMATE_OCEAN;
     const m = clamp01(map.r_moisture[r]);
-    const stops = [
-        [0.00, [0.85, 0.72, 0.42]],
-        [0.35, [0.76, 0.70, 0.34]],
-        [0.55, [0.55, 0.68, 0.30]],
-        [0.75, [0.24, 0.56, 0.28]],
-        [1.00, [0.05, 0.32, 0.45]],
-    ];
+    const stops = Look.CLIMATE_STOPS;
     for (let i = 1; i < stops.length; i++) {
         if (m <= stops[i][0] || i === stops.length - 1) {
             const [a, ca] = stops[i - 1], [b, cb] = stops[i];

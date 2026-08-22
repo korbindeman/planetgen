@@ -5,6 +5,9 @@
  *
  * Left half: ocean, indexed by elevation -1:0.
  * Right half: Whittaker biomes, temperature 0:1 × moisture 0:1.
+ *
+ * Ice, rock, lighting and overlay colours live in look.js — both
+ * renderers consume that file rather than owning a copy.
  */
 'use strict';
 

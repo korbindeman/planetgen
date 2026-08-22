@@ -18,8 +18,6 @@ function seedFromUrl() {
     }
 }
 let seed = seedFromUrl();
-const LAND_ICE = 0.28;
-const SEA_ICE = 0.18;
 
 const colormap = require('./colormap');
 const {vec3, vec4, mat4, quat} = require('gl-matrix');
@@ -28,6 +26,7 @@ const EarthFixture = require('./earth-fixture');
 const Detail = require('./detail');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 const Planet = require('./planet');
+const Look = require('./look');
 const {clamp01} = Tectonics;
 
 const regl = require('regl')({
@@ -43,29 +42,7 @@ const u_colormap = regl.texture({
     wrapT: 'clamp'
 });
 
-const SURFACE_GLSL = `
-vec3 surfaceAlbedo(sampler2D colormap, vec3 tm, float seaIce, float landIce) {
-  float e = tm.x;
-  float m = clamp(tm.y, 0.0, 1.0);
-  float temp = tm.z;
-  vec3 snow = texture2D(colormap, vec2(0.51, 0.92)).rgb;
-  if (e < 0.0) {
-    vec3 ocean = texture2D(colormap, vec2(0.5 * (e + 1.0), m)).rgb;
-    float ice = smoothstep(seaIce + 0.06, seaIce - 0.08, temp);
-    return mix(ocean, snow, ice);
-  }
-  float t = clamp(temp, 0.0, 1.0);
-  float elev = clamp(e, 0.0, 1.0);
-  float moisture = m * (1.0 - 0.5 * elev);
-  vec3 biome = texture2D(colormap, vec2(0.51 + 0.48 * t, moisture)).rgb;
-  vec3 rock = vec3(0.45, 0.40, 0.34);
-  float alpine = smoothstep(0.28, 0.72, elev);
-  biome = mix(biome, rock, alpine * (0.4 + 0.45 * t));
-  biome = mix(biome, snow, alpine * (1.0 - t) * 0.65);
-  float ice = smoothstep(landIce + 0.07, landIce - 0.07, temp);
-  return mix(biome, snow, ice);
-}
-`;
+const SURFACE_GLSL = Look.SURFACE_GLSL;
 
 
 /* UI parameters */
@@ -221,11 +198,10 @@ const renderTriangles = regl({
     frag: `
 precision mediump float;
 uniform sampler2D u_colormap;
-uniform float u_sea_ice, u_land_ice;
 varying vec3 v_tm;
 ${SURFACE_GLSL}
 void main() {
-   gl_FragColor = vec4(surfaceAlbedo(u_colormap, v_tm, u_sea_ice, u_land_ice), 1);
+   gl_FragColor = vec4(surfaceAlbedo(u_colormap, v_tm), 1);
 }
 `,
 
@@ -244,8 +220,6 @@ void main() {
     uniforms: {
         u_colormap: u_colormap,
         u_projection: regl.prop('u_projection'),
-        u_sea_ice: SEA_ICE,
-        u_land_ice: LAND_ICE,
     },
 
     count: regl.prop('count'),
@@ -265,7 +239,6 @@ precision mediump float;
 uniform sampler2D u_colormap;
 uniform vec2 u_light_angle;
 uniform float u_inverse_texture_size, u_slope, u_flat, u_c, u_d, u_outline_strength;
-uniform float u_sea_ice, u_land_ice;
 
 varying vec3 v_tm;
 ${SURFACE_GLSL}
@@ -276,7 +249,7 @@ void main() {
    vec3 light_vector = normalize(vec3(u_light_angle, mix(u_slope, u_flat, slope_vector.z)));
    float light = u_c + max(0.0, dot(light_vector, slope_vector));
    float outline = 1.0 + u_outline_strength * max(dedx,dedy);
-   vec3 albedo = surfaceAlbedo(u_colormap, v_tm, u_sea_ice, u_land_ice);
+   vec3 albedo = surfaceAlbedo(u_colormap, v_tm);
    gl_FragColor = vec4(albedo * light / outline, 1);
 }
 `,
@@ -296,15 +269,8 @@ void main() {
     uniforms: {
         u_colormap: u_colormap,
         u_projection: regl.prop('u_projection'),
-        u_light_angle: [Math.cos(Math.PI/3), Math.sin(Math.PI/3)],
-        u_inverse_texture_size: 1.0 / 2048,
-        u_d: 60,
-        u_c: 0.15,
-        u_slope: 6,
-        u_flat: 2.5,
+        ...Look.globeLightUniforms,
         u_outline_strength: 0,
-        u_sea_ice: SEA_ICE,
-        u_land_ice: LAND_ICE,
     },
 
     elements: regl.prop('elements'),
@@ -698,7 +664,7 @@ function overlayColorTm() {
  * be evaluated per region, not shared from one vector per plate. */
 /* Arrow length is proportional to speed, scaled so a plate rotating at the
  * typical rate draws an arrow about one cell long. */
-const PLATE_ARROW_REFERENCE_OMEGA = 0.006;
+const PLATE_ARROW_REFERENCE_OMEGA = Look.PLATE_ARROW.referenceOmega;
 
 function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plates}) {
     let line_xyz = [], line_rgba = [];
@@ -727,7 +693,7 @@ function drawPlateVectors(u_projection, mesh, {r_xyz, r_plate, plates}) {
 
 function drawPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     let line_xyz = [], line_rgba = [];
-    const ink = usePlateOverlay() ? [0.06, 0.06, 0.08, 1] : [1, 1, 1, 1];
+    const ink = usePlateOverlay() ? Look.BOUNDARY_INK : [1, 1, 1, 1];
     for (let s = 0; s < mesh.numSides; s++) {
         let begin_r = mesh.s_begin_r(s),
             end_r = mesh.s_end_r(s);
@@ -793,29 +759,9 @@ function northHeading() {
 
 function drawNorthPole(u_projection) {
     const line_xyz = [], line_rgba = [];
-    const red = [0.89, 0.18, 0.14, 1];
-    const redFade = [0.89, 0.18, 0.14, 0.2];
-
-    line_xyz.push([0, 0, 0.78], [0, 0, 1.18]);
-    line_rgba.push(redFade, red);
-
-    const tip = 1.18, base = 1.04, s = 0.05;
-    line_xyz.push([0, 0, tip], [s, 0, base], [0, 0, tip], [-s, 0, base],
-                  [0, 0, tip], [0, s, base], [0, 0, tip], [0, -s, base]);
-    for (let i = 0; i < 8; i++) line_rgba.push(red);
-
-    const lat = 78 * Math.PI / 180;
-    const ringZ = Math.sin(lat);
-    const ringR = Math.cos(lat);
-    const steps = 48;
-    for (let i = 0; i < steps; i++) {
-        const a0 = (i / steps) * Math.PI * 2;
-        const a1 = ((i + 1) / steps) * Math.PI * 2;
-        line_xyz.push(
-            [ringR * Math.cos(a0), ringR * Math.sin(a0), ringZ],
-            [ringR * Math.cos(a1), ringR * Math.sin(a1), ringZ]
-        );
-        line_rgba.push(red, red);
+    for (const line of Look.northPoleLines()) {
+        line_xyz.push(line.a, line.b);
+        line_rgba.push(line.ca, line.cb);
     }
 
     renderLines({
@@ -1121,7 +1067,7 @@ function drawEquirectPlateVectors(u_projection, mesh, {r_xyz, r_plate, plates}) 
 
 function drawEquirectPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     let line_xyz = [], line_rgba = [];
-    const ink = usePlateOverlay() ? [0.06, 0.06, 0.08, 1] : [1, 1, 1, 1];
+    const ink = usePlateOverlay() ? Look.BOUNDARY_INK : [1, 1, 1, 1];
     for (let s = 0; s < mesh.numSides; s++) {
         const begin_r = mesh.s_begin_r(s),
             end_r = mesh.s_end_r(s);
@@ -1486,55 +1432,7 @@ function lerp(a, b, t) {
     return a + (b - a) * t;
 }
 
-function lerpRgb(a, b, t) {
-    return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
-}
-
-function elevRgb(m) {
-    if (m < 0) {
-        const t = Math.min(1, -m / TD_OCEAN_DEPTH_M);
-        return lerpRgb([72, 130, 176], [12, 28, 58], t);
-    }
-    const t = Math.min(1, m / TD_LAND_PEAK_M);
-    if (t < 0.35) return lerpRgb([92, 148, 78], [196, 196, 118], t / 0.35);
-    if (t < 0.7) return lerpRgb([196, 196, 118], [142, 104, 64], (t - 0.35) / 0.35);
-    return lerpRgb([142, 104, 64], [244, 244, 248], (t - 0.7) / 0.3);
-}
-
-function tempRgb(c) {
-    const t = Math.max(0, Math.min(1, (c + 20) / 50));
-    if (t < 0.5) return lerpRgb([40, 70, 170], [240, 240, 240], t / 0.5);
-    return lerpRgb([240, 240, 240], [190, 40, 30], (t - 0.5) / 0.5);
-}
-
-function precipRgb(mm) {
-    const t = Math.max(0, Math.min(1, Math.sqrt(mm / 3200)));
-    if (t < 0.5) return lerpRgb([214, 196, 150], [120, 168, 92], t / 0.5);
-    return lerpRgb([120, 168, 92], [28, 92, 150], (t - 0.5) / 0.5);
-}
-
-function hillshade(elev, width, height) {
-    const out = new Float32Array(width * height);
-    const zenith = 45 * Math.PI / 180;
-    const azimuth = 315 * Math.PI / 180;
-    const zcos = Math.cos(zenith), zsin = Math.sin(zenith);
-    const cell = 220;
-    for (let y = 0; y < height; y++) {
-        const y0 = y === 0 ? y : y - 1;
-        const y1 = y === height - 1 ? y : y + 1;
-        for (let x = 0; x < width; x++) {
-            const x0 = x === 0 ? x : x - 1;
-            const x1 = x === width - 1 ? x : x + 1;
-            const dzdx = (elev[y * width + x1] - elev[y * width + x0]) / (2 * cell);
-            const dzdy = (elev[y1 * width + x] - elev[y0 * width + x]) / (2 * cell);
-            const slope = Math.atan(Math.hypot(dzdx, dzdy));
-            const aspect = Math.atan2(-dzdy, dzdx);
-            let shade = zcos * Math.cos(slope) + zsin * Math.sin(slope) * Math.cos(azimuth - aspect);
-            out[y * width + x] = Math.max(0.15, Math.min(1, shade));
-        }
-    }
-    return out;
-}
+const {elevRgb, tempRgb, precipRgb, hillshadeField, CROP_COLORS_HEX} = Look;
 
 function putLayerRgb(ctx, x, y, width, height, rgbAt, shade) {
     const img = ctx.createImageData(width, height);
@@ -1596,7 +1494,7 @@ function drawWorldSheet(world, crops, cropLayers) {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const shade = hillshade(world.heightmap, w, h);
+    const shade = hillshadeField(world.heightmap, w, h);
     drawLabeled(ctx, 0, label, 'Coarse elevation (hypsometric + hillshade)');
     putLayerRgb(ctx, 0, label, w, h, (i) => elevRgb(world.heightmap[i]), shade);
     drawLabeled(ctx, w + gap, label, 'Temperature (°C)');
@@ -1609,7 +1507,7 @@ function drawWorldSheet(world, crops, cropLayers) {
     putLayerRgb(ctx, w + gap, row2, w, h, (i) => elevRgb(world.heightmap[i]), shade);
 
     ctx.lineWidth = 2;
-    const colors = ['#f5d90a', '#ff5a36', '#5ad2ff'];
+    const colors = CROP_COLORS_HEX;
     crops.forEach((crop, i) => {
         ctx.strokeStyle = colors[i % colors.length];
         ctx.lineWidth = 2;
@@ -1629,7 +1527,7 @@ function drawWorldSheet(world, crops, cropLayers) {
     crops.forEach((crop, i) => {
         const layers = cropLayers[i];
         const upE = upsampleBilinear(layers.heightmap, layers.width, layers.height, cropW, cropH);
-        const upShade = hillshade(upE, cropW, cropH);
+        const upShade = hillshadeField(upE, cropW, cropH);
         const x = i * (cropW + gap);
         drawLabeled(ctx, x, row3, `Crop “${crop.name}”  ${layers.width}×${layers.height} coarse cells`);
         putLayerRgb(ctx, x, row3, cropW, cropH, (j) => elevRgb(upE[j]), upShade);
@@ -1654,7 +1552,7 @@ function drawCropPreview(layers, name) {
     const upE = upsampleBilinear(layers.heightmap, layers.width, layers.height, w, h);
     const upT = upsampleBilinear(layers.temperature, layers.width, layers.height, w, h);
     const upP = upsampleBilinear(layers.precipitation, layers.width, layers.height, w, h);
-    const shade = hillshade(upE, w, h);
+    const shade = hillshadeField(upE, w, h);
     drawLabeled(ctx, 0, label, `${name} elevation`);
     putLayerRgb(ctx, 0, label, w, h, (i) => elevRgb(upE[i]), shade);
     drawLabeled(ctx, w + gap, label, 'temperature');
@@ -1771,13 +1669,8 @@ function exportPreview(view, opts = {}) {
     }
 }
 
-const PLATE_ARROW_SCALE = 0.38;
-const OVERLAY_LEGEND = {
-    plates: 'color = plate   dark = underwater   arrow = motion   age = time since the plate formed',
-    crust: 'sea floor: pale = young, dark = old   land: red = orogeny   ' +
-           'orange = ridge   cyan = trench   yellow = transform',
-    climate: 'moisture only: sand = arid   olive = steppe   green = forest   teal = saturated',
-};
+const PLATE_ARROW_SCALE = Look.PLATE_ARROW.scale;
+const OVERLAY_LEGEND = Look.OVERLAY_LEGEND;
 
 function projectGlobePoint(xyz, projection) {
     const p = vec4.transformMat4([], [xyz[0], xyz[1], xyz[2], 1], projection);
@@ -1830,8 +1723,8 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
-    ctx.strokeStyle = '#111111';
-    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
+    ctx.fillStyle = Look.PLATE_ARROW.labelHex;
     ctx.lineWidth = 4;
 
     const toCanvas = (xyz) => {
@@ -1869,11 +1762,11 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
         if (mode === 'equirect' && Math.abs(end.x - start.x) > width * 0.5) {
             const shift = end.x > start.x ? -width : width;
             ctx.lineWidth = 6;
-            ctx.strokeStyle = '#111111';
+            ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
             strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
             strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
             ctx.lineWidth = 2.4;
-            ctx.strokeStyle = '#ffe14a';
+            ctx.strokeStyle = Look.PLATE_ARROW.hex;
             strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
             strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
         } else {
@@ -1884,16 +1777,16 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
                 end = {x: start.x + dx * s, y: start.y + dy * s, front: end.front};
             }
             ctx.lineWidth = 6;
-            ctx.strokeStyle = '#111111';
+            ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
             strokeArrow(ctx, start.x, start.y, end.x, end.y);
             ctx.lineWidth = 2.4;
-            ctx.strokeStyle = '#ffe14a';
+            ctx.strokeStyle = Look.PLATE_ARROW.hex;
             strokeArrow(ctx, start.x, start.y, end.x, end.y);
         }
 
         ctx.lineWidth = 4;
-        ctx.strokeStyle = '#111111';
-        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
+        ctx.fillStyle = Look.PLATE_ARROW.labelHex;
         drawHaloLabel(ctx, plate.name, start.x, start.y - 13);
         /* how long this plate has existed, which is not the age of its crust */
         if (plate.bornMyr > 0) {

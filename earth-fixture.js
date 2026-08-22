@@ -239,9 +239,35 @@ function earthPlates(r_xyz, r_plate) {
 }
 
 
+/* Straight-margin cuts, authored per block. `facets` is [[azimuthDeg,
+ * offsetFrac], …]: azimuth 0 is the block's `toward` axis, +90 a quarter
+ * turn to its left, and the cut trims everything past offsetFrac block
+ * radii in that direction. `tip` is [azimuthDeg, halfAngleDeg, reachFrac]
+ * sugar for the pair of cuts that converge into a point — an India, a
+ * Patagonia — at reachFrac radii along the azimuth. */
+function facetsFromSpec(s) {
+    const list = [];
+    if (s.facets) for (const [az, off] of s.facets) list.push({theta: az * DEG, off});
+    if (s.tip) {
+        const [az, phi, reach] = s.tip;
+        /* Reach is in units of the ellipse's extent along the tip azimuth,
+         * not the nominal radius — a stretched sliver runs sqrt(elong)
+         * times further along its axis, and authoring against the nominal
+         * radius truncated Patagonia at half its length. */
+        const ca = Math.cos(az * DEG), sa = Math.sin(az * DEG);
+        const stretch = Math.sqrt(ca * ca / s.elong + sa * sa * s.elong)
+            / (1 + s.taper * ca);
+        const off = reach * Math.sin(phi * DEG) / stretch;
+        list.push({theta: (az + 90 - phi) * DEG, off, gate: az * DEG});
+        list.push({theta: (az - 90 + phi) * DEG, off, gate: az * DEG});
+    }
+    return list;
+}
+
+
 function placementFromLonLat(specs, withFloor) {
     const centres = [], shares = [], axes = [], elong = [], taper = [];
-    const radii = [], floorKm = [];
+    const radii = [], floorKm = [], facets = [];
     for (const s of specs) {
         const centre = lonLatToXyz(s.lon, s.lat);
         centres.push(centre);
@@ -252,8 +278,9 @@ function placementFromLonLat(specs, withFloor) {
         axes.push(tangentFrame(centre, lonLatToXyz(toward[0], toward[1])));
         elong.push(s.elong);
         taper.push(s.taper);
+        facets.push(facetsFromSpec(s));
     }
-    const out = {centres, axes, elong, taper};
+    const out = {centres, axes, elong, taper, facets};
     if (shares.length) out.shares = shares;
     if (radii.length) out.radii = radii;
     if (withFloor) out.floorKm = floorKm;
@@ -271,39 +298,57 @@ function earthCratons() {
          * tapering through the Kalahari; the Horn as its own small block. */
         {lon: 3, lat: 18, share: 0.088, toward: [28, 15], elong: 1.55, taper: 0.10},
         {lon: 22, lat: -1, share: 0.056, toward: [38, -2], elong: 1.15, taper: 0.05},
-        {lon: 24, lat: -22, share: 0.042, toward: [21, -33], elong: 1.35, taper: 0.25},
-        {lon: 45, lat: 7, share: 0.012, toward: [51, 11], elong: 1.45, taper: 0.25},
+        {lon: 24, lat: -22, share: 0.042, toward: [21, -33], elong: 1.35, taper: 0.25,
+         tip: [0, 30, 0.85]},
+        /* Madagascar, offshore across a drowned channel. */
+        {lon: 49, lat: -19, share: 0.007, toward: [47, -12], elong: 2.8, taper: 0.10},
+        {lon: 45, lat: 7, share: 0.012, toward: [51, 11], elong: 1.45, taper: 0.25,
+         facets: [[90, 0.55]]},
         /* Eurasia: Baltica, Siberia, a Kazakh link, China, and Indochina
          * trailing off toward the equator. India and Arabia dock below. */
         {lon: 25, lat: 55, share: 0.055, toward: [48, 60], elong: 1.40, taper: 0.10},
+        /* Iberia and an Italy sliver give the Med its north-shore
+         * peninsulas; without them the basin is a featureless square. */
+        {lon: -4, lat: 40, share: 0.012, toward: [3, 42], elong: 1.25, taper: 0.10},
+        {lon: 13, lat: 43, share: 0.005, toward: [16, 39], elong: 2.6, taper: 0.20,
+         tip: [0, 25, 0.9]},
         {lon: 95, lat: 63, share: 0.075, toward: [130, 63], elong: 1.60, taper: 0.08},
         {lon: 68, lat: 48, share: 0.035, toward: [88, 46], elong: 1.35, taper: 0.05},
         {lon: 110, lat: 32, share: 0.055, toward: [117, 42], elong: 1.35, taper: 0.15},
-        {lon: 102, lat: 14, share: 0.020, toward: [104, 3], elong: 1.75, taper: 0.30},
+        {lon: 102, lat: 14, share: 0.020, toward: [104, 3], elong: 1.75, taper: 0.30,
+         tip: [0, 20, 0.90]},
         /* North America: the shield wide across Canada, a cordilleran
          * block pointing at Mexico, Alaska reaching for the strait, and
          * an Appalachian seaboard strip. */
         {lon: -95, lat: 56, share: 0.072, toward: [-70, 56], elong: 1.50, taper: 0.08},
-        {lon: -105, lat: 37, share: 0.045, toward: [-100, 19], elong: 1.50, taper: 0.30},
+        {lon: -105, lat: 37, share: 0.045, toward: [-100, 19], elong: 1.50, taper: 0.30,
+         tip: [0, 30, 0.85]},
         {lon: -143, lat: 64, share: 0.020, toward: [-158, 61], elong: 1.55, taper: 0.20},
         {lon: -76, lat: 38, share: 0.020, toward: [-62, 46], elong: 1.85, taper: 0.15},
         /* South America: the Amazon bulge, then a sliver tapering through
          * Patagonia, stopping short of 56°S so Drake Passage can cut. */
-        {lon: -59, lat: -6, share: 0.068, toward: [-47, -9], elong: 1.25, taper: 0.10},
-        {lon: -66, lat: -32, share: 0.024, toward: [-70, -49], elong: 3.40, taper: 0.30},
-        {lon: -52, lat: -18, share: 0.014, toward: [-45, -22], elong: 1.35, taper: 0.10},
+        {lon: -59, lat: -6, share: 0.068, toward: [-47, -9], elong: 1.25, taper: 0.10,
+         facets: [[-25, 0.88], [-170, 0.92]]},
+        {lon: -66.5, lat: -27.5, share: 0.029, toward: [-70, -46], elong: 4.40, taper: 0.30,
+         tip: [0, 22, 0.75], facets: [[-90, 0.75]]},
+        {lon: -55, lat: -21, share: 0.022, toward: [-48, -25], elong: 1.35, taper: 0.10},
         /* Australia: a western shield and an eastern block whose taper
          * points at Cape York, so the north coast gets its notch. */
-        {lon: 122, lat: -25, share: 0.030, toward: [112, -24], elong: 1.30, taper: 0.12},
-        {lon: 144, lat: -25, share: 0.022, toward: [143, -13], elong: 1.45, taper: 0.28},
+        {lon: 119, lat: -25, share: 0.030, toward: [110, -24], elong: 1.30, taper: 0.12},
+        {lon: 146, lat: -25, share: 0.022, toward: [144, -13], elong: 1.45, taper: 0.28,
+         tip: [0, 28, 0.95]},
+        {lon: 147, lat: -42, share: 0.003, toward: [147, -37], elong: 1.3, taper: 0.10},
         /* Antarctica: the East Antarctic disc plus a West Antarctic lobe
          * toward the Peninsula. */
         {lon: 60, lat: -82, share: 0.058, toward: [90, -78], elong: 1.10, taper: 0.0},
         {lon: -100, lat: -78, share: 0.022, toward: [-66, -67], elong: 1.60, taper: 0.25},
         /* India, Greenland, Arabia. */
-        {lon: 78, lat: 21, share: 0.042, toward: [78, 32], elong: 1.28, taper: 0.14},
-        {lon: -42, lat: 73, share: 0.020, toward: [-42, 84], elong: 1.45, taper: 0.08},
-        {lon: 46, lat: 24, share: 0.024, toward: [48, 32], elong: 1.38, taper: 0.12},
+        {lon: 78, lat: 21, share: 0.042, toward: [78, 32], elong: 1.28, taper: 0.14,
+         tip: [180, 30, 1.05]},
+        {lon: -42, lat: 73, share: 0.020, toward: [-42, 84], elong: 1.45, taper: 0.08,
+         tip: [180, 30, 1.0]},
+        {lon: 46, lat: 24, share: 0.024, toward: [48, 32], elong: 1.38, taper: 0.12,
+         facets: [[90, 0.72], [-90, 0.72]]},
     ]);
 }
 
@@ -313,14 +358,40 @@ function earthCratons() {
  * the Caribbean stops the Americas becoming an isthmus wall. */
 function earthBasins() {
     return placementFromLonLat([
-        {lon: 21, lat: 38, toward: [39, 37], elong: 2.60, taper: 0.0, radius: 0.21, floorKm: 16},
+        {lon: 20, lat: 35.5, toward: [38, 35], elong: 2.60, taper: 0.0, radius: 0.17, floorKm: 16},
         {lon: -82, lat: 60, toward: [-92, 58], elong: 1.55, taper: 0.0, radius: 0.17, floorKm: 25},
         {lon: -62, lat: 70, toward: [-62, 78], elong: 2.10, taper: 0.0, radius: 0.11, floorKm: 20},
         {lon: -76, lat: 15, toward: [-64, 14], elong: 2.05, taper: 0.0, radius: 0.15, floorKm: 18},
-        {lon: 38, lat: 21, toward: [39, 28], elong: 2.45, taper: 0.0, radius: 0.13, floorKm: 16},
+        {lon: 38, lat: 21, toward: [35, 28], elong: 3.40, taper: 0.0, radius: 0.09, floorKm: 20},
         {lon: -65, lat: -62, toward: [-42, -62], elong: 2.70, taper: 0.0, radius: 0.12, floorKm: 14},
         {lon: -90, lat: 25, toward: [-90, 25], elong: 1.35, taper: 0.0, radius: 0.11, floorKm: 24},
     ], true);
+}
+
+
+/* The two ice sheets are physical domes kilometres thick, not paint.
+ * Thickened crust here floats the surface high, which is what makes the
+ * interiors cold enough to render as solid sheets with domed hillshade. */
+const ICE_DOMES = [
+    {lon: -41, lat: 74, radius: 0.16, crownKm: 12},
+    {lon: 60, lat: -82, radius: 0.30, crownKm: 10},
+    {lon: -100, lat: -80, radius: 0.18, crownKm: 8},
+];
+
+
+function applyIceDomes(r_xyz, r_thickness, r_crust_type, opts) {
+    for (const dome of ICE_DOMES) {
+        const c = lonLatToXyz(dome.lon, dome.lat);
+        for (let r = 0; r < r_thickness.length; r++) {
+            if (r_crust_type[r] !== 1) continue;
+            const d = Math.acos(Math.max(-1, Math.min(1,
+                c[0] * r_xyz[3 * r] + c[1] * r_xyz[3 * r + 1] + c[2] * r_xyz[3 * r + 2])));
+            if (d >= dome.radius) continue;
+            const lift = dome.crownKm * (1 - (d / dome.radius) ** 2);
+            r_thickness[r] = Math.min(opts.crustMaxKm,
+                Math.max(r_thickness[r], opts.seaLevelThicknessKm + lift));
+        }
+    }
 }
 
 
@@ -490,6 +561,7 @@ function buildEarthMap(mesh, map, options) {
     /* Collision paint would raise the Med back into mountains; drown it
      * again and kill the orogeny the basin is sitting on. */
     Tectonics.applyBasins(map.r_xyz, map.r_thickness, map.r_crust_type, opts, map.r_orogeny);
+    applyIceDomes(map.r_xyz, map.r_thickness, map.r_crust_type, opts);
 
     Object.assign(map, Tectonics.classifyBoundaries(mesh, map));
     Tectonics.crustToElevation(mesh, map, seed, opts);
