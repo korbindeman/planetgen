@@ -90,10 +90,43 @@
         outline: 2px solid currentColor;
         outline-offset: -2px;
       }
-      .controls #preset-select { font: inherit; max-width: 100%; }
-      #param-list { margin-top: 0.4rem; }
+      .controls #project-select { font: inherit; max-width: 100%; }
+      .pipeline { margin: 0.55rem 0 0.15rem; }
+      .pipeline .param-group { margin-top: 0; }
+      .pipeline-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0.25rem 0.6rem;
+        font-size: 0.85em;
+        line-height: 1.55;
+      }
+      .pipeline-row .stage { min-width: 0; }
+      .pipeline-row .pipeline-tail {
+        display: flex;
+        align-items: baseline;
+        gap: 0.45rem;
+        flex: 0 0 auto;
+      }
+      .pipeline-row .status {
+        text-align: right;
+        opacity: 0.7;
+      }
+      .pipeline-row.is-empty .stage { opacity: 0.4; }
+      .pipeline-row.is-empty .status { opacity: 0.3; }
+      .pipeline-row.is-later .status { opacity: 0.45; font-style: italic; }
+      .pipeline-row.is-stale .status { font-style: italic; }
+      .pipeline-row .pipeline-action {
+        flex: 0 0 auto;
+        font: inherit;
+        font-size: 0.85em;
+        padding: 0 0.15em;
+        cursor: pointer;
+      }
+      #param-list { margin-top: 0.55rem; }
       /* A parameter row is [pin] name [value] over its slider. The pin is
-         the whole model in one control: filled means this preset decides
+         the whole model in one control: filled means this project decides
          the value, hollow means it is free and a shuffle may move it. */
       .param { display: block; margin: 0.4rem 0; }
       .param-head { display: flex; align-items: baseline; gap: 0.35rem; }
@@ -281,6 +314,55 @@
         display: grid;
         place-items: center;
       }
+      body.search-mode figure {
+        place-items: stretch;
+        overflow: auto;
+      }
+      body.search-mode .globe { display: none; }
+      #search-sheet {
+        display: none;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 100%;
+        padding: 0.7rem 0.8rem 1rem;
+      }
+      body.search-mode #search-sheet { display: block; }
+      #search-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.45rem;
+      }
+      @media (max-width: 1100px) {
+        #search-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      }
+      .search-tile {
+        display: block;
+        width: 100%;
+        padding: 0;
+        border: 0;
+        background: rgba(0, 0, 0, 0.06);
+        line-height: 0;
+        cursor: pointer;
+        outline: 2px solid transparent;
+        outline-offset: 1px;
+      }
+      .search-tile.is-pending { aspect-ratio: 2 / 1; }
+      .search-tile.is-liked { outline-color: currentColor; }
+      .search-tile canvas {
+        width: 100%;
+        height: auto;
+        max-width: none;
+        max-height: none;
+        cursor: pointer;
+      }
+      #search-controls { margin-top: 0.55rem; }
+      #search-ranges {
+        margin-top: 0.35rem;
+        font-size: 0.8em;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.45;
+      }
+      .search-range { opacity: 0.75; }
       .globe {
         position: relative;
         max-width: 100cqw;
@@ -295,7 +377,8 @@
         touch-action: none;
         user-select: none;
       }
-      #plate-overlay {
+      #plate-overlay,
+      #td-overlay {
         position: absolute;
         inset: 0;
         width: 100%;
@@ -304,6 +387,50 @@
         max-height: none;
         pointer-events: none;
         display: none;
+      }
+      #td-crop-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.12rem;
+        margin: 0.15rem 0 0 1.25rem;
+      }
+      #td-crop-list .td-frame {
+        font: inherit;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 0.15em;
+      }
+      #td-crop-list .td-frame:hover { opacity: 0.7; }
+      #td-crop-list .td-name {
+        display: block;
+        width: 100%;
+        margin: 0.25rem 0 0.1rem;
+        font: inherit;
+      }
+      #td-crop-list .td-jobs {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+      #td-crop-list .td-job {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+      }
+      #td-crop-list .td-bar {
+        height: 3px;
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #td-crop-list .td-bar > div {
+        height: 100%;
+        background: #38bdf8;
+        transition: width 0.3s ease-out;
       }
       canvas:active {
         cursor: grabbing;
@@ -390,6 +517,8 @@
         </div>
         <label class="check"><input type="checkbox" oninput="setDrawPlateVectors(this.checked)"><span>Plate vectors</span></label>
         <label class="check"><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)"><span>Plate boundaries</span></label>
+        <label class="check"><input id="td-crops-toggle" type="checkbox" oninput="setTdCrops(this.checked)"><span>TD crops</span></label>
+        <div id="td-crop-list" hidden></div>
         <div class="globe-only">
           <label class="field"><span>Sphere rotation</span>
             <input id="sphere-rotation" type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)">
@@ -398,13 +527,24 @@
       </details>
 
       <details class="panel" open>
-        <summary>Planet</summary>
+        <summary>Project</summary>
         <div class="row">
-          <select id="preset-select" aria-label="Preset" onchange="loadPreset(this.value)"></select>
-          <span id="preset-state" class="muted"></span>
+          <select id="project-select" aria-label="Project" onchange="loadProject(this.value)"></select>
+          <button type="button" id="search-start" onclick="enterSearch()">Search</button>
+          <span id="project-state" class="muted"></span>
+        </div>
+        <div id="project-pipeline" class="pipeline" hidden></div>
+        <div id="search-controls" hidden>
+          <div class="row">
+            <button type="button" id="search-next" onclick="nextSearch()">Next generation</button>
+            <button type="button" id="search-back" onclick="backSearch()" disabled>Back</button>
+            <button type="button" id="search-done" onclick="doneSearch()">Done</button>
+          </div>
+          <div id="search-status" class="muted"></div>
+          <div id="search-ranges"></div>
         </div>
         <!-- Generated from params.js: every exposed parameter, with a pin
-             toggle. Pinned means this preset decides it; free means it is
+             toggle. Pinned means this project decides it; free means it is
              left at its default and a shuffle may move it. -->
         <div id="param-list"></div>
       </details>
@@ -424,7 +564,7 @@
       <details class="panel" open>
         <summary>Seed</summary>
         <div class="row">
-          <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="88" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
+          <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="1003" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
           <button type="button" onclick="shuffleSeed()">Shuffle</button>
         </div>
         <div class="row">
@@ -448,8 +588,12 @@
     </div>
 
     <figure>
+      <div id="search-sheet" hidden>
+        <div id="search-grid"></div>
+      </div>
       <div class="globe">
         <canvas id="output" width="1024" height="1024"></canvas>
+        <canvas id="td-overlay" width="1024" height="1024"></canvas>
         <canvas id="plate-overlay" width="1024" height="1024"></canvas>
         <div class="globe-hud">
           <button type="button" class="globe-hud-btn view-mode-toggle" title="Equirectangular map" aria-label="Equirectangular map">

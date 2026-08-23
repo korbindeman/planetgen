@@ -1,6 +1,6 @@
 node_modules/
 build/
-preview/**/*.png
-preview/**/*.tif
-preview/terrain-diffusion/**
+preview/**
+!preview/.gitkeep
+src/.td-overlays/
 .DS_Store

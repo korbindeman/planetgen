@@ -2,12 +2,12 @@
 /**
  * Crop a preview PNG so a local feature can be judged at a useful size.
  *
- *   bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400
- *   bun run crop preview/compare.png --x=100 --y=80 --w=500 --h=500
- *   bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400 --out=preview/crop-coast.png
+ *   bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400
+ *   bun run crop preview/thalos/compare.png --x=100 --y=80 --w=500 --h=500
+ *   bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400 --out=preview/thalos/crop-coast.png
  *
- * Writes preview/crop.png unless --out is set. Coordinates are pixels from
- * the top-left of the source image.
+ * Writes crop.png next to the source unless --out is set. Coordinates are
+ * pixels from the top-left of the source image.
  */
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -36,7 +36,7 @@ console.log(`${width}x${height} from ${img.width}x${img.height} at ${left},${top
 function parseArgs(argv) {
   let src;
   let x = 0, y = 0, w, h;
-  let out = join(root, "preview", "crop.png");
+  let out;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--x") x = nextNum(argv, ++i, arg);
@@ -63,6 +63,7 @@ function parseArgs(argv) {
     }
   }
   if (!src) throw new Error("crop needs a PNG path");
+  if (out == null) out = join(dirname(src), "crop.png");
   if (w == null || h == null || Number.isNaN(w) || Number.isNaN(h)) {
     throw new Error("crop needs --w and --h (pixels)");
   }

@@ -21,8 +21,8 @@ failure.
 2. Read the **compare** sheet if it exists, otherwise the latest capture.
 3. Crop in when the feature is small on the full frame — a coast, a belt, a
    plate edge, a rain shadow. Whole-planet shots hide local shape.
-   `bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400`
-   writes `preview/crop.png`. Then read that.
+   `bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400`
+   writes `preview/thalos/crop.png`. Then read that.
 4. Judge the image, then change the code and repeat.
 
 A failure that hits every seed looks like a bad roll if you only capture
@@ -30,14 +30,14 @@ one. Use `bun run sheet` when judging how a change reads across seeds.
 
 | View | Read | Use when |
 | --- | --- | --- |
-| globe | `preview/compare.png` or `preview/planet.png` | 3D relief, lighting, land on the sphere, polar caps, mesh/camera. 2×2 of longitudes 0° / 90° / 180° / 270°. |
-| equirect | `preview/equirect-compare.png` or `preview/equirect.png` | Whole-world layout, continent arrangement, wrap, climate belts, ice bands. |
-| plates | `preview/plates-compare.png` / `preview/plates.png` and the equirect pair | Plate shapes, mixed land/ocean on a plate (darker = underwater), motion arrows. |
+| globe | `preview/thalos/compare.png` or `preview/thalos/planet.png` | 3D relief, lighting, land on the sphere, polar caps, mesh/camera. 2×2 of longitudes 0° / 90° / 180° / 270°. |
+| equirect | `preview/thalos/equirect-compare.png` or `preview/thalos/equirect.png` | Whole-world layout, continent arrangement, wrap, climate belts, ice bands. |
+| plates | `preview/thalos/plates-compare.png` / `preview/thalos/plates.png` and the equirect pair | Plate shapes, mixed land/ocean on a plate (darker = underwater), motion arrows. |
 
 Read **both** globe and equirect after geography, climate, or colormap
 changes. After plate or plate-motion changes, read **both plate captures**.
 Globe hides the far side; equirect hides how it reads as a planet. History:
-`preview/history/`, plus the `*-before.png` files.
+`preview/thalos/history/` (or `preview/earth/` when `--earth`), plus the `*-before.png` files.
 
 Do not finish visual work from code or from a number. Do not open the
 interactive app in any built-in agent browser. Leave that to the user

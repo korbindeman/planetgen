@@ -1,9 +1,9 @@
 /*
  * Conditioning-sketch export.
  *
- * Writes the five-channel GeoTIFF handoff terrain-diffusion reads.
- * The CLI is still `bun run export:td`; this package is the place that
- * work moves into, and the rasterizers the script already uses.
+ * Rasterizers live on the Planet document. Writing a project's crop set
+ * is `scripts/export-project.mjs` — the CLI and the bake server both
+ * call it. Crops go in preview/<name>/.
  */
 'use strict';
 

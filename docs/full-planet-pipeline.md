@@ -54,7 +54,7 @@ Trial before committing: one T21 run (minutes/year) on a planetgen heightmap, ey
 
 Regional crops work today (preparing-for-diffusion.md). The full planet is different: `tiff-export` on the whole equirect raster is explicitly wrong (pole distortion, one giant job). The plan:
 
-- **Cubesphere, equal-angle mapping.** Six square faces, quadtree per face, 512² tiles. Equal-angle keeps pixel scale within ~1.3× worst case (raw gnomonic hits ~2.3× at corners); a "90 m" corner tile is really ~115 m/px, within tolerance for the model's learned statistics. The face-adjacency table (edges, rotations) is the foundation everything shares: conditioning margins, hydrology routing, rendering skirts.
+- **Cubesphere, equal-angle mapping.** Six square faces, quadtree per face, 512² tiles. Equal-angle keeps pixel scale within **√2 = 1.41×** worst case, against ~2.12× for raw gnomonic; a "90 m" pixel is really 90–127 m/px depending where on the face it lands, worst at an edge midpoint, and that is within tolerance for the model's learned statistics. (This entry read ~1.3× / ~115 m before `src/cubesphere.js` made it measurable — the analytic scale is `(1+X²)√(1+Y²)/r²`, and `bun run check:tiles` now pins the ratio to √2 so a drift back toward gnomonic fails loudly.) The face-adjacency table (edges, rotations) is the foundation everything shares: conditioning margins, hydrology routing, rendering skirts.
 - **Generate per face** on the face's raster via `WorldPipeline` + `set_custom_conditioning_import()`, not `tiff-export`: conditioning for each face is the coarse map reprojected into that face's projection, extended past the edges with reprojected neighbor-face data so the 64-cell context pad sees real terrain, not `mode="edge"` repetition.
 - **Seams**: overlap generation bands across face edges and blend elevation in the overlap; corners (three faces meet) are the ugly case. The unmerged terrain-diffusion PR #15 "Sphere export" does cube-face sampling and is prior art to read, not code to trust. This is the one piece of genuinely novel engineering in the whole pipeline — **open** until proven on one edge and one corner.
 - **Poles**: cubesphere kills the equirect-distortion problem, but the ±60° training clip remains. Mitigation: pin climate channels cold at high SNR (the model saw cold-dry terrain south of 60°) and treat ice sheets as a post-pass. **Open** until a polar face looks right.
@@ -70,9 +70,9 @@ The model floor is 90 m. Ground-level gameplay needs ~1 m. That layer is non-ML 
 
 ## Where things live
 
-- **planetgen (this repo)**: the base, unchanged scope. The only change this plan asks of it: when ExoPlaSim graduates from trial, `export:td` grows a mode that takes bake-time climate rasters instead of deriving channels from `climate.js`.
-- **~/dev/terrain-diffusion**: sibling checkout, upstream untouched.
-- **Bake pipeline** (cubesphere store, face generation, seam blending, ExoPlaSim driver, hydrology): a new sibling repo when the work starts. Integrating it here is explicitly out of scope per CLAUDE.md. (`~/dev/fomel` was created for this and abandoned empty; start fresh when the time comes.)
+- **planetgen (this repo)**: the studio. The base, project pins, regional preview bakes, and pipeline status live here. Do not vendor terrain-diffusion. When ExoPlaSim graduates from trial, `export:td` grows a mode that takes bake-time climate rasters instead of deriving channels from `climate.js`.
+- **~/dev/terrain-diffusion**: sibling checkout, upstream untouched. The app kicks `tiff-export` as a subprocess.
+- **Cubesphere bake** (faces, seams, full 90 m job, hydrology on the DEM): still `@planetgen/bake`, a named slot. Regional crops come first.
 
 ## Order of attack
 

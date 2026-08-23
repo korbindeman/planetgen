@@ -1,7 +1,7 @@
 /*
  * Frozen pipeline config.
  *
- * A preset resolve plus caller overrides, snapshotted once. Models still
+ * A project resolve plus caller overrides, snapshotted once. Models still
  * call World.derive themselves (climate rates depend on the mesh they
  * run on), but they merge this snapshot over pristine DEFAULTS — nobody
  * writes through to the module objects.
@@ -13,7 +13,7 @@ const Tectonics = require('../tectonics');
 const Climate = require('../climate');
 const Detail = require('../detail');
 const EarthFixture = require('../earth-fixture');
-const Presets = require('../presets');
+const Projects = require('../projects');
 
 const BODY_KEYS = [
     'radiusKm', 'gravityG', 'landFraction',
@@ -26,33 +26,37 @@ function freezeBag(bag) {
 }
 
 
-function resolvePreset(input) {
+function pickProject(input) {
+    if (EarthFixture.isEarthSeed(input.seed)) return Projects.byName('earth');
+    if (typeof input.project === 'string') return Projects.byName(input.project);
+    if (input.project && typeof input.project === 'object' && input.project.name) {
+        return input.project;
+    }
+    return Projects.byName(Projects.DEFAULT);
+}
+
+
+function resolveProject(input) {
+    const named = pickProject(input);
+    /* `values` is the complete pin set when the caller has one (the app's
+     * panel, a sheet that already copied the project). Do not merge the
+     * project's pins back over it — that would re-pin anything the user
+     * just freed. No values means use the project as authored. */
     const values = input.values
-        || (input.preset && typeof input.preset === 'object' && input.preset.values)
-        || {};
-    if (typeof input.preset === 'string') {
-        const named = Presets.byName(input.preset);
-        return Presets.resolve({
-            name: named.name,
-            seed: named.seed,
-            values: Object.assign({}, named.values, values),
-        });
-    }
-    if (input.preset && typeof input.preset === 'object' && input.preset.name) {
-        return Presets.resolve({
-            name: input.preset.name,
-            seed: input.preset.seed,
-            values: Object.assign({}, input.preset.values || {}, values),
-        });
-    }
-    return Presets.resolve({name: 'defaults', values});
+        || (input.project && typeof input.project === 'object' && input.project.values)
+        || named.values;
+    return Projects.resolve({
+        name: named.name,
+        seed: named.seed,
+        values,
+    });
 }
 
 
 /* One immutable config. `derived` is a snapshot at the sim mesh size, for
  * the document and for inspection — climate still derives per mesh. */
 function freezeConfig(input = {}) {
-    const resolved = resolvePreset(input);
+    const resolved = resolveProject(input);
     const world = Object.assign({}, resolved.options.world, input.world);
     const tectonics = Object.assign(
         {},
@@ -73,7 +77,7 @@ function freezeConfig(input = {}) {
         ? (EarthFixture.isEarthSeed(input.seed) ? EarthFixture.TOKEN : (input.seed | 0) || 1)
         : (resolved.seed != null
             ? (EarthFixture.isEarthSeed(resolved.seed) ? EarthFixture.TOKEN : resolved.seed)
-            : 88);
+            : Projects.byName(Projects.DEFAULT).seed);
     const n = input.n == null ? 10000 : (input.n | 0);
     const jitter = input.jitter == null ? 0.75 : input.jitter;
 
@@ -101,7 +105,7 @@ function freezeConfig(input = {}) {
         options,
         derived: Object.freeze(derived),
         pins: resolved.pins,
-        preset: resolved.preset ? resolved.preset.name : 'defaults',
+        project: resolved.project ? resolved.project.name : Projects.DEFAULT,
     });
 }
 
@@ -123,11 +127,11 @@ function modelOptions(config, module, extra) {
 function assertPristineDefaults() {
     const problems = [];
     const pairs = [
-        ['world', World.DEFAULTS, Presets.PRISTINE.world],
-        ['tectonics', Tectonics.DEFAULTS, Presets.PRISTINE.tectonics],
-        ['climate', Climate.DEFAULTS, Presets.PRISTINE.climate],
-        ['detail', Detail.DEFAULTS, Presets.PRISTINE.detail],
-        ['fixture', EarthFixture.DEFAULTS, Presets.PRISTINE.fixture],
+        ['world', World.DEFAULTS, Projects.PRISTINE.world],
+        ['tectonics', Tectonics.DEFAULTS, Projects.PRISTINE.tectonics],
+        ['climate', Climate.DEFAULTS, Projects.PRISTINE.climate],
+        ['detail', Detail.DEFAULTS, Projects.PRISTINE.detail],
+        ['fixture', EarthFixture.DEFAULTS, Projects.PRISTINE.fixture],
     ];
     for (const [name, live, pristine] of pairs) {
         for (const key of Object.keys(pristine)) {

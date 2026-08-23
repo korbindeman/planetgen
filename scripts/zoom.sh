@@ -2,12 +2,12 @@
 # Regional zoom compare: our equirect next to the real Earth.
 #   scripts/zoom.sh <name> <lonWest> <lonEast> <latNorth> <latSouth>
 # Both images are 2:1 equirects with lon 0 at the centre. Output goes to
-# preview/zoom-<name>.png with ours on the left, Earth on the right.
+# preview/earth/zoom-<name>.png with ours on the left, Earth on the right.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAME=$1; LON0=$2; LON1=$3; LAT0=$4; LAT1=$5
-MINE=preview/equirect.png
+MINE=preview/earth/equirect.png
 REF=reference/earth-equirect.jpg
 
 crop() { # file width height out
@@ -20,7 +20,8 @@ crop() { # file width height out
   magick "$F" -crop "${CW}x${CH}+${X}+${Y}" +repage -resize x520 "$OUT"
 }
 
+mkdir -p preview/earth
 crop "$MINE" 2048 1024 /tmp/zoom-mine.png
 crop "$REF" 8192 4096 /tmp/zoom-ref.png
-magick /tmp/zoom-mine.png /tmp/zoom-ref.png -background white +append "preview/zoom-$NAME.png"
-echo "preview/zoom-$NAME.png"
+magick /tmp/zoom-mine.png /tmp/zoom-ref.png -background white +append "preview/earth/zoom-$NAME.png"
+echo "preview/earth/zoom-$NAME.png"

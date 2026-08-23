@@ -13,14 +13,14 @@
 const {vec3} = require('gl-matrix');
 const Tectonics = require('./tectonics');
 const PLATE_DATA = require('./earth-plates-data.json');
-const PRESET = require('./presets/earth');
+const PROJECT = require('./projects/earth');
 
 const TOKEN = 'earth';
 const MESH_SEED = 1843;
 
-/* Earth's pins live in `presets/earth.js`, so Earth is a preset like any
- * other rather than a hardcoded block only this file knows about. */
-const EARTH_OPTS = PRESET.values;
+/* Earth's pins live in `projects/earth.js`, so Earth is a project like
+ * Thalos rather than a hardcoded block only this file knows about. */
+const EARTH_OPTS = PROJECT.values;
 
 /* Parameters the fixture has and the simulation does not: the one-shot
  * kinematic paint has no loop to accumulate over. Registered in
@@ -570,7 +570,7 @@ module.exports = {
     MESH_SEED,
     DEFAULTS,
     EARTH_OPTS,
-    PRESET,
+    PROJECT,
     isEarthSeed,
     numericSeed,
     lonLatToXyz,

@@ -19,7 +19,7 @@
 /* Earth, frozen.
  *
  * Every derivation below is a ratio against this, and it must NOT be the
- * mutable DEFAULTS: loading a preset assigns into DEFAULTS, so using that as
+ * mutable DEFAULTS: loading a project assigns into DEFAULTS, so using that as
  * the reference makes the reference move with the value and every ratio
  * collapse to 1. That failed silently — the command line passes overrides and
  * kept working, while the app and the contact sheet quietly stopped scaling
@@ -159,7 +159,7 @@ function ageRelief(opts) {
  * Every factor is exactly 1 at Earth's defaults, so a default run multiplies
  * by 1.0 and is bit-identical to the run before this function existed.
  *
- * One rule worth stating: a derivation is applied *after* a preset sets the
+ * One rule worth stating: a derivation is applied *after* a project sets the
  * parameter, so pinning `orogenyReliefM` gives its value at Earth gravity
  * and this still scales it. Pin `gravityG` to change the scaling. Pinning
  * both ends of a derivation is the case we deliberately do not solve.

@@ -1,0 +1,25 @@
+---
+description: Work happens in a project — Thalos by default, Earth as the reference fixture.
+alwaysApply: true
+---
+
+# Projects
+
+Work in this repo happens in a **project**. There are two: **Thalos** (default)
+and **Earth**. The generator itself is shared; a project is the named world
+you are working on — its pins, seed, and fixture.
+
+- Thalos is the world being discovered. Development, `bun run preview`,
+  `bun run sheet`, and `bun run export:td` run against it unless Earth is
+  asked for.
+- Earth is the present-day reference fixture. Use `--earth` or
+  `--project=earth`, or `bun run check:earth`.
+- Pins live in `src/projects/`. Loading a project assigns the whole set; it
+  does not merge with the last one. Thalos gains a pin when something is
+  decided.
+- A project also owns its artifacts: `preview/<name>/`. Captures, crops
+  and 90 m preview bakes belong to that project and seed. Loading another
+  project must not show the last one's tiles. The preview folder holds
+  only project directories.
+- Do not treat the generator's Earth-calibrated DEFAULTS as a third project.
+  Those are the unmarked baseline the pins sit on.

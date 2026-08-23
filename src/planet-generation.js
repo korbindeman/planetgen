@@ -9,27 +9,49 @@
 function seedFromUrl() {
     try {
         const q = new URLSearchParams(location.search).get('seed');
-        if (q == null || q === '') return 88;
+        if (q == null || q === '') return null;
         if (String(q).trim().toLowerCase() === 'earth') return 'earth';
         const n = Number(q);
-        return Number.isFinite(n) ? (n | 0) : 88;
+        return Number.isFinite(n) ? (n | 0) : null;
     } catch (_) {
-        return 88;
+        return null;
     }
 }
-let seed = seedFromUrl();
+
+function projectFromUrl() {
+    try {
+        const q = new URLSearchParams(location.search).get('project');
+        if (q == null || q === '') return null;
+        const name = String(q).trim().toLowerCase();
+        return name === 'earth' || name === 'thalos' ? name : null;
+    } catch (_) {
+        return null;
+    }
+}
 
 const colormap = require('./colormap');
 const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const Tectonics = require('./tectonics');
 const EarthFixture = require('./earth-fixture');
 const Detail = require('./detail');
-const Presets = require('./presets');
+const Projects = require('./projects');
 const Params = require('./params');
+const Search = require('./search');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 const Planet = require('./planet');
 const Look = require('./look');
+const TdOverlay = require('./td-overlay');
+const TdTile = require('./td-tile');
+const Cubesphere = require('./cubesphere');
 const {clamp01} = Tectonics;
+
+const urlSeed = seedFromUrl();
+const urlProject = projectFromUrl();
+let activeProject = EarthFixture.isEarthSeed(urlSeed) ? 'earth' : (urlProject || Projects.DEFAULT);
+let pins = Object.assign({}, Projects.byName(activeProject).values);
+let seed = urlSeed != null
+    ? (EarthFixture.isEarthSeed(urlSeed) ? EarthFixture.TOKEN : urlSeed)
+    : Projects.byName(activeProject).seed;
 
 const regl = require('regl')({
     canvas: "#output",
@@ -105,18 +127,30 @@ window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
 window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(); };
 window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
-window.setPolarStraits = flag => { polar_straits = !!flag; markPresetModified(); generateMap(); };
+window.setPolarStraits = flag => { polar_straits = !!flag; markProjectModified(); generateMap(); };
 window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
 window.setSimSteps = steps => {
     sim_steps = Math.max(0, steps | 0);
     const label = document.getElementById('sim-steps-label');
     if (label) label.textContent = `${sim_steps * lastResolved.options.tectonics.stepMyr} Myr`;
-    markPresetModified();
+    markProjectModified();
     generateMap();
 };
 window.setDetailPass = flag => { detail_pass = !!flag; generateMap(); };
 window.setDetailN = n => { detailN = Math.max(0, n | 0); generateMap(); };
 window.getSeed = () => seed;
+window.setTdCrops = flag => {
+    TdOverlay.setEnabled(flag);
+    const list = document.getElementById('td-crop-list');
+    if (list) list.hidden = !flag;
+    const toggle = document.getElementById('td-crops-toggle');
+    if (toggle) toggle.checked = !!flag;
+    draw();
+};
+
+function enableTdCrops() {
+    if (!TdOverlay.isEnabled()) window.setTdCrops(true);
+}
 
 const renderPoints = regl({
     frag: `
@@ -407,6 +441,10 @@ window.setSeed = next => {
         if (input) input.value = String(seed);
         return;
     }
+    if (EarthFixture.isEarthSeed(parsed) && activeProject !== 'earth') {
+        window.loadProject('earth');
+        return;
+    }
     commitSeed(parsed);
 };
 /* Override a tectonic option and rebuild, so a parameter can be judged from a
@@ -414,32 +452,30 @@ window.setSeed = next => {
 window.setTectonicOption = (key, value) => {
     if (!(key in Tectonics.DEFAULTS)) throw new Error(`unknown tectonic option: ${key}`);
     pins[key] = value;
-    markPresetModified();
+    markProjectModified();
     applyPins(true);
 };
 window.setDetailOption = (key, value) => {
     if (!(key in Detail.DEFAULTS)) throw new Error(`unknown detail option: ${key}`);
     pins[key] = value;
     if (key === 'n') detailN = value | 0;
-    markPresetModified();
+    markProjectModified();
     applyPins(true);
 };
-/* Presets and parameters.
+/* Projects and parameters.
  *
- * A preset is a named set of pins: it decides the parameters it names and
- * leaves the rest free. The panel is that object made visible — `pins` below
- * *is* a preset's `values`, so loading one copies it and editing one adds to
- * it. Controls are generated from `params.js` rather than written out here,
- * so a newly registered parameter appears on its own and there is no second
- * list to keep in step.
+ * A project is a named set of pins: it decides the parameters it names and
+ * leaves the rest free. The panel is that object made visible — `pins`
+ * *is* a project's `values`, so loading one copies it and editing one adds
+ * to it. Controls are generated from `params.js` rather than written out
+ * here, so a newly registered parameter appears on its own and there is no
+ * second list to keep in step.
  *
  * Applying always resolves the whole set from the pristine defaults, so a
  * parameter that stops being pinned goes back to its default instead of
  * keeping the last value it happened to have.
  */
-let activePreset = 'defaults';
-let pins = {};
-let presetModified = false;
+let projectModified = false;
 
 const MODULE_ORDER = ['world', 'tectonics', 'climate', 'detail'];
 const GROUP_LABEL = {body: 'Body', history: 'History', continents: 'Continents',
@@ -455,7 +491,7 @@ function paramOrder() {
 }
 
 function paramValue(name) {
-    return name in pins ? pins[name] : Presets.PRISTINE[Params.all()[name].module][name];
+    return name in pins ? pins[name] : Projects.PRISTINE[Params.all()[name].module][name];
 }
 
 function formatValue(meta, value) {
@@ -469,9 +505,9 @@ function formatValue(meta, value) {
 }
 
 /* `simSteps`, `polarStraits` and `detailN` are passed to the generator from
-   the app's own state (see generateMap). They follow the resolved preset,
+   the app's own state (see generateMap). They follow the resolved project,
    not the module DEFAULTS. */
-function syncPresetShadowedState() {
+function syncProjectShadowedState() {
     const tectonics = lastResolved.options.tectonics;
     const detail = lastResolved.options.detail;
     sim_steps = tectonics.steps;
@@ -518,7 +554,7 @@ function renderParams() {
         pin.className = 'param-pin';
         pin.textContent = pinned ? '◉' : '○';
         pin.setAttribute('aria-pressed', String(pinned));
-        pin.title = pinned ? `${name} is pinned by this preset — click to free it`
+        pin.title = pinned ? `${name} is pinned by this project — click to free it`
                            : `${name} is free — click to pin it at its current value`;
         pin.onclick = () => toggleParamPin(name);
 
@@ -552,62 +588,168 @@ function renderParams() {
     }
 }
 
-function renderPresetState() {
-    const state = document.getElementById('preset-state');
+function renderProjectState() {
+    const state = document.getElementById('project-state');
     if (!state) return;
     const count = Object.keys(pins).length;
-    state.textContent = presetModified ? `${count} pinned, edited` : `${count} pinned`;
+    state.textContent = projectModified ? `${count} pinned, edited` : `${count} pinned`;
 }
 
-let lastResolved = Presets.resolve({name: 'defaults', values: {}});
+let pipelineFact = null;
+let pipelineBakeBusy = false;
+
+function renderPipeline() {
+    const host = document.getElementById('project-pipeline');
+    if (!host) return;
+    const authored = Projects.byName(activeProject);
+    const notes = authored.pipeline || {};
+    const factById = new Map((pipelineFact && pipelineFact.stages || []).map((s) => [s.id, s]));
+    host.textContent = '';
+    host.hidden = false;
+
+    const heading = document.createElement('div');
+    heading.className = 'param-group';
+    heading.textContent = 'Pipeline';
+    host.append(heading);
+
+    for (const stage of Projects.STAGES) {
+        const live = factById.get(stage.id);
+        const intent = (live && live.intent) || notes[stage.id] || '';
+        const fact = live ? live.fact : '';
+        const empty = !intent && !fact;
+        const later = intent === 'later';
+        const row = document.createElement('div');
+        row.className = 'pipeline-row'
+            + (empty ? ' is-empty' : '')
+            + (later ? ' is-later' : '')
+            + (fact === 'stale' ? ' is-stale' : '');
+        if (stage.title) row.title = stage.title;
+
+        const label = document.createElement('span');
+        label.className = 'stage';
+        label.textContent = stage.label;
+
+        const right = document.createElement('span');
+        right.className = 'status';
+        const shown = live ? (fact || '—') : (empty ? '—' : intent);
+        right.textContent = shown;
+        if (intent && intent !== shown) right.title = intent;
+
+        const tail = document.createElement('span');
+        tail.className = 'pipeline-tail';
+        tail.append(right);
+
+        if (stage.id === 'regional' && live && live.canBake && pipelineFact) {
+            const bake = document.createElement('button');
+            bake.type = 'button';
+            bake.className = 'pipeline-action';
+            bake.textContent = pipelineBakeBusy ? 'Baking…' : 'Bake previews';
+            bake.disabled = pipelineBakeBusy;
+            bake.onclick = () => bakeProjectPreviews();
+            tail.append(bake);
+        }
+
+        row.append(label, tail);
+        host.append(row);
+    }
+}
+
+async function refreshPipeline() {
+    TdOverlay.setContext(activeProject, seed);
+    try {
+        const q = new URLSearchParams({project: activeProject, seed: String(seed)});
+        const res = await fetch(`${TdOverlay.TD_API}/pipeline?${q}`);
+        if (res.ok) pipelineFact = await res.json();
+    } catch {
+        /* authored notes only */
+    }
+    renderPipeline();
+}
+
+async function bakeProjectPreviews() {
+    if (pipelineBakeBusy) return;
+    pipelineBakeBusy = true;
+    renderPipeline();
+    enableTdCrops();
+    try {
+        const res = await fetch(`${TdOverlay.TD_API}/preview-bakes`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                project: activeProject,
+                seed,
+                values: pins,
+                connectOceans: connect_oceans,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        TdOverlay.reload();
+        startTdJobPoll();
+        await refreshPipeline();
+    } catch (err) {
+        window.alert(`Bake previews failed: ${err.message || err}`);
+    } finally {
+        pipelineBakeBusy = false;
+        renderPipeline();
+    }
+}
+
+let lastResolved = Projects.resolve({name: activeProject, values: pins});
 
 /* Resolve the whole constraint set. The models read it as a frozen
    snapshot passed into generatePlanet — not by mutating DEFAULTS. */
 function applyPins(rebuild) {
-    lastResolved = Presets.resolve({name: activePreset, values: pins});
-    syncPresetShadowedState();
+    lastResolved = Projects.resolve({name: activeProject, values: pins});
+    syncProjectShadowedState();
     renderParams();
-    renderPresetState();
+    renderProjectState();
+    renderPipeline();
     if (rebuild) generateMesh();
 }
 
 /* Setting a value is what deciding one looks like, so it pins. */
 function setParam(name, value) {
     pins[name] = value;
-    presetModified = true;
+    projectModified = true;
     applyPins(true);
 }
 
 function toggleParamPin(name) {
     if (name in pins) delete pins[name];
     else pins[name] = paramValue(name);
-    presetModified = true;
+    projectModified = true;
     applyPins(true);
 }
 
 /* Any change to a registered parameter after a load means the planet on
-   screen is no longer the preset, so say so rather than keep claiming it. */
-function markPresetModified() {
-    if (presetModified) return;
-    presetModified = true;
-    renderPresetState();
+   screen is no longer the project, so say so rather than keep claiming it. */
+function markProjectModified() {
+    if (projectModified) return;
+    projectModified = true;
+    renderProjectState();
 }
 
-window.loadPreset = name => {
-    const preset = Presets.byName(name);
-    activePreset = preset.name;
-    pins = Object.assign({}, preset.values);
-    presetModified = false;
+window.loadProject = name => {
+    if (searchSession) exitSearch();
+    const project = Projects.byName(name);
+    activeProject = project.name;
+    pins = Object.assign({}, project.values);
+    projectModified = false;
+
+    const select = document.getElementById('project-select');
+    if (select) select.value = activeProject;
 
     applyPins(false);
 
-    /* A preset with no seed is a change of pins, not a change of planet.
+    /* A project with no seed is a change of pins, not a change of planet.
        commitSeed returns early without rebuilding when the seed is already
-       what it asks for, so reloading a preset onto its own seed has to
+       what it asks for, so reloading a project onto its own seed has to
        rebuild here or the pins would change and the planet would not. */
     const before = seed;
-    if (preset.seed != null) commitSeed(preset.seed);
-    if (preset.seed == null || seed === before) generateMesh();
+    if (project.seed != null) commitSeed(project.seed);
+    if (project.seed == null || seed === before) generateMesh();
+    renderSearchChrome();
 };
 
 /* Nothing used to show which view or draw mode was active. */
@@ -620,20 +762,20 @@ function syncModeButtons() {
     }
 }
 
-function populatePresetUI() {
-    const select = document.getElementById('preset-select');
+function populateProjectUI() {
+    const select = document.getElementById('project-select');
     if (select) {
-        for (const preset of Presets.PRESETS) {
+        for (const project of Projects.PROJECTS) {
             const option = document.createElement('option');
-            option.value = preset.name;
-            option.textContent = preset.label;
+            option.value = project.name;
+            option.textContent = project.label;
             select.append(option);
         }
-        select.value = activePreset;
+        select.value = activeProject;
     }
-    renderParams();
-    renderPresetState();
+    applyPins(false);
     syncModeButtons();
+    renderSearchChrome();
 }
 
 window.shuffleSeed = () => {
@@ -858,7 +1000,7 @@ function generateMap() {
         connectOceans: connect_oceans,
         detailPass: detail_pass,
         detailN,
-        preset: activePreset,
+        project: activeProject,
         values: pins,
     }, planetCache);
     simMesh = result.simMesh;
@@ -869,6 +1011,13 @@ function generateMap() {
     overlayColorCache.clear();
     mapId++;
     equirectCache = null;
+    /* The tiles are coloured from this planet's climate, so a regenerate
+     * makes every existing colouring stale. */
+    TdOverlay.repaintSurfaces();
+    syncTdGridLevel();
+    TdOverlay.setContext(activeProject, seed);
+    refreshTdCropList();
+    refreshPipeline();
     draw();
 }
 
@@ -1385,7 +1534,19 @@ function restoreViewState() {
 
 function finishDraw() {
     _draw_pending = false;
-    if (!viewPersistSuspended) paintLivePlateOverlay();
+    if (!viewPersistSuspended) {
+        paintLivePlateOverlay();
+        TdOverlay.paint({
+            viewMode,
+            globeProjection: globeProjectionMatrix(),
+            equirectPanX,
+            equirectPanY,
+            equirectZoom,
+            seed,
+            project: activeProject,
+            zoom: viewMode === 'equirect' ? equirectZoom : zoom,
+        });
+    }
     persistViewState();
     if (!window.__PLANET_READY__) {
         window.__PLANET_READY__ = true;
@@ -1514,6 +1675,10 @@ function rasterizeEquirect(width, height, lon0) {
 
 function rasterizeLonLatBox(westDeg, southDeg, eastDeg, northDeg, width, height, lon0) {
     return Planet.rasterizeLonLatBox(mesh, map, westDeg, southDeg, eastDeg, northDeg, width, height, lon0);
+}
+
+function rasterizeCubeTile(tile, width, height, lon0) {
+    return Planet.rasterizeCubeTile(mesh, map, tile, width, height, lon0);
 }
 
 function latOfRow(y, height) {
@@ -2192,20 +2357,275 @@ function draw() {
     }
 }
 
+/*
+ * One tile's conditioning. The raster is sampled in the tile's own face
+ * space, so the cells sit where the bake will put them; the lon/lat box that
+ * rides along is nominal, for the GeoTIFF's geotransform and for framing the
+ * view. The tile identity is what actually places the result.
+ */
+function exportTdTile(tile) {
+    const cells = tdTileCells();
+    const raw = rasterizeCubeTile(tile, cells, cells, 0);
+    const e = Cubesphere.tileExtent(tile);
+    const layers = fieldsToTdLayers(raw, cells, cells, (row) => {
+        const b = e.b1 - (row + 0.5) / cells * (e.b1 - e.b0);
+        const mid = Cubesphere.xyzToLonLat(Cubesphere.faceDirection(tile.face, (e.a0 + e.a1) / 2, b));
+        return mid.lat * PI / 180;
+    });
+    const box = Cubesphere.tileBBox(tile);
+    return {
+        name: Cubesphere.tileName(tile),
+        tile,
+        west: box.west,
+        south: box.south,
+        east: box.east,
+        north: box.north,
+        cropW: cells,
+        cropH: cells,
+        scaleKm: TdTile.SCALE_KM,
+        seed,
+        project: activeProject,
+        layers: encodeTdLayers(layers),
+    };
+}
+
+/*
+ * Put the picker on a level this planet can actually bake. A tile is a fixed
+ * slice of the sphere, so switching to a bigger planet turns the same level
+ * into a bigger tile — on Earth, level 4 is 27 cells a side, past what the
+ * bake takes. Called whenever the planet or the project changes.
+ */
+function syncTdGridLevel() {
+    const level = Cubesphere.bestLevel(
+        TdTile.TARGET_TILE_KM, tdRadiusKm(), TdTile.SCALE_KM,
+        TdTile.MIN_CELLS, TdTile.MAX_CELLS,
+    );
+    const levels = Cubesphere.usableLevels(
+        tdRadiusKm(), TdTile.SCALE_KM, TdTile.MIN_CELLS, TdTile.MAX_CELLS,
+    );
+    /* Leave a level the user chose alone, as long as it still bakes here. */
+    if (levels.includes(TdOverlay.getGridLevel())) return;
+    TdOverlay.setGridLevel(level);
+}
+
+/* Conditioning cells across a tile, from the planet's own radius — a tile is
+ * a fixed slice of the sphere, so a smaller planet means a smaller tile. */
+function tdTileCells() {
+    return Cubesphere.tileCells(TdOverlay.getGridLevel(), tdRadiusKm(), TdTile.SCALE_KM);
+}
+
+function tdRadiusKm() {
+    return paramValue('radiusKm');
+}
+
+/*
+ * Bake every picked tile, one job each. The server runs them in order, so a
+ * long selection queues rather than piles up, and a tile that fails takes
+ * only itself down.
+ */
+async function bakeTdDraft() {
+    const tiles = TdOverlay.getPicked();
+    if (!tiles.length) return;
+    const bakeBtn = document.querySelector('#td-crop-list button');
+    if (bakeBtn) bakeBtn.disabled = true;
+    const failed = [];
+    for (const tile of tiles) {
+        try {
+            const res = await fetch(`${TdOverlay.TD_API}/jobs`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(exportTdTile(tile)),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || res.statusText);
+        } catch (err) {
+            failed.push(`${Cubesphere.tileName(tile)}: ${err.message || err}`);
+        }
+    }
+    if (failed.length) window.alert(`Bake failed for ${failed.length} tile(s):\n${failed.join('\n')}`);
+    else TdOverlay.clearPicked();
+    TdOverlay.reload();
+    startTdJobPoll();
+    refreshPipeline();
+    draw();
+}
+
+let tdPollTimer = 0;
+function jobBusy(job) {
+    return job.status !== 'done' && job.status !== 'error';
+}
+
+function startTdJobPoll() {
+    if (tdPollTimer) return;
+    let inFlight = false;
+    let seenBusy = TdOverlay.getJobs().some(jobBusy);
+    let idleTicks = 0;
+    const tick = () => {
+        if (inFlight) return;
+        inFlight = true;
+        const before = TdOverlay.getJobs();
+        TdOverlay.pollJobs()
+            .then((after) => {
+                const list = Array.isArray(after) ? after : [];
+                const busy = list.some(jobBusy);
+                if (busy) {
+                    seenBusy = true;
+                    idleTicks = 0;
+                } else {
+                    idleTicks += 1;
+                }
+                const finished = list.some((job) => {
+                    const prev = before.find((j) => (j.id || j.name) === (job.id || job.name));
+                    return prev && jobBusy(prev) && !jobBusy(job);
+                });
+                if (finished) {
+                    TdOverlay.reload();
+                    refreshPipeline();
+                }
+                /* Stop only after a jobs fetch says the queue is idle. Checking
+                 * the list before that fetch returned used to kill the poll
+                 * while the first reload was still in flight, so the bar
+                 * never moved again. */
+                if ((seenBusy && idleTicks >= 2) || idleTicks >= 15) {
+                    clearInterval(tdPollTimer);
+                    tdPollTimer = 0;
+                    TdOverlay.reload();
+                    refreshPipeline();
+                }
+            })
+            .catch(() => {
+                idleTicks += 1;
+            })
+            .finally(() => {
+                inFlight = false;
+            });
+    };
+    tick();
+    tdPollTimer = setInterval(tick, 400);
+}
+
+function canvasToClip(x, y, width, height) {
+    return {
+        x: (x / width) * 2 - 1,
+        y: -((y / height) * 2 - 1),
+    };
+}
+
+function canvasToLonLat(x, y, width, height) {
+    if (viewMode === 'equirect') {
+        const clip = canvasToClip(x, y, width, height);
+        const lonDeg = ((clip.x / equirectZoom) - equirectPanX) * 180;
+        const latDeg = ((clip.y / equirectZoom) - equirectPanY) * 90;
+        return {
+            lon: TdTile.wrapLon(lonDeg),
+            lat: Math.max(-89.9, Math.min(89.9, latDeg)),
+        };
+    }
+    const {x: ndcX, y: ndcY} = canvasToClip(x, y, width, height);
+    const inv = mat4.invert(mat4.create(), globeProjectionMatrix());
+    if (!inv) return null;
+    const a = vec4.transformMat4([], [ndcX, ndcY, -1, 1], inv);
+    const b = vec4.transformMat4([], [ndcX, ndcY, 1, 1], inv);
+    const aw = a[3] || 1, bw = b[3] || 1;
+    const ax = a[0] / aw, ay = a[1] / aw, az = a[2] / aw;
+    const dx = b[0] / bw - ax, dy = b[1] / bw - ay, dz = b[2] / bw - az;
+    const o2 = ax * ax + ay * ay + az * az;
+    const od = ax * dx + ay * dy + az * dz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    const disc = od * od - d2 * (o2 - 1);
+    if (disc < 0 || d2 < 1e-12) return null;
+    const t = (-od - Math.sqrt(disc)) / d2;
+    const px = ax + t * dx, py = ay + t * dy, pz = az + t * dz;
+    return {
+        lon: Math.atan2(py, px) * 180 / Math.PI,
+        lat: Math.asin(Math.max(-1, Math.min(1, pz))) * 180 / Math.PI,
+    };
+}
+
+/*
+ * Zoom is a uniform scale about the view centre. After the scale, this
+ * turns the globe so `lonLat` still sits on the same clip ray — otherwise
+ * the wheel always dives into the middle of the frame.
+ */
+function rotateGlobePointToClip(lonLat, clipX, clipY) {
+    const P = Cubesphere.lonLatToXyz(lonLat.lon, lonLat.lat);
+    const V = vec3.transformMat4([], P, globeViewMatrix(mat4.create()));
+    let vx = clipX / zoom;
+    let vy = clipY / zoom;
+    const r2 = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+    const xy2 = vx * vx + vy * vy;
+    const maxXy2 = r2 * 0.999999;
+    if (xy2 > maxXy2) {
+        const s = Math.sqrt(maxXy2 / xy2);
+        vx *= s;
+        vy *= s;
+    }
+    const vz = (V[2] <= 0 ? -1 : 1) * Math.sqrt(Math.max(0, r2 - vx * vx - vy * vy));
+    const from = vec3.normalize([], V);
+    const to = vec3.normalize([], [vx, vy, vz]);
+    const R = mat4.fromQuat(mat4.create(), quat.rotationTo(quat.create(), from, to));
+    mat4.multiply(dragRotation, R, dragRotation);
+}
+
+function eventCanvasPoint(event, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: (event.clientX - rect.left) / rect.width * canvas.width,
+        y: (event.clientY - rect.top) / rect.height * canvas.height,
+    };
+}
+
+/* The tile under a canvas point, at the picker's current level. */
+function tileAtCanvas(x, y, canvas) {
+    const at = canvasToLonLat(x, y, canvas.width, canvas.height);
+    if (!at) return null;
+    return Cubesphere.tileAt(at.lon, at.lat, TdOverlay.getGridLevel());
+}
+
 function setupDragRotation() {
     const canvas = document.getElementById('output');
     canvas.style.cursor = 'grab';
     canvas.style.touchAction = 'none';
     canvas.style.userSelect = 'none';
 
-    const ZOOM_MIN = 0.4;
-    const ZOOM_MAX = 8;
+    const ZOOM_MIN = TdTile.ZOOM_MIN;
+    const ZOOM_MAX = TdTile.ZOOM_MAX;
     const pointers = new Map();
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
     let pinchStartDist = 0;
     let pinchStartZoom = 1;
+
+    /*
+     * Tile picking. `anchor` is the tile the drag started on and never moves,
+     * so the selection is always exactly the rectangle between it and the
+     * tile under the cursor — nothing is interpolated, quantised or
+     * re-centred on the way, which is what used to make the box trail behind.
+     * The selection is left alone until the pointer actually leaves the
+     * anchor tile, so a press that turns out to be a click can still toggle.
+     */
+    let picking = false;
+    let anchor = null;
+    let moved = false;
+    let shiftHeld = false;
+    let overCanvas = false;
+
+    /* Where the pointer last was, so pressing shift without moving the mouse
+     * still lights up the tile under it. */
+    let hoverX = 0;
+    let hoverY = 0;
+
+    /* The grid belongs to the pointer, not the keyboard: it appears when
+     * shift is held *over the canvas*, so a shift-something shortcut typed
+     * elsewhere does not flash it. */
+    function refreshGrid() {
+        const show = picking || (shiftHeld && overCanvas);
+        let changed = TdOverlay.setGridShown(show);
+        const tile = show && !picking ? tileAtCanvas(hoverX, hoverY, canvas) : null;
+        if (TdOverlay.setHoverTile(show ? tile : null)) changed = true;
+        return changed;
+    }
 
     function clampZoom(value) {
         return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
@@ -2220,12 +2640,27 @@ function setupDragRotation() {
         return viewMode === 'equirect' ? equirectZoom : zoom;
     }
 
-    function setCurrentZoom(value) {
+    function setCurrentZoom(value, focus) {
+        const next = clampZoom(value);
         if (viewMode === 'equirect') {
-            equirectZoom = clampZoom(value);
+            const prev = equirectZoom;
+            if (focus && next !== prev) {
+                const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
+                equirectPanX = wrapPanX(equirectPanX + clip.x * (1 / next - 1 / prev));
+                equirectPanY += clip.y * (1 / next - 1 / prev);
+            }
+            equirectZoom = next;
             clampEquirectPanY();
-        } else {
-            zoom = clampZoom(value);
+            return;
+        }
+        const prev = zoom;
+        const at = focus && next !== prev
+            ? canvasToLonLat(focus.x, focus.y, canvas.width, canvas.height)
+            : null;
+        zoom = next;
+        if (at) {
+            const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
+            rotateGlobePointToClip(at, clip.x, clip.y);
         }
     }
 
@@ -2245,6 +2680,25 @@ function setupDragRotation() {
             return;
         }
         if (event.button !== 0) return;
+        if (event.shiftKey) {
+            const pt = eventCanvasPoint(event, canvas);
+            const tile = tileAtCanvas(pt.x, pt.y, canvas);
+            if (tile) {
+                enableTdCrops();
+                picking = true;
+                anchor = tile;
+                moved = false;
+                /* Show the anchor immediately, so a press reads as a hit
+                 * even before the pointer moves. */
+                TdOverlay.setHoverTile(tile);
+                refreshGrid();
+                canvas.setPointerCapture(event.pointerId);
+                canvas.style.cursor = 'crosshair';
+                event.preventDefault();
+                draw();
+                return;
+            }
+        }
         dragging = true;
         lastX = event.clientX;
         lastY = event.clientY;
@@ -2257,9 +2711,36 @@ function setupDragRotation() {
         if (pointers.has(event.pointerId)) {
             pointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
         }
+        const here = eventCanvasPoint(event, canvas);
+        hoverX = here.x;
+        hoverY = here.y;
         if (pointers.size === 2 && pinchStartDist > 0) {
-            setCurrentZoom(pinchStartZoom * (pointerDistance() / pinchStartDist));
+            const pts = Array.from(pointers.values());
+            const rect = canvas.getBoundingClientRect();
+            setCurrentZoom(pinchStartZoom * (pointerDistance() / pinchStartDist), {
+                x: ((pts[0].x + pts[1].x) / 2 - rect.left) / rect.width * canvas.width,
+                y: ((pts[0].y + pts[1].y) / 2 - rect.top) / rect.height * canvas.height,
+            });
             draw();
+            return;
+        }
+        if (picking) {
+            const tile = tileAtCanvas(hoverX, hoverY, canvas);
+            if (!tile) return;
+            /* Until the pointer leaves the anchor tile this is still a click,
+             * and the selection it might toggle has to stay untouched. */
+            if (!moved && !Cubesphere.sameTile(tile, anchor)) {
+                moved = true;
+                TdOverlay.setHoverTile(null);
+            }
+            if (moved) {
+                TdOverlay.setPicked(Cubesphere.tileRange(anchor, tile));
+                draw();
+            }
+            return;
+        }
+        if (!dragging && shiftHeld) {
+            if (TdOverlay.setHoverTile(tileAtCanvas(hoverX, hoverY, canvas))) draw();
             return;
         }
         if (!dragging) return;
@@ -2288,6 +2769,21 @@ function setupDragRotation() {
     });
 
     function endDrag(event) {
+        if (picking) {
+            const pt = eventCanvasPoint(event, canvas);
+            const tile = tileAtCanvas(pt.x, pt.y, canvas) || anchor;
+            /* A press that never left its tile is a click: it adds that tile
+             * to the selection, or takes it back out. A drag replaces the
+             * selection with the rectangle it covered. */
+            if (moved) TdOverlay.setPicked(Cubesphere.tileRange(anchor, tile));
+            else TdOverlay.togglePicked(anchor);
+            picking = false;
+            anchor = null;
+            moved = false;
+            refreshGrid();
+            canvas.style.cursor = 'grab';
+            draw();
+        }
         pointers.delete(event.pointerId);
         if (pointers.size === 1) {
             const remaining = pointers.values().next().value;
@@ -2305,12 +2801,458 @@ function setupDragRotation() {
     canvas.addEventListener('pointerup', endDrag);
     canvas.addEventListener('pointercancel', endDrag);
 
+    canvas.addEventListener('pointerenter', (event) => {
+        overCanvas = true;
+        const here = eventCanvasPoint(event, canvas);
+        hoverX = here.x;
+        hoverY = here.y;
+        if (refreshGrid()) draw();
+    });
+    canvas.addEventListener('pointerleave', () => {
+        overCanvas = false;
+        if (refreshGrid()) draw();
+    });
+
+    /*
+     * Shift is a held state, not an event, so it is tracked on the window:
+     * pressing it with the pointer already still over the canvas has to show
+     * the grid, and losing the window while it is down has to hide it again
+     * rather than leave the grid stuck on.
+     */
+    window.addEventListener('keydown', (event) => {
+        if (event.key !== 'Shift' || shiftHeld) return;
+        shiftHeld = true;
+        if (refreshGrid()) draw();
+    });
+    window.addEventListener('keyup', (event) => {
+        if (event.key !== 'Shift') return;
+        shiftHeld = false;
+        if (refreshGrid()) draw();
+    });
+    window.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || !TdOverlay.getPicked().length) return;
+        TdOverlay.clearPicked();
+        draw();
+    });
+    window.addEventListener('blur', () => {
+        if (!shiftHeld) return;
+        shiftHeld = false;
+        if (refreshGrid()) draw();
+    });
+
     canvas.addEventListener('wheel', (event) => {
         event.preventDefault();
-        setCurrentZoom(currentZoom() * Math.exp(-event.deltaY * 0.002));
+        setCurrentZoom(
+            currentZoom() * Math.exp(-event.deltaY * 0.002),
+            eventCanvasPoint(event, canvas),
+        );
         draw();
     }, {passive: false});
 }
+
+function frameTdCrop(crop) {
+    const next = TdOverlay.frameView(crop);
+    if (viewMode !== 'equirect') {
+        viewMode = 'equirect';
+        syncViewModeDom();
+        syncModeButtons();
+    }
+    const startX = equirectPanX;
+    const startY = equirectPanY;
+    const startZ = equirectZoom;
+    const targetX = wrapPanX(next.equirectPanX);
+    const targetY = next.equirectPanY;
+    const targetZ = next.equirectZoom;
+    let dx = targetX - startX;
+    if (dx > 1) dx -= 2;
+    if (dx < -1) dx += 2;
+    animateView((eased) => {
+        equirectPanX = wrapPanX(startX + dx * eased);
+        equirectPanY = startY + (targetY - startY) * eased;
+        equirectZoom = startZ + (targetZ - startZ) * eased;
+    });
+}
+
+function refreshTdCropList() {
+    TdOverlay.renderCropList(document.getElementById('td-crop-list'), {
+        seed,
+        radiusKm: tdRadiusKm(),
+        scaleKm: TdTile.SCALE_KM,
+        minCells: TdTile.MIN_CELLS,
+        maxCells: TdTile.MAX_CELLS,
+        onToggle: (name, on) => {
+            TdOverlay.setCropOn(name, on);
+            if (mesh) draw();
+        },
+        onFrame: frameTdCrop,
+        onBake: bakeTdDraft,
+        onClearDraft: () => {
+            TdOverlay.clearPicked();
+            draw();
+        },
+        onLevel: (level) => {
+            TdOverlay.setGridLevel(level);
+            draw();
+        },
+    });
+}
+
+/*
+ * Colour a baked tile with the globe's own surface look.
+ *
+ * The bake gives back elevation in metres and nothing else. Albedo needs
+ * moisture and temperature too, and those come from this planet's climate
+ * under the tile — rasterized at the coarse grain and sampled up — so the
+ * tile is lit and coloured by exactly the same rules as the mesh it sits on,
+ * and follows any look change instead of being a picture from bake time.
+ */
+const TD_CLIMATE_CELLS = 32;
+
+function paintTdSurface(crop) {
+    const w = crop.elevWidth;
+    const h = crop.elevHeight;
+    if (!(w > 0 && h > 0) || !crop.elevM) return null;
+
+    const climate = tdClimateUnder(crop);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const out = ctx.createImageData(w, h);
+    const px = out.data;
+
+    /* Metres to the elevation units Look speaks, once per sample. */
+    const e = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) e[i] = Tectonics.metersToElevation(crop.elevM[i]);
+
+    for (let y = 0; y < h; y++) {
+        const y0 = y === 0 ? y : y - 1;
+        const y1 = y === h - 1 ? y : y + 1;
+        for (let x = 0; x < w; x++) {
+            const i = y * w + x;
+            const fx = (x + 0.5) / w;
+            const fy = (y + 0.5) / h;
+            const moist = sampleTdField(climate.moist, climate.n, fx, fy);
+            const temp = sampleTdField(climate.temp, climate.n, fx, fy);
+            const [r, g, b] = Look.surfaceAlbedo(e[i], moist, temp);
+            const x0 = x === 0 ? x : x - 1;
+            const x1 = x === w - 1 ? x : x + 1;
+            const shade = Look.hillshade(
+                (e[y * w + x1] - e[y * w + x0]) / (x1 - x0),
+                (e[y1 * w + x] - e[y0 * w + x]) / (y1 - y0),
+            );
+            px[i * 4] = Math.round(r * shade * 255);
+            px[i * 4 + 1] = Math.round(g * shade * 255);
+            px[i * 4 + 2] = Math.round(b * shade * 255);
+            px[i * 4 + 3] = 255;
+        }
+    }
+    ctx.putImageData(out, 0, 0);
+    return canvas;
+}
+
+/* This planet's moisture and temperature under a crop, coarse. */
+function tdClimateUnder(crop) {
+    const n = TD_CLIMATE_CELLS;
+    const raw = crop.tile
+        ? rasterizeCubeTile(crop.tile, n, n, 0)
+        : rasterizeLonLatBox(crop.west, crop.south, crop.east, crop.north, n, n, 0);
+    return {n, moist: raw.moist, temp: raw.temp};
+}
+
+function sampleTdField(field, n, fx, fy) {
+    const u = Math.max(0, Math.min(n - 1.001, fx * n - 0.5));
+    const v = Math.max(0, Math.min(n - 1.001, fy * n - 0.5));
+    const x0 = Math.floor(u);
+    const y0 = Math.floor(v);
+    const x1 = Math.min(n - 1, x0 + 1);
+    const y1 = Math.min(n - 1, y0 + 1);
+    const tx = u - x0;
+    const ty = v - y0;
+    return field[y0 * n + x0] * (1 - tx) * (1 - ty)
+        + field[y0 * n + x1] * tx * (1 - ty)
+        + field[y1 * n + x0] * (1 - tx) * ty
+        + field[y1 * n + x1] * tx * ty;
+}
+
+function setupTdOverlay() {
+    TdOverlay.setSurfacePainter(paintTdSurface);
+    syncTdGridLevel();
+    TdOverlay.onChange((detail) => {
+        if (detail && detail.jobs) {
+            TdOverlay.syncJobRows(document.getElementById('td-crop-list'));
+            return;
+        }
+        refreshTdCropList();
+        if (mesh) draw();
+    });
+    TdOverlay.setContext(activeProject, seed);
+    TdOverlay.load();
+    refreshPipeline();
+}
+
+const SEARCH_STORE = 'planetgen.params-ranges';
+const SEARCH_TILE_W = 512;
+const SEARCH_TILE_H = 256;
+
+let searchSession = null;
+let searchRun = 0;
+
+function paintSearchEquirect(planet, width, height) {
+    const layers = Planet.rasterizeEquirect(planet.mesh, planet.map, width, height, 0);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(width, height);
+    const {elev, moist, temp} = layers;
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            const eR = elev[y * width + Math.min(width - 1, x + 1)];
+            const eL = elev[y * width + Math.max(0, x - 1)];
+            const eD = elev[Math.min(height - 1, y + 1) * width + x];
+            const eU = elev[Math.max(0, y - 1) * width + x];
+            const light = Look.hillshade((eR - eL) * 0.5, -(eD - eU) * 0.5);
+            const alb = Look.surfaceAlbedo(elev[i], moist[i], temp[i]);
+            const p = i * 4;
+            img.data[p] = Math.round(clamp01(alb[0] * light) * 255);
+            img.data[p + 1] = Math.round(clamp01(alb[1] * light) * 255);
+            img.data[p + 2] = Math.round(clamp01(alb[2] * light) * 255);
+            img.data[p + 3] = 255;
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+}
+
+function renderSearchIndividual(ind) {
+    const planet = Planet.generatePlanet({
+        seed: ind.seed,
+        n: 10000,
+        jitter: 0.75,
+        simulateTectonics: simulate_tectonics,
+        polarStraits: polar_straits,
+        mergeOceanPlates: merge_ocean_plates,
+        connectOceans: connect_oceans,
+        detailPass: false,
+        project: activeProject,
+        values: Object.assign({}, pins, ind.values),
+        quiet: true,
+    }, {});
+    return paintSearchEquirect(planet, SEARCH_TILE_W, SEARCH_TILE_H);
+}
+
+function renderSearchChrome() {
+    const start = document.getElementById('search-start');
+    const controls = document.getElementById('search-controls');
+    const sheet = document.getElementById('search-sheet');
+    const genes = Search.genesFor(pins);
+    const blocked = activeProject === 'earth' || genes.length === 0;
+    if (start) {
+        start.hidden = !!searchSession;
+        start.disabled = blocked || !!searchSession;
+        start.title = activeProject === 'earth'
+            ? 'Earth is the fixture — search does not run there'
+            : 'Sample freeable ranges and pick the planets you like';
+    }
+    if (controls) controls.hidden = !searchSession;
+    if (sheet) sheet.hidden = !searchSession;
+    if (!searchSession) return;
+
+    const s = searchSession;
+    const next = document.getElementById('search-next');
+    const back = document.getElementById('search-back');
+    const done = document.getElementById('search-done');
+    if (next) next.disabled = s.busy;
+    if (back) back.disabled = s.busy || !s.history.length;
+    if (done) done.disabled = s.busy;
+    const status = document.getElementById('search-status');
+    if (status) {
+        const n = s.population.length;
+        const ready = s.canvases.filter(Boolean).length;
+        status.textContent = s.busy
+            ? `Generation ${s.generation + 1} · ${ready} / ${n}`
+            : `Generation ${s.generation + 1} · ${s.liked.size} liked`;
+    }
+    const host = document.getElementById('search-ranges');
+    if (host) {
+        host.textContent = '';
+        for (const name of s.genes) {
+            const row = document.createElement('div');
+            row.className = 'search-range';
+            row.textContent = `${name}  ${Search.formatRange(name, s.ranges[name])}`;
+            host.append(row);
+        }
+    }
+}
+
+function mountSearchTiles() {
+    const grid = document.getElementById('search-grid');
+    if (!grid || !searchSession) return;
+    grid.textContent = '';
+    searchSession.population.forEach((ind, i) => {
+        const tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'search-tile' + (searchSession.canvases[i] ? '' : ' is-pending');
+        tile.dataset.index = String(i);
+        tile.setAttribute('aria-pressed', String(searchSession.liked.has(i)));
+        if (searchSession.liked.has(i)) tile.classList.add('is-liked');
+        tile.onclick = () => toggleSearchLike(i);
+        if (searchSession.canvases[i]) tile.append(searchSession.canvases[i]);
+        grid.append(tile);
+    });
+}
+
+async function fillSearchSheet() {
+    const session = searchSession;
+    if (!session) return;
+    const run = ++searchRun;
+    session.busy = true;
+    session.canvases = session.canvases || [];
+    mountSearchTiles();
+    renderSearchChrome();
+    for (let i = 0; i < session.population.length; i++) {
+        if (run !== searchRun || searchSession !== session) return;
+        if (!session.canvases[i]) {
+            session.canvases[i] = renderSearchIndividual(session.population[i]);
+        }
+        if (run !== searchRun || searchSession !== session) return;
+        const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
+        if (tile && !tile.contains(session.canvases[i])) {
+            tile.classList.remove('is-pending');
+            tile.append(session.canvases[i]);
+        }
+        renderSearchChrome();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (run !== searchRun || searchSession !== session) return;
+    session.busy = false;
+    renderSearchChrome();
+}
+
+function toggleSearchLike(i) {
+    if (!searchSession) return;
+    if (searchSession.liked.has(i)) searchSession.liked.delete(i);
+    else searchSession.liked.add(i);
+    const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
+    if (tile) {
+        tile.classList.toggle('is-liked', searchSession.liked.has(i));
+        tile.setAttribute('aria-pressed', String(searchSession.liked.has(i)));
+    }
+    renderSearchChrome();
+}
+
+function exitSearch() {
+    searchRun++;
+    searchSession = null;
+    document.body.classList.remove('search-mode');
+    const grid = document.getElementById('search-grid');
+    if (grid) grid.textContent = '';
+    renderSearchChrome();
+}
+
+async function persistSearchRanges(ranges) {
+    Params.setOverlay(ranges);
+    try { localStorage.setItem(SEARCH_STORE, JSON.stringify(ranges)); } catch (_) { /* ignore */ }
+    try {
+        await fetch(`${TdOverlay.TD_API}/params-ranges`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(ranges),
+        });
+    } catch (_) { /* localStorage still has it */ }
+}
+
+async function hydrateSearchRanges() {
+    let stored = {};
+    try { stored = JSON.parse(localStorage.getItem(SEARCH_STORE) || '{}'); } catch (_) { stored = {}; }
+    let file = {};
+    try {
+        const res = await fetch(`${TdOverlay.TD_API}/params-ranges`);
+        if (res.ok) file = await res.json();
+    } catch (_) { /* server optional */ }
+    const next = file && Object.keys(file).length ? file : stored;
+    if (next && Object.keys(next).length) {
+        try { Params.setOverlay(next); } catch (_) { /* stale store */ }
+    }
+}
+
+window.enterSearch = () => {
+    if (searchSession || activeProject === 'earth') return;
+    const genes = Search.genesFor(pins);
+    if (!genes.length) return;
+    const gen = Search.initialPopulation({values: pins, rng: Date.now()});
+    searchSession = {
+        genes: gen.genes,
+        ranges: gen.ranges,
+        vouched: gen.vouched,
+        population: gen.population,
+        liked: new Set(),
+        history: [],
+        generation: 0,
+        canvases: [],
+        busy: false,
+    };
+    document.body.classList.add('search-mode');
+    renderSearchChrome();
+    fillSearchSheet();
+};
+
+window.nextSearch = () => {
+    const s = searchSession;
+    if (!s || s.busy) return;
+    s.history.push({
+        ranges: s.ranges,
+        population: s.population,
+        liked: new Set(s.liked),
+        generation: s.generation,
+        canvases: s.canvases,
+    });
+    const next = Search.nextGeneration({
+        genes: s.genes,
+        ranges: s.ranges,
+        vouched: s.vouched,
+        population: s.population,
+        liked: [...s.liked],
+        rng: Date.now() + s.generation + 1,
+    });
+    s.ranges = next.ranges;
+    s.population = next.population;
+    s.liked = new Set();
+    s.generation += 1;
+    s.canvases = [];
+    fillSearchSheet();
+};
+
+window.backSearch = () => {
+    const s = searchSession;
+    if (!s || s.busy || !s.history.length) return;
+    searchRun++;
+    const prev = s.history.pop();
+    s.ranges = prev.ranges;
+    s.population = prev.population;
+    s.liked = prev.liked;
+    s.generation = prev.generation;
+    s.canvases = prev.canvases || [];
+    s.busy = false;
+    mountSearchTiles();
+    renderSearchChrome();
+};
+
+window.doneSearch = async () => {
+    const s = searchSession;
+    if (!s || s.busy) return;
+    const ranges = Search.rangesFromLikes({
+        genes: s.genes,
+        vouched: s.vouched,
+        population: s.population,
+        liked: [...s.liked],
+        ranges: s.ranges,
+    });
+    await persistSearchRanges(ranges);
+    exitSearch();
+};
 
 setupDragRotation();
 document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
@@ -2322,8 +3264,10 @@ restoreViewState();
 setupSavedSeeds();
 applySeed(seed);
 syncSeedHistoryButtons();
-populatePresetUI();
+hydrateSearchRanges();
+populateProjectUI();
 generateMesh();
+setupTdOverlay();
 document.addEventListener('keydown', event => {
     if (!(event.metaKey || event.ctrlKey)) return;
     if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;

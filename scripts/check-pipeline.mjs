@@ -31,7 +31,7 @@ check("stage order is tectonics → climate → detail → erosion → seaLevel 
 
 const beforeRadius = World.DEFAULTS.radiusKm;
 const beforePlates = Tectonics.DEFAULTS.plates;
-const config = Pipeline.freezeConfig({preset: "thalos", n: 4000, simSteps: 2, quiet: true});
+const config = Pipeline.freezeConfig({project: "thalos", n: 4000, simSteps: 2, quiet: true});
 check("config is frozen", Object.isFrozen(config) && Object.isFrozen(config.options.world));
 check("body comes from the world bag",
     config.options.world.radiusKm === 3186,

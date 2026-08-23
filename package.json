@@ -15,7 +15,9 @@
     "packageManager": "bun@1.3.14",
     "private": true,
     "scripts": {
-        "dev": "bun --hot ./index.html",
+        "dev": "bun ./scripts/dev.mjs",
+        "sync:td": "bun ./scripts/sync-td-overlays.mjs",
+        "td-server": "bun ./scripts/td-server.mjs",
         "preview": "bun ./scripts/preview.mjs",
         "crop": "bun ./scripts/crop.mjs",
         "stats": "bun ./scripts/tectonics-stats.mjs",
@@ -24,7 +26,9 @@
         "export:td": "bun ./scripts/export-td.mjs",
         "build": "bun build ./src/planet-generation.js --target=browser --minify --sourcemap=linked --outdir=build --entry-naming=_bundle.[ext]",
         "check:earth": "bun ./scripts/check-earth.mjs",
-        "check:presets": "bun ./scripts/check-presets.mjs",
+        "check:projects": "bun ./scripts/check-projects.mjs",
+        "check:search": "bun ./scripts/check-search.mjs",
+        "check:tiles": "bun ./scripts/check-tiles.mjs",
         "check:pipeline": "bun ./scripts/check-pipeline.mjs"
     }
 }

@@ -2,6 +2,8 @@
 
 This repo generates a coarse planetary **base**: tectonic plates, a heightmap, and climate. Later stages add detail. Do not try to make a finished Earth in here.
 
+Work is done in a **project**. Thalos is the default (development). Earth is the present-day reference fixture (`--earth` / `--project=earth`). Pins live in `src/projects/`.
+
 ## Earth-like
 
 The goal is a generator that, given a new seed, produces another plausible Earth-like planet. "Earth-like" means the general physical rules that make a planet of this kind look right: plate tectonics, isostasy, half-space cooling, moisture advection, Hadley cells, land that clusters instead of spreading evenly. It does not mean Earth's particular continents, ocean layout, mountain names, or any other accident of this planet's history.
@@ -23,9 +25,10 @@ bun run preview                              # globe + equirect — start here
 bun run preview plates                       # plate shapes and motion
 bun run preview crust                        # ridges, trenches, sea-floor age
 bun run preview climate                      # moisture field on its own
-bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400
-bun run sheet                                # 12 seeds in one contact sheet, preview/seed-sheet.png
+bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400
+bun run sheet                                # 12 seeds in one contact sheet, preview/thalos/seed-sheet.png
 bun run sheet --count=9 --view=globe --overlay=plates
+bun run preview --earth                      # Earth project (present-day fixture)
 ```
 
 `bun run stats` and `bun run climate` exist if a picture looks wrong and
@@ -56,7 +59,7 @@ the census Earth keeps is kept here too. See `.cursor/rules/plates-elevation.mdc
 ## Downstream
 
 1. **Hydrology** — real river networks, discharge, lakes and canyons. The detail pass does a first-stage shaping (priority-flood, stream power, glacial fjords) so slopes and coasts have drainage texture; the fine network is cut after diffusion.
-2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. Export Azgaar-style conditioning GeoTIFFs with `bun run export:td` (regional `crop-*` folders). Do not run `tiff-export` on the whole-world raster. What the model expects, what works as a sketch, hydrology, and later passes: [`docs/preparing-for-diffusion.md`](docs/preparing-for-diffusion.md).
+2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. The app kicks regional 90 m preview tiles and drapes them on the globe. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster. What the model expects: [`docs/preparing-for-diffusion.md`](docs/preparing-for-diffusion.md).
 
 Keep the base honest enough that those stages have something real to work with: continents carried by plates, mountain belts at collisions, ocean floor that deepens away from its ridge, and coasts that come from elevation interpolation rather than plate outlines. The detail pass roughs in valleys and fjords; leave the real river network to the later pass.
 
@@ -70,12 +73,13 @@ The original 1843 distance-field blend is still available for comparison: the **
 - Elevation (land relief, ocean bathymetry)
 - Climate (temperature, moisture, biomes) as fields on the sphere
 - A globe view that shows those fields clearly
+- Regional terrain-diffusion preview bakes, overlaid on the project, and pipeline status
 
 ## Out of scope
 
 - Real river networks, discharge, lakes and canyons (those wait for the post-diffusion hydrology pass)
 - Photographic globe effects (atmosphere, clouds, specular water) unless we are judging the base
-- Integrating terrain-diffusion or the hydrology sim into this tree
+- Vendoring terrain-diffusion or the hydrology sim into this tree. The studio orchestrates the sibling checkout.
 
 ## Visual check
 
@@ -96,18 +100,18 @@ bun run preview climate         # the moisture field on its own
 bun run preview --no-tectonics  # the 1843 blend, for comparison
 ```
 
-Then read the **compare** sheet for that view if it exists, otherwise the latest capture. Crop in when the feature is small on the full frame (`bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400` → `preview/crop.png`).
+Then read the **compare** sheet for that view if it exists, otherwise the latest capture. Crop in when the feature is small on the full frame (`bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400` → `preview/thalos/crop.png`).
 
 | Capture | Files | What it shows | Use when |
 | --- | --- | --- | --- |
-| **globe** | `preview/planet.png`, `preview/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
-| **equirect** | `preview/equirect.png`, `preview/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
-| **plates** | `preview/plates.png`, `preview/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, named, with motion arrows and time since the plate formed | Plate size and shape, mixed land/ocean on a plate, relative motion |
-| **crust** | `preview/crust.png`, `preview/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
-| **climate** | `preview/climate.png`, `preview/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
+| **globe** | `preview/thalos/planet.png`, `preview/thalos/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
+| **equirect** | `preview/thalos/equirect.png`, `preview/thalos/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
+| **plates** | `preview/thalos/plates.png`, `preview/thalos/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, named, with motion arrows and time since the plate formed | Plate size and shape, mixed land/ocean on a plate, relative motion |
+| **crust** | `preview/thalos/crust.png`, `preview/thalos/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
+| **climate** | `preview/thalos/climate.png`, `preview/thalos/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
 
 After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, read `bun run preview crust` — ridges, trenches, age — not a stats dump. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian. Crop in rather than guessing from a thumbnail.
 
-Previous shots: `preview/planet-before.png`, `preview/equirect-before.png`, `preview/plates-before.png`, `preview/equirect-plates-before.png`, `preview/history/`.
+Previous shots: `preview/thalos/planet-before.png`, `preview/thalos/equirect-before.png`, `preview/thalos/plates-before.png`, `preview/thalos/equirect-plates-before.png`, `preview/thalos/history/`. `--earth` writes the same files under `preview/earth/`.
 
 Do not open the interactive app in any built-in agent browser (Simple Browser, MCP browser, Cursor browser, etc.). Tell the user they can run `bun run dev` and open `http://localhost:3000` themselves.

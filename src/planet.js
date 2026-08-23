@@ -12,6 +12,7 @@ const SphereMesh = require('./sphere-mesh');
 const Tectonics = require('./tectonics');
 const EarthFixture = require('./earth-fixture');
 const Look = require('./look');
+const Cubesphere = require('./cubesphere');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 
 const {clamp01} = Tectonics;
@@ -585,6 +586,10 @@ function unwrapTriangleLons(a, b, c) {
 
 function rasterizeFieldTriangle(elev, moist, temp, filled, width, height, toPixel, a, b, c) {
     const pa = toPixel(a), pb = toPixel(b), pc = toPixel(c);
+    /* A projection can refuse a vertex — a cube face has no answer for a
+     * point on the far side of the planet. Equirect and lon/lat boxes never
+     * do, so this costs them one comparison. */
+    if (!pa || !pb || !pc) return;
     const minX = Math.max(0, Math.floor(Math.min(pa.x, pb.x, pc.x)));
     const maxX = Math.min(width - 1, Math.ceil(Math.max(pa.x, pb.x, pc.x)));
     const minY = Math.max(0, Math.floor(Math.min(pa.y, pb.y, pc.y)));
@@ -697,6 +702,24 @@ function rasterizeLonLatBox(mesh, map, westDeg, southDeg, eastDeg, northDeg, wid
     });
 }
 
+/*
+ * A cubesphere tile's raster. The same forward rasterizer as the lon/lat
+ * box — only the projection differs, because a tile is a square in face
+ * space rather than in lon/lat. Longitude shifts do not apply here: the
+ * projector goes through a direction vector, which is already periodic, so
+ * a triangle unwrapped past the antimeridian lands where it should.
+ */
+const NO_SHIFT = [0];
+function rasterizeCubeTile(mesh, map, tile, width, height, lon0) {
+    const project = Cubesphere.tileProjector(tile, width, height);
+    return rasterizeSphereGrid(
+        mesh, map, width, height,
+        (pt) => project(pt.lon, pt.lat),
+        lon0,
+        () => NO_SHIFT,
+    );
+}
+
 module.exports = {
     generatePlanet,
     generateTriangleCenters,
@@ -717,6 +740,7 @@ module.exports = {
     runBlend1843,
     rasterizeEquirect,
     rasterizeLonLatBox,
+    rasterizeCubeTile,
     BOUNDARY_CONVERGENT,
     BOUNDARY_DIVERGENT,
     BOUNDARY_TRANSFORM,

@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Check that presets resolve, and that loading one clears the last one.
+ * Check that projects resolve, and that loading one clears the last one.
  *
- *   bun run check:presets
+ *   bun run check:projects
  *
  * The interesting case is not that Earth's pins apply — it is that Thalos,
- * which pins nothing, comes back with the *default* nine-cratons-ago value
- * after Earth has been loaded. A preset names what is decided; everything it
- * omits has to return to its default, or switching presets yields a planet
- * that belongs to neither and cannot be reproduced from either file.
+ * which does not pin cratons, comes back with the default after Earth has
+ * been loaded. A project names what is decided; everything it omits has to
+ * return to its default, or switching projects yields a planet that belongs
+ * to neither and cannot be reproduced from either file.
  *
  * Browser-free, so this runs alongside `stats` and `check:earth`.
  */
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
-const Presets = require(join(root, "src", "presets"));
+const Projects = require(join(root, "src", "projects"));
 const Params = require(join(root, "src", "params.js"));
 
 const failures = [];
@@ -27,20 +27,22 @@ const check = (name, ok, detail = "") => {
     else { console.log(`  FAIL  ${name}${detail ? " — " + detail : ""}`); failures.push(name); }
 };
 
-console.log("presets");
+console.log("projects");
 
-/* 1. Every preset resolves and validates. */
-for (const preset of Presets.PRESETS) {
+check("default project is thalos", Projects.DEFAULT === "thalos");
+
+/* 1. Every project resolves and validates. */
+for (const project of Projects.PROJECTS) {
     let resolved = null, error = null;
-    try { resolved = Presets.resolve(preset.name); } catch (e) { error = e; }
-    check(`${preset.name} resolves`, !!resolved, error && error.message);
+    try { resolved = Projects.resolve(project.name); } catch (e) { error = e; }
+    check(`${project.name} resolves`, !!resolved, error && error.message);
     if (resolved) {
         console.log(`        ${resolved.pins.length} pin(s), seed ${JSON.stringify(resolved.seed)}`);
     }
 }
 
 /* 2. Earth's pins actually land, in the right module. */
-const earth = Presets.resolve("earth");
+const earth = Projects.resolve("earth");
 check("earth pins continentFraction into tectonics",
     earth.options.tectonics.continentFraction === 0.41,
     `got ${earth.options.tectonics.continentFraction}`);
@@ -56,27 +58,27 @@ check("earth pins fixture paintPasses into fixture",
     `got ${earth.options.fixture && earth.options.fixture.paintPasses}`);
 
 /* 3. The one that matters: an unpinned parameter comes back. */
-const pristineCratons = Presets.PRISTINE.tectonics.cratons;
-const thalos = Presets.resolve("thalos");
+const pristineCratons = Projects.PRISTINE.tectonics.cratons;
+const thalos = Projects.resolve("thalos");
 check("thalos does not inherit earth's cratons",
     thalos.options.tectonics.cratons === pristineCratons,
     `got ${thalos.options.tectonics.cratons}, want the default ${pristineCratons}`);
 check("thalos does not inherit earth's continentFraction",
-    thalos.options.tectonics.continentFraction === Presets.PRISTINE.tectonics.continentFraction,
+    thalos.options.tectonics.continentFraction === Projects.PRISTINE.tectonics.continentFraction,
     `got ${thalos.options.tectonics.continentFraction}`);
 
 /* 4. Resolving must not write through to the snapshot or the live defaults. */
-const before = Presets.PRISTINE.tectonics.cratons;
-Presets.resolve("earth").options.tectonics.cratons = 999;
+const before = Projects.PRISTINE.tectonics.cratons;
+Projects.resolve("earth").options.tectonics.cratons = 999;
 check("resolving does not mutate the pristine snapshot",
-    Presets.PRISTINE.tectonics.cratons === before,
-    `snapshot is now ${Presets.PRISTINE.tectonics.cratons}`);
+    Projects.PRISTINE.tectonics.cratons === before,
+    `snapshot is now ${Projects.PRISTINE.tectonics.cratons}`);
 
 /* 5. The panel resolves every exposed parameter's default from the pristine
       snapshot, so a module missing from it would render "free" forever. */
 for (const name of Params.exposed()) {
     const meta = Params.all()[name];
-    const snapshot = Presets.PRISTINE[meta.module];
+    const snapshot = Projects.PRISTINE[meta.module];
     check(`${name} has a pristine default (${meta.module})`,
         snapshot !== undefined && name in snapshot,
         snapshot === undefined ? `no snapshot for module ${meta.module}` : "missing key");
@@ -86,15 +88,15 @@ for (const name of Params.exposed()) {
       to come back to the default rather than stick. */
 {
     const pins = {cratons: 9};
-    const pinned = Presets.resolve({name: "scratch", values: pins}).options.tectonics.cratons;
+    const pinned = Projects.resolve({name: "scratch", values: pins}).options.tectonics.cratons;
     delete pins.cratons;
-    const freed = Presets.resolve({name: "scratch", values: pins}).options.tectonics.cratons;
+    const freed = Projects.resolve({name: "scratch", values: pins}).options.tectonics.cratons;
     check("freeing a pinned parameter restores its default",
-        pinned === 9 && freed === Presets.PRISTINE.tectonics.cratons,
+        pinned === 9 && freed === Projects.PRISTINE.tectonics.cratons,
         `pinned ${pinned}, freed ${freed}`);
 }
 
-/* 7. Derivations must survive a preset being applied, and applying one
+/* 7. Derivations must survive a project being applied, and applying one
  *    must not write through to the live DEFAULTS. The runner freezes a
  *    snapshot; World.derive still measures itself against the frozen EARTH
  *    constant, not against those defaults.
@@ -105,31 +107,57 @@ for (const name of Params.exposed()) {
     const Pipeline = require(join(root, "packages/pipeline"));
     const beforeRadius = World.DEFAULTS.radiusKm;
     const beforePlates = Tectonics.DEFAULTS.plates;
-    const config = Pipeline.freezeConfig({preset: "thalos"});
+    const implicit = Pipeline.freezeConfig({});
+    const config = Pipeline.freezeConfig({project: "thalos"});
     const derived = config.derived;
 
+    check("no project defaults to thalos",
+        implicit.project === "thalos" && implicit.seed === 1003,
+        `project ${implicit.project}, seed ${implicit.seed}`);
+    check("earth seed selects the earth project",
+        Pipeline.freezeConfig({seed: "earth"}).project === "earth"
+        && Pipeline.freezeConfig({seed: "earth"}).options.world.radiusKm === 6371);
     check("freezeConfig does not mutate World.DEFAULTS",
         World.DEFAULTS.radiusKm === beforeRadius,
         `live radius is now ${World.DEFAULTS.radiusKm}`);
     check("freezeConfig does not mutate Tectonics.DEFAULTS",
         Tectonics.DEFAULTS.plates === beforePlates,
         `live plates is now ${Tectonics.DEFAULTS.plates}`);
-    check("radius still scales plate count after a preset is applied",
+    check("radius still scales plate count after a project is applied",
         derived.plates === 10, `got ${derived.plates}, want 10 at half Earth's radius`);
-    check("radius still scales craton count after a preset is applied",
+    check("radius still scales craton count after a project is applied",
         derived.cratons === 3, `got ${derived.cratons}, want 3`);
-    check("gravity still scales relief after a preset is applied",
+    check("gravity still scales relief after a project is applied",
         Math.abs(derived.orogenyReliefM - 2200 / 0.91) < 1,
         `got ${derived.orogenyReliefM}, want ${(2200 / 0.91).toFixed(0)}`);
-    check("rotation still moves the dry belt after a preset is applied",
+    check("rotation still moves the dry belt after a project is applied",
         Math.abs(derived.subsidenceCentre - 26 * Math.sqrt(21.3 / 24)) < 0.01,
         `got ${derived.subsidenceCentre}`);
 }
 
-/* 8. Every pin names a registered parameter (the registry check, per preset). */
-for (const preset of Presets.PRESETS) {
-    const problems = Params.checkPreset(preset);
-    check(`${preset.name} validates against the registry`, problems.length === 0, problems.join("; "));
+/* 8. Every pin names a registered parameter (the registry check, per project). */
+for (const project of Projects.PROJECTS) {
+    const problems = Params.checkProject(project);
+    check(`${project.name} validates against the registry`, problems.length === 0, problems.join("; "));
+}
+
+/* 9. Pipeline status is authored per project against the shared stage list. */
+{
+    const ids = Projects.STAGES.map(s => s.id);
+    check("pipeline stages are unique", new Set(ids).size === ids.length);
+    for (const project of Projects.PROJECTS) {
+        const problems = Projects.checkPipeline(project);
+        check(`${project.name} pipeline validates`, problems.length === 0, problems.join("; "));
+    }
+    check("thalos has started the base",
+        Projects.byName("thalos").pipeline.base === "in play");
+    check("earth base is the locked fixture",
+        Projects.byName("earth").pipeline.base === "fixture locked");
+    check("a project's artifacts live under preview/<name>",
+        Projects.dir("thalos") === "preview/thalos"
+        && Projects.bakeDir("earth") === "preview/earth");
+    check("sameSeed treats earth tokens as equal",
+        Projects.sameSeed("earth", "Earth") && !Projects.sameSeed("earth", 1003));
 }
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall passed");

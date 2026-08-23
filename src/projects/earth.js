@@ -1,7 +1,7 @@
 /*
- * Earth.
+ * Earth — the reference project.
  *
- * A preset is a named set of pins: every parameter it names is decided, and
+ * A project is a named set of pins: every parameter it names is decided, and
  * everything it leaves out is free. Earth pins little because the model's
  * DEFAULTS are already calibrated against Earth — what is here is the
  * handful of places present-day Earth differs from a planet that has just
@@ -10,15 +10,13 @@
  *
  * The geography itself is not in this file and is not a parameter: Bird
  * 2003 outlines and NNR-MORVEL56 poles are authored in `earth-fixture.js`.
- * This is the parameter half, so Earth loads the same way Thalos will.
+ * This is the parameter half, so Earth loads the same way Thalos does.
  *
  * Deliberately free of requires, so any module can read it without a cycle.
  *
  * Earth's physical properties — 6371 km radius, 1.0 g, 23.44° tilt, 24 h
- * day, 4.54 Gyr — are absent because the generator has no parameters for
- * them yet; radius is still hard-coded at `detail.js:23`. They belong here
- * once they are wired, and not before: a preset that names a parameter the
- * generator ignores is worse than one that admits the gap.
+ * day, 4.54 Gyr — are pinned even though they match DEFAULTS, so Earth
+ * stays Earth if the defaults ever move.
  */
 'use strict';
 
@@ -28,6 +26,15 @@ module.exports = {
     /* The fixture is a frozen present-day snapshot, not a run, so its seed
      * only picks the mesh. `earth-fixture.js` hashes this token. */
     seed: 'earth',
+
+    /* How far this project has got toward the raw bake export. Keys are
+     * stages in `pipeline.js`; a missing key is not started. */
+    pipeline: {
+        base: 'fixture locked',
+        conditioning: 'crops',
+        regional: 'crops',
+        bake: 'later',
+    },
 
     values: {
         /* The body. These are the defaults too, because the whole model is

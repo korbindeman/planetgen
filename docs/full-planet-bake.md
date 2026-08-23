@@ -41,9 +41,23 @@ Thalos is half Earth's radius (`radiusKm: 3186`), a quarter of the surface:
 (half a day if tiles are fast; three or four if not). Earth-scale was
 single-digit GPU-days and ~600k tiles; Thalos is that number over four.
 
-`WorldPipeline` is one process, one device, batches 1–16 tiles. Training this
-stack already fits in 24 GB. Inference lives in 12 GB; if fp32 + `torch.compile`
-+ batch 16 OOMs, drop to batch 8 or `bf16` before renting 48 GB.
+`WorldPipeline` is one process, one device, batches 1–16 tiles. That is an
+implementation limit, not a data dependence. `get(i1, j1, i2, j2)` is a pure
+function of `(seed, coords)` plus a bounded parent window — InfiniteDiffusion's
+random access. Any partition of the tile list is a valid shard. N GPUs means N
+processes on the same seed and conditioning. Shared parent latents at a cut are
+recomputed or read from a shared tile store; either way the pixels match. No
+generation-order constraint, no required seam blend. Cubesphere addressing maps
+`(face, x, y)` onto those rectangles; it does not serialize them.
+
+Two processes on the same 4070 Ti fight for 12 GB and lose. Hydrology waits on
+the composed height, then can split by basin. Mixed GPU SKUs can drift by a ULP.
+
+Training this stack already fits in 24 GB. Inference lives in 12 GB; if fp32 +
+`torch.compile` + batch 16 OOMs, drop to batch 8 or `bf16` before renting 48 GB.
+Wall-clock on one card is one to two days. Across K same-class cards it is that
+over K, plus load. Worth renting when you want the desk back or a frozen
+solar-system campaign.
 
 | Card | Verdict |
 |---|---|
@@ -101,7 +115,7 @@ solar-system pack or on-demand bodies. One 15 GB system is a texture pack.
 ## What not to do
 
 - Rent an A6000 or A100 for the Thalos 90 m bake
-- Rent 2×/4×/8× — the pipeline will not use the extra GPUs
+- Hand one `WorldPipeline` process an 8-wide machine — it will not see the other GPUs. Shard the tile list yourself.
 - Bake 30 m for the whole planet, or 1 m for anyone
 - `tiff-export` the 720×360 `world/` raster
 - Ship the dense bake, latents, or 90 m ocean

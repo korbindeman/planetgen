@@ -1,5 +1,5 @@
 /*
- * Thalos — the planet this generator exists to make.
+ * Thalos — the default project, and the planet this generator exists to make.
  *
  * Little is pinned, and that is the honest state rather than an oversight.
  * Thalos is being discovered, not transcribed: the lore in `~/dev/thalos` is
@@ -8,8 +8,8 @@
  * and they are pinned below.
  *
  * Everything else — land fraction, age, and the seed itself — is still in
- * play. That is what this preset is for: it gains a pin each time a decision
- * gets made, so the file doubles as the record of what has been settled.
+ * play. That is what this file is for: it gains a pin each time a decision
+ * gets made, so it doubles as the record of what has been settled.
  *
  * Deliberately free of requires, so any module can read it without a cycle.
  */
@@ -21,6 +21,12 @@ module.exports = {
     /* From `~/dev/thalos/assets/bodies/thalos.ron`. A starting point to
      * explore from, not a chosen planet. */
     seed: 1003,
+
+    /* How far this project has got toward the raw bake export. Keys are
+     * stages in `pipeline.js`; a missing key is not started. */
+    pipeline: {
+        base: 'in play',
+    },
 
     values: {
         /* Decided. Half Earth's radius, so a quarter of the surface area:

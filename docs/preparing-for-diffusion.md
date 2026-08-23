@@ -122,14 +122,14 @@ bun run export:td
 bun run export:td --seed=88 --scale=23 --lon=90 --crops=3
 ```
 
-Writes `preview/terrain-diffusion/` (gitignored):
+Writes `preview/<name>/` (gitignored):
 
 | Path | Role |
 | --- | --- |
 | `examples.png` | World sketch + crop windows |
 | `world/*.tif` | Full equirect, **inspection only** |
-| `crop-coast/`, `crop-mountains/`, `crop-climate/` | 48×32 regional tiles at `--scale` km/px |
-| `manifest.json` | Seed, bounds, suggested SNR |
+| `crop-coast/`, `crop-mountains/`, `crop-climate/` | 16×12 regional tiles at `--scale` km/px |
+| `manifest.json` | Project, seed, bounds, suggested SNR |
 
 Crops are picked at mid-latitudes for mixed land/ocean (coast), high relief (mountains), and climate range. They are **not** the whole planet.
 
@@ -266,7 +266,7 @@ bun run export:td --seed=88 --scale=23
 # then, in ~/dev/terrain-diffusion, 90 m DEM from one crop (or a subwindow)
 python -m terrain_diffusion.inference.tiff_export \
   xandergos/terrain-diffusion-90m \
-  /Users/korbin/dev/planetgen/preview/terrain-diffusion/crop-mountains \
+  /Users/korbin/dev/planetgen/preview/thalos/crop-mountains \
   /tmp/mountains.tif \
   --snr 0.2,0.2,1.0,0.2,1.0 --no-compile --device mps --seed 88
 ```

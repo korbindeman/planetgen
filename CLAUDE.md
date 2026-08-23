@@ -23,10 +23,11 @@ bun run preview                              # globe + equirect — start here
 bun run preview plates                       # plate shapes and motion
 bun run preview crust                        # ridges, trenches, sea-floor age
 bun run preview climate                      # moisture field on its own
-bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400
-bun run sheet                                # 12 seeds in one contact sheet, preview/seed-sheet.png
+bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400
+bun run sheet                                # 12 seeds in one contact sheet, preview/thalos/seed-sheet.png
 bun run sheet --count=9 --view=globe --overlay=plates
-bun run check:presets                        # presets resolve, and loading one clears the last
+bun run preview --earth                      # Earth project (present-day fixture)
+bun run check:projects                       # projects resolve, and loading one clears the last
 ```
 
 `bun run stats`, `bun run climate`, and `bun run check:earth` exist if a
@@ -49,7 +50,33 @@ collisions. Plates rotate about Euler poles in a no-net-rotation frame; the crus
 ## Downstream
 
 1. **Hydrology** — real river networks, discharge, lakes and canyons. The detail pass does a first-stage shaping (priority-flood, stream power, glacial fjords) so slopes and coasts have drainage texture; the fine network is cut after diffusion.
-2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. Export Azgaar-style conditioning GeoTIFFs with `bun run export:td` (regional `crop-*` folders). Do not run `tiff-export` on the whole-world raster.
+2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. The app kicks regional 90 m preview tiles (**Bake previews** on the project) and drapes them on the globe. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster.
+
+   Tiles are picked on the **cubesphere grid** (`src/cubesphere.js`), the same
+   grid the planet-scale bake will use: six equal-angle faces, a quadtree per
+   face, a tile addressed by `(face, level, i, j)` and nothing else. Hold
+   shift over the canvas to see the grid and a ghost of the tile under the
+   cursor; click a tile, or drag across several; each picked tile becomes its
+   own bake job. Because levels nest, picking a coarse tile still picks whole
+   bake tiles. `bun run check:tiles` holds the grid to being a real partition
+   — every direction in exactly one tile, centres round-tripping, levels
+   nesting — and pins the equal-angle scale ratio at √2.
+
+   What lands on the map is `output.elev`, the DEM in raw float metres,
+   coloured in the browser with the globe's own surface look. Not
+   `output.png`: that was coloured once at bake time and could never follow
+   the map. Do not reintroduce a lon/lat crop box — a box centred on wherever
+   the mouse was is what the grid replaced.
+
+   The grid draws **unconditionally** — every face, every line, fixed
+   subdivision, at every viewpoint. Do not add a visibility probe, a
+   minimum-cell-size threshold, or view-dependent subdivision to make it
+   cheaper. Each of those turns a smoothly varying measurement into a binary
+   draw/skip, and the grid flickers as the view moves; all three were tried
+   and reverted. Cull only on things that do not depend on the viewpoint: the
+   globe's back-face test, and an antimeridian break measured in **longitude**
+   (never in screen pixels — at high zoom one ordinary segment exceeds half
+   the canvas, which silently chopped the grid to pieces).
 
 Keep the base honest enough that those stages have something real to work with: continents carried by plates, mountain belts at collisions, ocean floor that deepens away from its ridge, and coasts that come from elevation interpolation rather than plate outlines. The detail pass roughs in valleys and fjords; leave the real river network to the later pass.
 
@@ -63,12 +90,13 @@ The original 1843 distance-field blend is still available for comparison: the **
 - Elevation (land relief, ocean bathymetry)
 - Climate (temperature, moisture, biomes) as fields on the sphere
 - A globe view that shows those fields clearly
+- Regional terrain-diffusion preview bakes, overlaid on the project, and pipeline status
 
 ## Out of scope
 
 - Real river networks, discharge, lakes and canyons (those wait for the post-diffusion hydrology pass)
 - Photographic globe effects (atmosphere, clouds, specular water) unless we are judging the base
-- Integrating terrain-diffusion or the hydrology sim into this tree
+- Vendoring terrain-diffusion or the hydrology sim into this tree. The studio orchestrates the sibling checkout.
 
 ## Visual check
 
@@ -89,15 +117,15 @@ bun run preview climate         # the moisture field on its own
 bun run preview --no-tectonics  # the 1843 blend, for comparison
 ```
 
-Then read the **compare** sheet for that view if it exists, otherwise the latest capture. Crop in when the feature is small on the full frame (`bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400` → `preview/crop.png`).
+Then read the **compare** sheet for that view if it exists, otherwise the latest capture. Crop in when the feature is small on the full frame (`bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400` → `preview/thalos/crop.png`).
 
 | Capture | Files | What it shows | Use when |
 | --- | --- | --- | --- |
-| **globe** | `preview/planet.png`, `preview/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
-| **equirect** | `preview/equirect.png`, `preview/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
-| **plates** | `preview/plates.png`, `preview/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, named, with motion arrows and time since the plate formed | Plate size and shape, mixed land/ocean on a plate, relative motion |
-| **crust** | `preview/crust.png`, `preview/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
-| **climate** | `preview/climate.png`, `preview/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
+| **globe** | `preview/thalos/planet.png`, `preview/thalos/compare.png` | 2×2 of longitudes 0°, 90°, 180°, 270° | 3D relief, hillshading, how land sits on the sphere, polar caps as seen from space, mesh/camera |
+| **equirect** | `preview/thalos/equirect.png`, `preview/thalos/equirect-compare.png` | Full 2:1 map, north up, lon 0 at center (`--lon` shifts that) | Whole-world layout, continent arrangement, east–west wrap, climate belts, ice as latitude bands, land/ocean fraction |
+| **plates** | `preview/thalos/plates.png`, `preview/thalos/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, named, with motion arrows and time since the plate formed | Plate size and shape, mixed land/ocean on a plate, relative motion |
+| **crust** | `preview/thalos/crust.png`, `preview/thalos/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
+| **climate** | `preview/thalos/climate.png`, `preview/thalos/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
 
 `bun run check:earth` locks the Earth fixture's `stats` report to a checked-in
 baseline (`scripts/earth-baseline.txt`) so a model change cannot drift Earth
@@ -113,21 +141,27 @@ before they existed. `landFraction` is solved for exactly by shifting sea level
 after the run (`solveSeaLevel`), so it is what you get rather than what you aim
 at; null leaves sea level where the crust puts it.
 
-Presets live in `presets/`, loaded from the **Preset** dropdown at the top of the
-app's controls, where every exposed parameter is a row with a pin toggle: pinned
-means this preset decides it, free means it sits at its default. Those rows are
-generated from `params.js`, so registering and exposing a parameter is all it
-takes to put it on screen. A preset is a named set
-of pins: every parameter it names is decided and everything it omits is free, so
+Work is done in a **project**. There are two: Thalos (the default, the world
+being discovered) and Earth (the present-day reference fixture). Pins live
+in `src/projects/`, loaded from the **Project** dropdown at the top of the
+app's controls, where every exposed parameter is a row with a pin toggle:
+pinned means this project decides it, free means it sits at its default.
+Those rows are generated from `params.js`, so registering and exposing a
+parameter is all it takes to put it on screen. A project is a named set of
+pins: every parameter it names is decided and everything it omits is free, so
 loading one *assigns* whole option sets rather than merging them — otherwise a
-parameter the new preset does not pin keeps the last preset's value and the
-planet belongs to neither. `presets/thalos.js` is deliberately near-empty; Thalos
-is being discovered, and gains a pin each time something is decided. `params.js` is the registry of all 176
-parameters with their units and ranges; it validates presets and throws if a
+parameter the new project does not pin keeps the last project's value and the
+planet belongs to neither. Captures, crops and preview bakes live in
+`preview/<name>/`; the Project panel shows each pipeline stage as
+authored intent plus what is actually on disk. `src/projects/thalos.js` is deliberately
+near-empty; Thalos gains a pin each time something is decided. Headless
+scripts follow the same default: `bun run preview` is Thalos,
+`--earth` / `--project=earth` is Earth. `params.js` is the registry of all 176
+parameters with their units and ranges; it validates projects and throws if a
 parameter is added without being registered.
 
 After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, read `bun run preview crust` — ridges, trenches, age — not a stats dump. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian. Crop in rather than guessing from a thumbnail.
 
-Previous shots: `preview/planet-before.png`, `preview/equirect-before.png`, `preview/plates-before.png`, `preview/equirect-plates-before.png`, `preview/history/`.
+Previous shots: `preview/thalos/planet-before.png`, `preview/thalos/equirect-before.png`, `preview/thalos/plates-before.png`, `preview/thalos/equirect-plates-before.png`, `preview/thalos/history/`. `--earth` writes the same files under `preview/earth/`.
 
 Do not open the interactive app in any built-in agent browser (Simple Browser, MCP browser, Cursor browser, etc.). Tell the user they can run `bun run dev` and open `http://localhost:3000` themselves.

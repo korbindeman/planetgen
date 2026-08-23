@@ -8,9 +8,10 @@
  *   bun run sheet --count=16 --from=200
  *   bun run sheet --view=globe
  *   bun run sheet --overlay=plates
+ *   bun run sheet --project=earth
  *   bun run sheet --no-tectonics
  *
- * Writes preview/seed-sheet.png.
+ * Writes preview/<project>/seed-sheet.png.
  */
 import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
@@ -21,10 +22,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Planet = require(join(root, "src", "planet.js"));
 const Render = require(join(root, "src", "software-render.js"));
-const Presets = require(join(root, "src", "presets"));
+const Projects = require(join(root, "src", "projects"));
 const Params = require(join(root, "src", "params.js"));
-
-const previewDir = join(root, "preview");
 
 const args = Object.fromEntries(
   process.argv.slice(2)
@@ -32,17 +31,17 @@ const args = Object.fromEntries(
     .map((a) => a.replace(/^--/, "").split("=")),
 );
 
-/* A sheet of one preset's planets: `--preset=thalos`, plus any registered
-   parameter as `--radiusKm=3186`. Pins are resolved from the pristine
-   defaults exactly as the app does, so the sheet and the panel agree. */
-const pins = {};
-if (args.preset) Object.assign(pins, Presets.byName(args.preset).values);
+/* A sheet of one project's planets: `--project=thalos` (the default), plus
+   any registered parameter as `--radiusKm=3186`. Pins are resolved from
+   the pristine defaults exactly as the app does, so the sheet and the
+   panel agree. */
+const project = args.project || ('earth' in args ? 'earth' : Projects.DEFAULT);
+const previewDir = join(root, Projects.dir(project));
+const pins = Object.assign({}, Projects.byName(project).values);
 for (const name of Object.keys(Params.all())) {
   if (args[name] !== undefined) pins[name] = Number(args[name]);
 }
-if (Object.keys(pins).length) {
-  console.log(`${args.preset ?? "override"}: ${Object.keys(pins).length} pinned`);
-}
+console.log(`${project}: ${Object.keys(pins).length} pinned`);
 
 const view = args.view ?? "equirect";
 const overlay = args.overlay ?? null;
@@ -58,7 +57,7 @@ for (const seed of seeds) {
   const planet = Planet.generatePlanet({
     seed,
     simulateTectonics: !noTectonics,
-    preset: args.preset,
+    project,
     values: pins,
   });
   const png = view === "globe"

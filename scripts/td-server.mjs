@@ -1,0 +1,110 @@
+/**
+ * Local bake API. The browser posts a crop or asks for preview bakes;
+ * this writes GeoTIFFs under preview/<name>/ and runs
+ * terrain-diffusion in the sibling checkout. Not the cubesphere bake.
+ */
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { serveTdFile } from "./td-overlays.mjs";
+import {
+  getJob, listJobs, overlaysWithJobs, pipelineStatus, previewBakes, submitJob,
+} from "./td-jobs.mjs";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(join(root, "package.json"));
+const Params = require(join(root, "src", "params.js"));
+const rangesPath = join(root, "src", "params-ranges.json");
+const port = Number(process.env.TD_PORT) || 3748;
+
+function cors(res) {
+  const headers = new Headers(res.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Cache-Control", "no-store");
+  return new Response(res.body, {status: res.status, headers});
+}
+
+function json(data, status = 200) {
+  return cors(Response.json(data, {status}));
+}
+
+function query(url) {
+  return {
+    project: url.searchParams.get("project") || undefined,
+    seed: url.searchParams.get("seed") || undefined,
+  };
+}
+
+const server = Bun.serve({
+  port,
+  async fetch(req) {
+    const url = new URL(req.url);
+    if (req.method === "OPTIONS") return cors(new Response(null, {status: 204}));
+
+    if (url.pathname === "/health") {
+      return json({ok: true});
+    }
+    if (url.pathname === "/params-ranges" && req.method === "GET") {
+      try {
+        const text = await Bun.file(rangesPath).text();
+        return json(JSON.parse(text));
+      } catch {
+        return json({});
+      }
+    }
+    if (url.pathname === "/params-ranges" && req.method === "POST") {
+      let body;
+      try { body = await req.json(); }
+      catch { return json({error: "invalid json"}, 400); }
+      const problems = Params.checkOverlay(body);
+      if (problems.length) return json({error: problems.join("; ")}, 400);
+      Params.setOverlay(body);
+      await Bun.write(rangesPath, JSON.stringify(body, null, 2) + "\n");
+      return json({ok: true});
+    }
+    if (url.pathname === "/pipeline" && req.method === "GET") {
+      const q = query(url);
+      if (!q.project) return json({error: "project required"}, 400);
+      return json(await pipelineStatus(root, q));
+    }
+    if (url.pathname === "/overlays.json") {
+      return json(await overlaysWithJobs(root, query(url)));
+    }
+    if (url.pathname === "/jobs" && req.method === "GET") {
+      return json({jobs: listJobs(query(url).project)});
+    }
+    if (url.pathname === "/jobs" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const job = await submitJob(root, body);
+        return json({job});
+      } catch (err) {
+        return json({error: String(err.message || err)}, 400);
+      }
+    }
+    if (url.pathname === "/preview-bakes" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const result = await previewBakes(root, body);
+        return json(result);
+      } catch (err) {
+        return json({error: String(err.message || err)}, 400);
+      }
+    }
+    const jobMatch = url.pathname.match(/^\/jobs\/([a-z0-9/-]+)$/);
+    if (jobMatch && req.method === "GET") {
+      const job = getJob(jobMatch[1]);
+      if (!job) return json({error: "not found"}, 404);
+      return json({job});
+    }
+
+    const td = await serveTdFile(root, url.pathname);
+    if (td) return cors(td);
+
+    return json({error: "not found"}, 404);
+  },
+});
+
+console.log(`td bake  http://localhost:${server.port}`);

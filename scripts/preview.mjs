@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Capture planet views to preview/*.png so agents can Read the images.
+ * Capture planet views to preview/<project>/*.png so agents can Read the images.
  *
  * Software render — no browser, no Playwright. The same mesh and colormap
  * as the live globe, rasterized on the CPU.
@@ -11,7 +11,8 @@
  *   bun run preview equirect
  *   bun run preview equirect --lon=90
  *   bun run preview --seed=42
- *   bun run preview --earth         present-day Earth fixture (not a numeric seed)
+ *   bun run preview --project=earth present-day Earth fixture
+ *   bun run preview --earth         same as --project=earth
  *   bun run preview plates          globe + equirect with plates and motion arrows
  *   bun run preview plates equirect
  *   bun run preview crust           sea-floor age, orogeny and boundary types
@@ -19,9 +20,10 @@
  *   bun run preview --no-tectonics  the original 1843 distance-field blend, for comparison
  *   bun run preview --no-polar-straits
  *
- * Each view keeps preview/<name>.png, <name>-before.png, <name>-compare.png
- * (globe files are planet.png / compare.png; plate overlay is plates.png /
- * equirect-plates.png), plus preview/history/.
+ * Each view keeps preview/<project>/<name>.png, <name>-before.png,
+ * <name>-compare.png (globe files are planet.png / compare.png; plate
+ * overlay is plates.png / equirect-plates.png), plus preview/<project>/history/.
+ * Thalos is the default; --earth writes into preview/earth/.
  */
 import { createRequire } from "node:module";
 import { copyFile, mkdir, readdir } from "node:fs/promises";
@@ -31,10 +33,8 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Planet = require(join(root, "src", "planet.js"));
+const Projects = require(join(root, "src", "projects"));
 const Render = require(join(root, "src", "software-render.js"));
-
-const previewDir = join(root, "preview");
-const historyDir = join(previewDir, "history");
 
 const GEOGRAPHY = {
   globe: {
@@ -98,16 +98,20 @@ const CLIMATE = {
 
 const OVERLAY_VIEWS = { plates: PLATES, crust: CRUST, climate: CLIMATE };
 
-const { views, lon0, seed, overlay, connectOceans, noTectonics, noPolarStraits } = parseArgs(process.argv.slice(2));
+const { views, lon0, seed, project, overlay, connectOceans, noTectonics, noPolarStraits } = parseArgs(process.argv.slice(2));
 const VIEWS = OVERLAY_VIEWS[overlay] ?? GEOGRAPHY;
 
 const planet = Planet.generatePlanet({
-  seed: seed == null ? 88 : seed,
+  seed,
+  project,
   simulateTectonics: !noTectonics,
   polarStraits: !noPolarStraits,
   connectOceans,
 });
 
+const projectName = planet.config.project;
+const previewDir = join(root, Projects.dir(projectName));
+const historyDir = join(previewDir, "history");
 await mkdir(historyDir, { recursive: true });
 const stamp = timestamp();
 
@@ -140,12 +144,14 @@ for (const view of views) {
   console.log(outPath);
 }
 if (overlay) console.log(`${overlay} overlay`);
-if (seed != null) console.log(`seed ${seed}`);
+if (planet.config && planet.config.project) console.log(`project ${planet.config.project}`);
+if (planet.seed != null) console.log(`seed ${planet.seed}`);
 
 function parseArgs(argv) {
   const views = [];
   let lon0 = 0;
   let seed;
+  let project;
   let overlay = null;
   let connectOceans = false;
   let noTectonics = false;
@@ -167,6 +173,13 @@ function parseArgs(argv) {
       if (Number.isNaN(lon0)) throw new Error(`invalid ${arg}`);
     } else if (arg === "--earth") {
       seed = "earth";
+      project = "earth";
+    } else if (arg === "--project") {
+      const next = argv[++i];
+      if (next == null) throw new Error(`${arg} needs a name (thalos or earth)`);
+      project = next;
+    } else if (arg.startsWith("--project=")) {
+      project = arg.slice("--project=".length);
     } else if (arg === "--seed") {
       const next = argv[++i];
       if (next == null) throw new Error(`${arg} needs a value`);
@@ -195,7 +208,7 @@ function parseArgs(argv) {
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all|plates|crust|climate] [--lon=degrees] [--seed=n] [--earth] [--connect-oceans] [--no-polar-straits] [--no-tectonics]",
+          "usage: bun run preview [globe|equirect|all|plates|crust|climate] [--lon=degrees] [--seed=n] [--project=thalos|earth] [--earth] [--connect-oceans] [--no-polar-straits] [--no-tectonics]",
       );
     }
   }
@@ -203,6 +216,7 @@ function parseArgs(argv) {
     views: views.length ? [...new Set(views)] : ["globe", "equirect"],
     lon0,
     seed,
+    project,
     overlay,
     connectOceans,
     noTectonics,

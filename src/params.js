@@ -399,6 +399,86 @@ function all() {
 }
 
 
+/* Working ranges from a search session, laid over the vouched `p()`
+ * intervals. Never wider than the table: a search cannot walk off the map. */
+let overlay = {};
+try {
+    const loaded = require('./params-ranges.json');
+    if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) overlay = loaded;
+} catch (_) {
+    overlay = {};
+}
+
+
+function vouchedRange(name) {
+    const meta = all()[name];
+    return meta && meta.range ? meta.range.slice() : null;
+}
+
+
+function intersectRange(a, b) {
+    const lo = Math.max(a[0], b[0]);
+    const hi = Math.min(a[1], b[1]);
+    if (lo <= hi) return [lo, hi];
+    return b.slice();
+}
+
+
+/* The interval a sampler draws from: the overlay if one exists, else the
+ * vouched range. Always a subset of the vouched interval. */
+function rangeOf(name) {
+    const vouched = vouchedRange(name);
+    if (!vouched) return null;
+    const over = overlay[name];
+    return over ? intersectRange(over, vouched) : vouched.slice();
+}
+
+
+function getOverlay() {
+    return Object.assign({}, overlay);
+}
+
+
+function setOverlay(next) {
+    const problems = checkOverlay(next);
+    if (problems.length) throw new Error('params overlay:\n  ' + problems.join('\n  '));
+    overlay = Object.assign({}, next);
+}
+
+
+function checkOverlay(next) {
+    const problems = [];
+    if (next == null) return problems;
+    if (typeof next !== 'object' || Array.isArray(next)) return ['overlay is not an object'];
+    const registry = all();
+    for (const [name, range] of Object.entries(next)) {
+        const meta = registry[name];
+        if (!meta) {
+            problems.push(`${name}: is not a registered parameter`);
+            continue;
+        }
+        if (!meta.range) {
+            problems.push(`${name}: has no vouched range`);
+            continue;
+        }
+        if (!Array.isArray(range) || range.length !== 2
+            || !Number.isFinite(range[0]) || !Number.isFinite(range[1])
+            || range[0] > range[1]) {
+            problems.push(`${name}: bad range ${JSON.stringify(range)}`);
+            continue;
+        }
+        const [lo, hi] = meta.range;
+        if (range[0] < lo || range[1] > hi) {
+            problems.push(`${name}: [${range[0]}, ${range[1]}] leaves vouched [${lo}, ${hi}]`);
+        }
+        if (meta.unit === 'frac' && (range[0] < 0 || range[1] > 1)) {
+            problems.push(`${name}: fraction range [${range[0]}, ${range[1]}] leaves 0..1`);
+        }
+    }
+    return problems;
+}
+
+
 /* The parameters a sampler is allowed to vary: the ones somebody has
  * vouched for a range on. Everything else stays pinned. */
 function freeable() {
@@ -473,33 +553,33 @@ function checkRanges() {
 }
 
 
-/* A preset is a named set of pins: every parameter it names is decided,
+/* A project is a named set of pins: every parameter it names is decided,
  * everything it omits is free. Validating one is the same question the
  * registry already answers for DEFAULTS — does this name a parameter that
  * exists, and is the value one the generator can actually use. */
-function checkPreset(preset) {
+function checkProject(project) {
     const problems = [];
     const registry = all();
-    if (!preset || typeof preset !== 'object') return ['preset is not an object'];
-    if (!preset.name) problems.push('preset has no name');
-    for (const [name, value] of Object.entries(preset.values || {})) {
+    if (!project || typeof project !== 'object') return ['project is not an object'];
+    if (!project.name) problems.push('project has no name');
+    for (const [name, value] of Object.entries(project.values || {})) {
         const meta = registry[name];
         if (!meta) {
-            problems.push(`${preset.name}: "${name}" is not a registered parameter`);
+            problems.push(`${project.name}: "${name}" is not a registered parameter`);
             continue;
         }
         if (meta.default != null && typeof value !== typeof meta.default) {
-            problems.push(`${preset.name}.${name}: ${typeof value} where the default is ${typeof meta.default}`);
+            problems.push(`${project.name}.${name}: ${typeof value} where the default is ${typeof meta.default}`);
         }
         if (meta.unit === 'frac' && typeof value === 'number' && (value < 0 || value > 1)) {
-            problems.push(`${preset.name}.${name}: fraction ${value} leaves 0..1`);
+            problems.push(`${project.name}.${name}: fraction ${value} leaves 0..1`);
         }
     }
     return problems;
 }
 
 
-const problems = checkKeys().concat(checkRanges());
+const problems = checkKeys().concat(checkRanges()).concat(checkOverlay(overlay));
 if (problems.length) {
     throw new Error('params registry is out of date:\n  ' + problems.join('\n  '));
 }
@@ -510,10 +590,15 @@ module.exports = {
     MODULES,
     flatten,
     all,
+    vouchedRange,
+    rangeOf,
+    getOverlay,
+    setOverlay,
+    checkOverlay,
     freeable,
     exposed,
     needsNormalisation,
     checkKeys,
     checkRanges,
-    checkPreset,
+    checkProject,
 };
