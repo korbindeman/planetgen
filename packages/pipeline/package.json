@@ -1,0 +1,6 @@
+{
+    "name": "@planetgen/pipeline",
+    "private": true,
+    "main": "../../src/pipeline/index.js",
+    "description": "Frozen config, Planet document, and the linear stage runner."
+}

@@ -1,7 +1,7 @@
 /*
- * Headless planet: mesh, tectonics, climate, detail, and the quad geometry
- * the renderer draws. Free of WebGL and DOM so capture scripts can build a
- * planet the same way the browser does.
+ * Headless planet: mesh helpers, 1843 blend, overlay colours, and rasterizers.
+ * Generation itself is `packages/pipeline` — generatePlanet is a thin entry
+ * so the app and the scripts keep one call. Free of WebGL and DOM.
  */
 'use strict';
 
@@ -11,8 +11,6 @@ const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
 const SphereMesh = require('./sphere-mesh');
 const Tectonics = require('./tectonics');
 const EarthFixture = require('./earth-fixture');
-const Climate = require('./climate');
-const Detail = require('./detail');
 const Look = require('./look');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 
@@ -533,92 +531,31 @@ function ensureDetailMesh(detailN, jitter, cache) {
     return cache.detail;
 }
 
+function runBlend1843(simMesh, simMap, seed, tectOpts, log, flags = {}) {
+    simMap.boundaryWarp = Tectonics.makeBoundaryWarp(simMesh, simMap.r_xyz, seed, tectOpts);
+    simMap.tectonicFieldsFor = `${simMesh.numRegions}:${seed}`;
+    simMap.r_plate = Tectonics.plateOwnership(simMesh, simMap, tectOpts);
+    simMap.plate_is_ocean = new Set();
+    for (let pl = 0; pl < simMap.plates.length; pl++) {
+        if (makeRandInt(simMap.plates[pl].id + 1)(10) < 5) simMap.plate_is_ocean.add(pl);
+    }
+    if (flags.mergeOcean) {
+        simMap.plate_is_ocean = mergeOceanPlates(simMesh, simMap.r_plate, simMap.plate_is_ocean).plate_is_ocean;
+    }
+    simMap.extra_ocean_seeds = [];
+    simMap.plate_vec = plateVectorsFromPoles(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
+    assignRegionElevation(simMesh, simMap, seed, tectOpts.plates, makeFbm(seed), log);
+    simMap.r_boundary = null;
+    simMap.r_crust_age = null;
+    simMap.r_meters = null;
+    Tectonics.polarStraits(
+        simMesh, simMap.r_xyz, simMap.r_elevation,
+        Object.assign({}, tectOpts, {polarStraits: tectOpts.polarStraits}));
+}
+
+
 function generatePlanet(opts = {}, cache = {}) {
-    const seed = opts.seed == null ? 88 : (EarthFixture.isEarthSeed(opts.seed) ? EarthFixture.TOKEN : (opts.seed | 0) || 1);
-    const n = opts.n == null ? 10000 : (opts.n | 0);
-    const p = opts.p == null ? 20 : (opts.p | 0);
-    const jitter = opts.jitter == null ? 0.75 : opts.jitter;
-    const simulateTectonics = opts.simulateTectonics !== false;
-    const polarStraits = opts.polarStraits !== false;
-    const mergeOcean = !!opts.mergeOceanPlates;
-    const connectOceans = !!opts.connectOceans;
-    const detailPass = opts.detailPass !== false;
-    const detailN = opts.detailN == null ? Detail.DEFAULTS.n : (opts.detailN | 0);
-    const simSteps = opts.simSteps == null ? Tectonics.DEFAULTS.steps : opts.simSteps;
-    const log = !opts.quiet;
-    const fbm = makeFbm(seed);
-
-    const sim = ensureSimMesh({seed, n, jitter}, cache);
-    const simMesh = sim.mesh;
-    const simMap = emptySimMap(simMesh, sim.r_xyz, sim.t_xyz);
-    const useDetail = detailPass && detailN > simMesh.numRegions;
-    const tectOpts = Object.assign({}, opts.tectonicOptions);
-
-    if (EarthFixture.isEarthSeed(seed)) {
-        EarthFixture.buildEarthMap(simMesh, simMap, Object.assign({
-            seed,
-            deferCrests: useDetail,
-            polarStraits,
-        }, tectOpts));
-        simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
-    } else {
-        Object.assign(simMap, Tectonics.generatePlates(simMesh, p, seed, tectOpts));
-        if (simulateTectonics) {
-            Tectonics.simulateTectonics(simMesh, simMap, seed, Object.assign({
-                steps: simSteps,
-                deferCrests: useDetail,
-                polarStraits,
-            }, tectOpts));
-            simMap.plate_is_ocean = oceanicPlates(simMesh, simMap);
-        } else {
-            simMap.boundaryWarp = Tectonics.makeBoundaryWarp(simMesh, simMap.r_xyz, seed, Tectonics.DEFAULTS);
-            simMap.tectonicFieldsFor = `${simMesh.numRegions}:${seed}`;
-            simMap.r_plate = Tectonics.plateOwnership(simMesh, simMap, Tectonics.DEFAULTS);
-            simMap.plate_is_ocean = new Set();
-            for (let pl = 0; pl < simMap.plates.length; pl++) {
-                if (makeRandInt(simMap.plates[pl].id + 1)(10) < 5) simMap.plate_is_ocean.add(pl);
-            }
-            if (mergeOcean) {
-                simMap.plate_is_ocean = mergeOceanPlates(simMesh, simMap.r_plate, simMap.plate_is_ocean).plate_is_ocean;
-            }
-            simMap.extra_ocean_seeds = [];
-            simMap.plate_vec = plateVectorsFromPoles(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
-            assignRegionElevation(simMesh, simMap, seed, p, fbm, log);
-            simMap.r_boundary = null;
-            simMap.r_crust_age = null;
-            simMap.r_meters = null;
-            Tectonics.polarStraits(
-                simMesh, simMap.r_xyz, simMap.r_elevation,
-                Object.assign({}, Tectonics.DEFAULTS, tectOpts, {polarStraits}));
-        }
-    }
-    simMap.plate_centroid = plateCentroids(simMesh, simMap.r_xyz, simMap.plates, simMap.r_plate);
-    if (connectOceans) connectWorldOcean(simMesh, simMap.r_elevation);
-    Climate.assignClimate(simMesh, simMap, EarthFixture.numericSeed(seed));
-
-    let mesh, map;
-    if (useDetail) {
-        const built = ensureDetailMesh(detailN, jitter, cache);
-        map = Detail.applyDetailPass(simMesh, simMap, built.mesh, built.r_xyz, EarthFixture.numericSeed(seed), {
-            polarStraits,
-        });
-        map.t_xyz = built.t_xyz;
-        map.t_elevation = new Float32Array(built.mesh.numTriangles);
-        map.t_moisture = new Float32Array(built.mesh.numTriangles);
-        map.t_temperature = new Float32Array(built.mesh.numTriangles);
-        mesh = built.mesh;
-        if (connectOceans) connectWorldOcean(mesh, map.r_elevation);
-    } else {
-        mesh = simMesh;
-        map = simMap;
-    }
-    assignTriangleValues(mesh, map);
-    const geometry = buildQuadGeometry(mesh, map, log);
-
-    return {
-        seed, n, p, jitter,
-        mesh, map, simMesh, simMap, geometry,
-    };
+    return require('./pipeline').run(opts, cache);
 }
 
 const PI = Math.PI;
@@ -774,6 +711,10 @@ module.exports = {
     oceanicPlates,
     connectWorldOcean,
     assignTriangleValues,
+    emptySimMap,
+    ensureSimMesh,
+    ensureDetailMesh,
+    runBlend1843,
     rasterizeEquirect,
     rasterizeLonLatBox,
     BOUNDARY_CONVERGENT,

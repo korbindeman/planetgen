@@ -24,6 +24,7 @@
 const SimplexNoise = require('simplex-noise');
 const {vec3} = require('gl-matrix');
 const {makeRandInt, makeRandFloat} = require('@redblobgames/prng');
+const World = require('./world');
 
 /* The -1..1 elevation scale the renderer, climate model and exporter all
  * share. Defined here because the simulation works in metres and has to
@@ -230,8 +231,11 @@ function assignSitesToPlates(sites, nuclei, targets) {
 }
 
 
-function generatePlates(mesh, numPlates, seed, options) {
-    const opts = Object.assign({}, DEFAULTS, options);
+function generatePlates(mesh, seed, options) {
+    const opts = World.derive(Object.assign({}, World.DEFAULTS, DEFAULTS, options));
+    /* Already scaled for the body by World.derive, so this is how many plates
+     * *this* planet has, not how many an Earth-sized one would. */
+    const numPlates = opts.plates;
     const randFloat = makeRandFloat(seed ^ 0x5f3759df);
     const nextName = makePlateNamer(makeRandFloat(seed ^ 0x1b873593));
 
@@ -715,6 +719,11 @@ const CRUST_OCEANIC = 0, CRUST_CONTINENTAL = 1;
 
 const DEFAULTS = {
     steps: 20,
+    plates: 20,                   // at Earth's radius. Plate size is set by the
+                                  // convecting mantle beneath, which is a length
+                                  // rather than a share of the sphere, so a smaller
+                                  // planet carries fewer of them — see World.derive
+
     nucleusSeparation: 0.45,      // radians between plate nuclei at birth
     sitesPerPlate: 40,            // enough that even the smallest plate in a
                                   // heavy-tailed size distribution gets several, and
@@ -2536,11 +2545,59 @@ function crustToElevation(mesh, map, seed, opts) {
         applyIslandCrests(mesh, r_xyz, meters, map.r_crust_type, map.r_arc, map.r_hotspot, seed, opts);
     }
     const detail = makeFbm(new SimplexNoise(makeRandFloat(seed)), 5);
+    const grain = new Float32Array(numRegions);
     for (let r = 0; r < numRegions; r++) {
-        r_elevation[r] = metersToElevation(meters[r]) +
-            opts.detailNoise * detail(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
+        grain[r] = opts.detailNoise * detail(r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]);
+        r_elevation[r] = metersToElevation(meters[r]) + grain[r];
     }
     polarStraits(mesh, r_xyz, r_elevation, opts, meters);
+    solveSeaLevel(mesh, r_elevation, meters, grain, opts);
+}
+
+
+/* Put sea level where the planet has the land fraction it was asked for.
+ *
+ * How much of a planet is dry is set by how much water it has, not by how
+ * much continental crust it grew — `seaLevelThicknessKm` has always been the
+ * dial for that, but it is expressed in crustal thickness and lands wherever
+ * it lands. `landFraction` states the target directly and this solves for it,
+ * so the figure is exact and the same on every seed rather than drifting with
+ * the roll. Null leaves sea level alone, which is what the model did before.
+ *
+ * No iteration is needed. A cell is land when
+ *
+ *     metersToElevation(meters - shift) + grain > 0
+ *
+ * and metersToElevation is monotonic, so that is just
+ *
+ *     shift < meters - elevationToMeters(-grain)
+ *
+ * Sorting that per-cell threshold gives the shift for any land count
+ * directly. Counting cells rather than area is deliberate: `stats` counts
+ * cells, and a solve that targeted a different quantity than the measurement
+ * would report a land fraction nobody asked for.
+ */
+function solveSeaLevel(mesh, r_elevation, meters, grain, opts) {
+    if (opts.landFraction == null) return;
+    const n = mesh.numRegions;
+    const want = Math.round(Math.min(1, Math.max(0, opts.landFraction)) * n);
+
+    const threshold = new Float64Array(n);
+    for (let r = 0; r < n; r++) threshold[r] = meters[r] - elevationToMeters(-grain[r]);
+    const sorted = Float64Array.from(threshold).sort();
+
+    /* Land is every cell whose threshold beats the shift, so `want` of them
+     * means cutting between the want-th largest and the one below it. */
+    let shift;
+    if (want <= 0) shift = sorted[n - 1] + 1;
+    else if (want >= n) shift = sorted[0] - 1;
+    else shift = 0.5 * (sorted[n - want - 1] + sorted[n - want]);
+    if (!Number.isFinite(shift)) return;
+
+    for (let r = 0; r < n; r++) {
+        meters[r] -= shift;
+        r_elevation[r] = metersToElevation(meters[r]) + grain[r];
+    }
 }
 
 
@@ -2654,7 +2711,7 @@ function polarStraits(mesh, r_xyz, r_elevation, opts, r_meters) {
 /* Runs the whole model and leaves r_elevation, the crust fields and the
  * boundary classification on `map`. */
 function simulateTectonics(mesh, map, seed, options) {
-    const opts = Object.assign({}, DEFAULTS, options);
+    const opts = World.derive(Object.assign({}, World.DEFAULTS, DEFAULTS, options));
     const randFloat = makeRandFloat(seed ^ 0x85ebca6b);
 
     /* Both fields are one value per cell, so a cached one belongs to the mesh
@@ -2745,6 +2802,6 @@ module.exports = {
     classifyBoundaries, paintConvergentMargins,
     placeCratons, initCrust, applyBasins,
     oceanDepthMeters, continentHeightMeters,
-    crustToMeters, applyIslandCrests, crustToElevation, polarStraits,
+    crustToMeters, applyIslandCrests, crustToElevation, polarStraits, solveSeaLevel,
     simulateTectonics,
 };

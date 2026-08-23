@@ -1,6 +1,7 @@
 {
     "name": "@redblobgames/1843-planet-generation",
     "version": "1.0.0",
+    "workspaces": ["packages/*"],
     "dependencies": {
         "@redblobgames/dual-mesh": "https://github.com/redblobgames/dual-mesh",
         "@redblobgames/prng": "https://github.com/redblobgames/prng",
@@ -16,10 +17,14 @@
     "scripts": {
         "dev": "bun --hot ./index.html",
         "preview": "bun ./scripts/preview.mjs",
+        "crop": "bun ./scripts/crop.mjs",
         "stats": "bun ./scripts/tectonics-stats.mjs",
         "sheet": "bun ./scripts/seed-sheet.mjs",
         "climate": "bun ./scripts/climate-stats.mjs",
         "export:td": "bun ./scripts/export-td.mjs",
-        "build": "bun build ./planet-generation.js --target=browser --minify --sourcemap=linked --outdir=build --entry-naming=_bundle.[ext]"
+        "build": "bun build ./src/planet-generation.js --target=browser --minify --sourcemap=linked --outdir=build --entry-naming=_bundle.[ext]",
+        "check:earth": "bun ./scripts/check-earth.mjs",
+        "check:presets": "bun ./scripts/check-presets.mjs",
+        "check:pipeline": "bun ./scripts/check-pipeline.mjs"
     }
 }

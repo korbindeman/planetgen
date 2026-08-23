@@ -1,0 +1,6 @@
+{
+    "name": "@planetgen/export",
+    "private": true,
+    "main": "index.js",
+    "description": "Five-channel sketch export for terrain-diffusion. CLI: bun run export:td."
+}

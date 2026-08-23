@@ -30,8 +30,8 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
-const Planet = require(join(root, "planet.js"));
-const Render = require(join(root, "software-render.js"));
+const Planet = require(join(root, "src", "planet.js"));
+const Render = require(join(root, "src", "software-render.js"));
 
 const previewDir = join(root, "preview");
 const historyDir = join(previewDir, "history");

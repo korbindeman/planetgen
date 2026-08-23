@@ -5,8 +5,10 @@ alwaysApply: true
 
 # Climate
 
-`climate.js` holds the whole model, free of WebGL and DOM so it can be
-measured with `bun run climate`. Run that before judging pictures.
+`climate.js` holds the whole model, free of WebGL and DOM. Judge it from
+`bun run preview climate` — moisture on its own, not the finished biome
+map. `bun run climate` is an optional helper; do not treat its numbers as
+a pass.
 
 ## The rule that matters
 
@@ -23,14 +25,10 @@ wind is easterly, so a continent's east coast gets fresh maritime air and its
 west coast gets air that has already crossed the land; under the westerlies
 it reverses. Rain shadows fall out of the same mechanism.
 
-`bun run climate` reports that asymmetry directly. A latitude-band model
-scores zero on both lines and cannot do otherwise. Current values:
-
-```
-trades 15-30 deg   east wetter by +0.12     Earth: east wetter
-westerlies 40-60   west wetter by +0.16     Earth: west wetter
-vegetated 67%  lush 29%                     Earth ~65% and ~30%
-```
+You should be able to *see* that asymmetry: a continent's windward coast
+wet, the leeward coast dry, interiors not a uniform desert. `bun run
+climate` can confirm the sign if the picture is ambiguous. It is not the
+verdict.
 
 Do not:
 
@@ -48,11 +46,12 @@ Do not:
 
 ## Reading the result
 
-`bun run preview climate` renders the moisture field on its own. Use it.
-Rendering the finished biome colours and reasoning backwards about what the
-moisture must have been is how you end up tuning the wrong subsystem — the
-biome table needs moisture well above 0.5 before land stops looking arid, so
-a real improvement in moisture can leave the finished map looking unchanged.
+`bun run preview climate` renders the moisture field on its own. Use it,
+and crop in on a continent that should show a wet and a dry coast. Rendering
+the finished biome colours and reasoning backwards about what the moisture
+must have been is how you end up tuning the wrong subsystem — the biome
+table needs moisture well above 0.5 before land stops looking arid, so a
+real improvement in moisture can leave the finished map looking unchanged.
 
 `colormap.js` is part of this. Its middle row is savanna and tropical
 grassland; those entries have to stay clearly greener than the desert row

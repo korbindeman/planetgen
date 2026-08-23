@@ -23,10 +23,11 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(join(root, 'package.json'));
 const { makeRandFloat } = require('@redblobgames/prng');
-const SphereMesh = require(join(root, 'sphere-mesh.js'));
-const Tectonics = require(join(root, 'tectonics.js'));
-const EarthFixture = require(join(root, 'earth-fixture.js'));
-const Climate = require(join(root, 'climate.js'));
+const SphereMesh = require(join(root, 'src', 'sphere-mesh.js'));
+const Tectonics = require(join(root, 'src', 'tectonics.js'));
+const EarthFixture = require(join(root, 'src', 'earth-fixture.js'));
+const Climate = require(join(root, 'src', 'climate.js'));
+const World = require(join(root, 'src', 'world.js'));
 
 const args = Object.fromEntries(
     process.argv.slice(2)
@@ -38,7 +39,7 @@ const P = Number(args.p ?? 20);
 const EARTH = 'earth' in args;
 const SEEDS = EARTH ? [EarthFixture.TOKEN] : (args.seeds ?? '1,2,3,5,6,9').split(',').map(Number);
 const OPTIONS = {};
-for (const key of Object.keys(Climate.DEFAULTS)) {
+for (const key of Object.keys(Climate.DEFAULTS).concat(Object.keys(World.DEFAULTS))) {
     if (args[key] !== undefined) OPTIONS[key] = Number(args[key]);
 }
 
@@ -49,7 +50,7 @@ function run(seed) {
     if (EarthFixture.isEarthSeed(seed)) {
         EarthFixture.buildEarthMap(mesh, map, {seed});
     } else {
-        Object.assign(map, Tectonics.generatePlates(mesh, P, seed));
+        Object.assign(map, Tectonics.generatePlates(mesh, seed, {plates: P}));
         Tectonics.simulateTectonics(mesh, map, seed);
     }
     const started = Date.now();

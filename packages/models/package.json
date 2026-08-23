@@ -1,0 +1,6 @@
+{
+    "name": "@planetgen/models",
+    "private": true,
+    "main": "index.js",
+    "description": "Body, mesh, tectonics, climate, detail, and erosion. Files stay at the repo root until a later move."
+}

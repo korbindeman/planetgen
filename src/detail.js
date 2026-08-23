@@ -18,10 +18,9 @@ const SimplexNoise = require('simplex-noise');
 const {makeRandFloat} = require('@redblobgames/prng');
 const Climate = require('./climate');
 const Tectonics = require('./tectonics');
-const Look = require('./look');
 const Erosion = require('./erosion');
+const World = require('./world');
 
-const EARTH_RADIUS_KM = 6371;
 
 const DEFAULTS = {
     n: 200000,                    // regions on the detail mesh
@@ -71,7 +70,7 @@ const DEFAULTS = {
     thermalShare: 0.4,
     glacialIters: 3,
     glacialStrength: 0.55,
-    iceTemp: Look.LAND_ICE,
+    iceTemp: 0.28,                // same threshold as Look.LAND_ICE; kept here so this module does not import GLSL
     iceRamp: 0.18,
     paleoIceTemp: 0.58,           // last-glacial ice line; fjords on the high-latitude coasts
     paleoIceRamp: 0.16,
@@ -110,12 +109,12 @@ const DEFAULTS = {
 };
 
 
-function cellSpacingKm(numRegions) {
-    return 2 * EARTH_RADIUS_KM * Math.sqrt(Math.PI / numRegions);
+function cellSpacingKm(numRegions, opts) {
+    return World.cellSpacingKm(numRegions, opts);
 }
 
-function noiseFrequency(wavelengthKm) {
-    return 2 * Math.PI * EARTH_RADIUS_KM / wavelengthKm;
+function noiseFrequency(wavelengthKm, opts) {
+    return 2 * Math.PI * opts.radiusKm / wavelengthKm;
 }
 
 function smoothstep(x, edge0, edge1) {
@@ -283,7 +282,7 @@ function applyPhasorRidges(mesh, r_xyz, meters, r_orogeny, r_orogenyDir, seed, o
     if (!r_orogeny || !r_orogenyDir) return meters;
     const n = mesh.numRegions;
     const floor = opts.ridgeOrogenyMin;
-    const avgEdgeKm = (Math.PI * EARTH_RADIUS_KM) / Math.sqrt(n);
+    const avgEdgeKm = (Math.PI * opts.radiusKm) / Math.sqrt(n);
     const smoothPasses = Math.max(2, Math.round(opts.ridgeSmoothKm / avgEdgeKm));
     const dir = smoothOrogenyDir(mesh, r_orogeny, r_orogenyDir, floor, smoothPasses);
 
@@ -303,8 +302,8 @@ function applyPhasorRidges(mesh, r_xyz, meters, r_orogeny, r_orogenyDir, seed, o
         const t = candidates[i]; candidates[i] = candidates[j]; candidates[j] = t;
     }
 
-    const wavelengthRad = opts.ridgeWavelengthKm / EARTH_RADIUS_KM;
-    const bandwidthRad = opts.ridgeBandwidthKm / EARTH_RADIUS_KM;
+    const wavelengthRad = opts.ridgeWavelengthKm / opts.radiusKm;
+    const bandwidthRad = opts.ridgeBandwidthKm / opts.radiusKm;
     const frequency = 1 / wavelengthRad;
     const invBw2 = -0.5 / (bandwidthRad * bandwidthRad);
     const envelopeCutoffSq = 9 * bandwidthRad * bandwidthRad;
@@ -414,7 +413,7 @@ function simMetersOf(simMap) {
 
 
 function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) {
-    const opts = Object.assign({}, DEFAULTS, options);
+    const opts = World.derive(Object.assign({}, World.DEFAULTS, DEFAULTS, options));
     const tectOpts = Object.assign({}, Tectonics.DEFAULTS, options);
     const {numRegions} = detailMesh;
     const simN = simMesh.numRegions;
@@ -500,7 +499,7 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
     Tectonics.applyIslandCrests(
         detailMesh, detailXyz, meters, r_crust_type, crestArc, crestHot, seed,
         Object.assign({}, tectOpts, {
-            crestFrequency: noiseFrequency(opts.islandWavelengthKm),
+            crestFrequency: noiseFrequency(opts.islandWavelengthKm, opts),
         }));
 
     applyPhasorRidges(
@@ -514,21 +513,6 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
         r_elevation[r] = elevNow;
         if (elevNow >= 0 && !sourceLand[r]) r_moisture[r] = 0.7;
     }
-
-    const erosionOpts = Object.assign({}, opts, {
-        noiseFreq: noiseFrequency(opts.noiseWavelengthKm),
-    });
-    Erosion.applyErosion(
-        detailMesh, detailXyz, meters, hasTemperature ? r_temperature : null,
-        hasOrogeny ? r_orogeny : null, hasArc ? r_arc : null, seed, erosionOpts);
-
-    for (let r = 0; r < numRegions; r++) {
-        const prevElev = r_elevation[r];
-        r_elevation[r] = Tectonics.metersToElevation(meters[r]);
-        if (hasTemperature) r_temperature[r] -= lapse * (r_elevation[r] - prevElev);
-    }
-
-    Tectonics.polarStraits(detailMesh, detailXyz, r_elevation, tectOpts, meters);
 
     return {
         plates: simMap.plates,
@@ -557,12 +541,31 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
 }
 
 
+function applyErosionPass(detailMesh, detailXyz, map, seed, options) {
+    const opts = World.derive(Object.assign({}, World.DEFAULTS, DEFAULTS, options));
+    const lapse = Climate.DEFAULTS.lapse;
+    const meters = map.r_meters;
+    const r_elevation = map.r_elevation;
+    const r_temperature = map.r_temperature;
+    Erosion.applyErosion(
+        detailMesh, detailXyz, meters, r_temperature,
+        map.r_orogeny, map.r_arc, seed,
+        Object.assign({}, opts, {noiseFreq: noiseFrequency(opts.noiseWavelengthKm, opts)}));
+    for (let r = 0; r < detailMesh.numRegions; r++) {
+        const prevElev = r_elevation[r];
+        r_elevation[r] = Tectonics.metersToElevation(meters[r]);
+        if (r_temperature) r_temperature[r] -= lapse * (r_elevation[r] - prevElev);
+    }
+    return map;
+}
+
+
 module.exports = {
     DEFAULTS,
-    EARTH_RADIUS_KM,
     cellSpacingKm,
     noiseFrequency,
     warpTerrain,
     applyPhasorRidges,
     applyDetailPass,
+    applyErosionPass,
 };

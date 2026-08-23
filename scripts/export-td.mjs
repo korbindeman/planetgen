@@ -6,6 +6,9 @@
  *   bun run export:td
  *   bun run export:td --seed=88 --scale=23
  *   bun run export:td --lon=90 --crops=3
+ *   bun run export:td --earth
+ *   bun run export:td --earth --size=16x12
+ *   bun run export:td --earth --crop=norway:4,58,16,70
  *
  * Writes preview/terrain-diffusion/:
  *   examples.png              world sketch + crop windows
@@ -27,9 +30,10 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
-const Tectonics = require(join(root, "tectonics.js"));
-const Planet = require(join(root, "planet.js"));
-const Render = require(join(root, "software-render.js"));
+const Tectonics = require(join(root, "src", "tectonics.js"));
+const EarthFixture = require(join(root, "src", "earth-fixture.js"));
+const Planet = require(join(root, "src", "planet.js"));
+const Render = require(join(root, "src", "software-render.js"));
 
 const outDir = join(root, "preview", "terrain-diffusion");
 
@@ -50,9 +54,9 @@ const TD_EARTH_KM = 40075.017;
 const PI = Math.PI;
 const {elevationToMeters, clamp01} = Tectonics;
 
-const { seed, lon0, scaleKm, crops, connectOceans, width, height } = parseArgs(
-  process.argv.slice(2),
-);
+const {
+  seed, lon0, scaleKm, crops, connectOceans, width, height, cropW, cropH, namedCrops,
+} = parseArgs(process.argv.slice(2));
 
 const planet = Planet.generatePlanet({
   seed: seed == null ? 88 : seed,
@@ -60,28 +64,41 @@ const planet = Planet.generatePlanet({
 });
 
 const lon0Rad = lon0 * PI / 180;
-const cropW = 48;
-const cropH = 32;
 const cropCount = crops;
 
 const rawWorld = Planet.rasterizeEquirect(planet.mesh, planet.map, width, height, lon0Rad);
 const world = fieldsToTdLayers(rawWorld, width, height);
 const overviewKm = TD_EARTH_KM / width;
-const winW = Math.max(8, Math.round(cropW * scaleKm * width / TD_EARTH_KM));
-const winH = Math.max(6, Math.round(cropH * scaleKm * 2 * height / TD_EARTH_KM));
-const picks = pickTdCrops(world, {winW, winH, count: cropCount});
+const boxes = namedCrops.length
+  ? namedCrops
+  : (EarthFixture.isEarthSeed(planet.seed) ? earthCrops(scaleKm) : null);
+const picks = boxes
+  ? boxes.map((box) => namedPick({
+    ...box,
+    cropW: box.cropW || cropW,
+    cropH: box.cropH || cropH,
+  }, width, height, lon0))
+  : pickTdCrops(world, {
+    winW: Math.max(8, Math.round(cropW * scaleKm * width / TD_EARTH_KM)),
+    winH: Math.max(6, Math.round(cropH * scaleKm * 2 * height / TD_EARTH_KM)),
+    count: cropCount,
+  });
 
 const cropRecords = picks.map((pick) => {
-  const bounds = pixelBounds(pick.x, pick.y, pick.winW, pick.winH, width, height);
+  const w = pick.cropW || cropW;
+  const h = pick.cropH || cropH;
+  const bounds = pick.west != null
+    ? {west: pick.west, south: pick.south, east: pick.east, north: pick.north}
+    : pixelBounds(pick.x, pick.y, pick.winW, pick.winH, width, height);
   const southRad = bounds.south * PI / 180;
   const northRad = bounds.north * PI / 180;
   const raw = Planet.rasterizeLonLatBox(
     planet.mesh, planet.map,
     bounds.west, bounds.south, bounds.east, bounds.north,
-    cropW, cropH, lon0Rad,
+    w, h, lon0Rad,
   );
-  const layers = fieldsToTdLayers(raw, cropW, cropH, (row) => (
-    northRad - (row + 0.5) / cropH * (northRad - southRad)
+  const layers = fieldsToTdLayers(raw, w, h, (row) => (
+    northRad - (row + 0.5) / h * (northRad - southRad)
   ));
   return {
     name: pick.name,
@@ -89,6 +106,8 @@ const cropRecords = picks.map((pick) => {
     y: pick.y,
     winW: pick.winW,
     winH: pick.winH,
+    cropW: w,
+    cropH: h,
     landFrac: pick.landFrac,
     ...bounds,
     layers,
@@ -136,19 +155,19 @@ for (const crop of cropRecords) {
   manifest.crops.push({
     name: crop.name,
     dir: `crop-${crop.name}`,
-    width: cropW,
-    height: cropH,
+    width: crop.cropW,
+    height: crop.cropH,
     landFrac: crop.landFrac,
     ...bounds,
-    outputPx: [cropW * 256, cropH * 256],
-    coverageKm: [cropW * scaleKm, cropH * scaleKm],
+    outputPx: [crop.cropW * 256, crop.cropH * 256],
+    coverageKm: [crop.cropW * scaleKm, crop.cropH * scaleKm],
   });
   console.log(join(dir, "heightmap.tif"));
 }
 
 await writeFile(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 console.log(join(outDir, "examples.png"));
-console.log(`seed ${planet.seed}  scale ${scaleKm} km/px`);
+console.log(`seed ${planet.seed}  scale ${scaleKm} km/px  crops ${cropRecords.map((c) => `${c.name} ${c.cropW}x${c.cropH}`).join(", ")}`);
 
 async function writeFolder(dir, layers, bounds) {
   await mkdir(dir, { recursive: true });
@@ -414,6 +433,93 @@ function geoKeys() {
   return buf;
 }
 
+function wrapLon(lon) {
+  let l = lon;
+  while (l < -180) l += 360;
+  while (l >= 180) l -= 360;
+  return l;
+}
+
+function lonLatToPixel(lon, lat, width, height, lon0) {
+  const l = wrapLon(lon - lon0);
+  return {
+    x: (l + 180) / 360 * width,
+    y: (90 - lat) / 180 * height,
+  };
+}
+
+function boxAround(name, lon, lat, cellsW, cellsH, scaleKm) {
+  const kmPerDeg = TD_EARTH_KM / 360;
+  const latSpan = cellsH * scaleKm / kmPerDeg;
+  const lonSpan = cellsW * scaleKm / (kmPerDeg * Math.max(0.2, Math.cos(lat * PI / 180)));
+  return {
+    name,
+    west: lon - lonSpan / 2,
+    south: lat - latSpan / 2,
+    east: lon + lonSpan / 2,
+    north: lat + latSpan / 2,
+  };
+}
+
+function earthCrops(scaleKm) {
+  /* Centers from the fixture raster, not textbook lon/lat. Andes and
+   * Japan stay at 16×12 so the landform fills the window; islands are
+   * 24×16 so more than one land blob fits. */
+  return [
+    Object.assign(boxAround("andes", -76.2, -34.4, 16, 12, scaleKm), {cropW: 16, cropH: 12}),
+    Object.assign(boxAround("japan", 140.9, 35.6, 16, 12, scaleKm), {cropW: 16, cropH: 12}),
+    Object.assign(boxAround("islands", 126.5, -2.5, 24, 16, scaleKm), {cropW: 24, cropH: 16}),
+  ];
+}
+
+function namedPick(box, width, height, lon0) {
+  const cellsW = box.cropW || 16;
+  const cellsH = box.cropH || 12;
+  const nw = lonLatToPixel(box.west, box.north, width, height, lon0);
+  const se = lonLatToPixel(box.east, box.south, width, height, lon0);
+  return {
+    name: box.name,
+    x: Math.round(nw.x),
+    y: Math.round(nw.y),
+    winW: Math.max(1, Math.round(se.x - nw.x)),
+    winH: Math.max(1, Math.round(se.y - nw.y)),
+    cropW: cellsW,
+    cropH: cellsH,
+    landFrac: 0,
+    west: box.west - lon0,
+    south: box.south,
+    east: box.east - lon0,
+    north: box.north,
+  };
+}
+
+function parseCrop(spec) {
+  const m = String(spec).match(
+    /^([a-z0-9-]+):(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)$/i,
+  );
+  if (!m) {
+    throw new Error(`crop needs name:west,south,east,north (got ${spec})`);
+  }
+  const west = Number(m[2]), south = Number(m[3]), east = Number(m[4]), north = Number(m[5]);
+  if (east <= west || north <= south) {
+    throw new Error(`crop ${m[1]} needs east > west and north > south`);
+  }
+  return {name: m[1], west, south, east, north};
+}
+
+function parseSize(spec) {
+  const m = String(spec).match(/^(\d+)x(\d+)$/i);
+  if (!m) throw new Error(`size needs WxH (got ${spec})`);
+  return {cropW: Number(m[1]) | 0, cropH: Number(m[2]) | 0};
+}
+
+function parseSeed(raw) {
+  if (String(raw).trim().toLowerCase() === "earth") return "earth";
+  const n = Number(raw);
+  if (Number.isNaN(n)) throw new Error(`seed needs a number or "earth" (got ${raw})`);
+  return n | 0;
+}
+
 function parseArgs(argv) {
   let seed;
   let lon0 = 0;
@@ -422,17 +528,24 @@ function parseArgs(argv) {
   let connectOceans = false;
   let width = 720;
   let height = 360;
+  let cropW;
+  let cropH;
+  const namedCrops = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    const nextNum = (name) => {
+    const nextVal = (name) => {
       const next = argv[++i];
-      if (next == null || Number.isNaN(Number(next))) {
-        throw new Error(`${name} needs a number`);
-      }
-      return Number(next);
+      if (next == null) throw new Error(`${name} needs a value`);
+      return next;
     };
-    if (arg === "--seed") seed = nextNum(arg) | 0;
-    else if (arg.startsWith("--seed=")) seed = Number(arg.slice(7)) | 0;
+    const nextNum = (name) => {
+      const n = Number(nextVal(name));
+      if (Number.isNaN(n)) throw new Error(`${name} needs a number`);
+      return n;
+    };
+    if (arg === "--earth") seed = "earth";
+    else if (arg === "--seed") seed = parseSeed(nextVal(arg));
+    else if (arg.startsWith("--seed=")) seed = parseSeed(arg.slice(7));
     else if (arg === "--lon" || arg === "--lon0") lon0 = nextNum(arg);
     else if (arg.startsWith("--lon=") || arg.startsWith("--lon0=")) {
       lon0 = Number(arg.slice(arg.indexOf("=") + 1));
@@ -441,16 +554,27 @@ function parseArgs(argv) {
     else if (arg === "--crops") crops = nextNum(arg) | 0;
     else if (arg.startsWith("--crops=")) crops = Number(arg.slice(8)) | 0;
     else if (arg === "--width") width = nextNum(arg) | 0;
-    else if (arg.startsWith("--width=")) width = nextNum(arg) | 0;
+    else if (arg.startsWith("--width=")) width = Number(arg.slice(8)) | 0;
     else if (arg === "--height") height = nextNum(arg) | 0;
     else if (arg.startsWith("--height=")) height = Number(arg.slice(9)) | 0;
+    else if (arg === "--size") {
+      ({cropW, cropH} = parseSize(nextVal(arg)));
+    } else if (arg.startsWith("--size=")) {
+      ({cropW, cropH} = parseSize(arg.slice(7)));
+    } else if (arg === "--crop") namedCrops.push(parseCrop(nextVal(arg)));
+    else if (arg.startsWith("--crop=")) namedCrops.push(parseCrop(arg.slice(7)));
     else if (arg === "--connect-oceans") connectOceans = true;
     else {
       throw new Error(
         `unknown export-td arg: ${arg}\n` +
-          "usage: bun run export:td [--seed=n] [--lon=deg] [--scale=km] [--crops=n]",
+          "usage: bun run export:td [--seed=n] [--earth] [--lon=deg] [--scale=km] [--size=WxH] [--crop=name:w,s,e,n] [--crops=n]",
       );
     }
   }
-  return { seed, lon0, scaleKm, crops, connectOceans, width, height };
+  const useNamed = namedCrops.length > 0 || seed === "earth";
+  if (cropW == null) {
+    cropW = useNamed ? 16 : 48;
+    cropH = useNamed ? 12 : 32;
+  }
+  return { seed, lon0, scaleKm, crops, connectOceans, width, height, cropW, cropH, namedCrops };
 }

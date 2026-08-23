@@ -17,6 +17,7 @@
         overflow: hidden;
         background: #fff;
         color: #000;
+        font-family: ui-sans-serif, system-ui, sans-serif;
       }
       @media (prefers-color-scheme: dark) {
         html { filter: invert(1); }
@@ -33,6 +34,95 @@
         width: 8em;
         font: inherit;
         font-variant-numeric: tabular-nums;
+      }
+      /* One flat paragraph of <br>s was why this read as a pile. Sections
+         group by the question each answers: what planet, how am I looking at
+         it, what is the model doing, which roll, how finely computed. */
+      .controls { flex: 0 0 17rem; }
+      .panel {
+        border-top: 1px solid currentColor;
+        padding: 0.6rem 0 0.7rem;
+        margin: 0;
+      }
+      .panel:first-child { border-top: 0; padding-top: 0; }
+      .panel h2, .panel summary {
+        margin: 0 0 0.4rem;
+        font-size: 0.75em;
+        font-weight: 600;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        opacity: 0.6;
+        cursor: default;
+      }
+      .panel summary { cursor: pointer; margin-bottom: 0; }
+      details.panel[open] summary { margin-bottom: 0.4rem; }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        align-items: center;
+        margin-bottom: 0.3rem;
+      }
+      .muted { opacity: 0.6; font-size: 0.8em; font-style: italic; }
+      /* Checkboxes were laid out inline in flowing text, so labels broke
+         mid-phrase: "Plate / boundaries". One per line, label never splits. */
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        line-height: 1.6;
+      }
+      .check input { margin: 0; flex: 0 0 auto; }
+      /* Name on the left, value on the right, slider underneath. Every
+         slider shows its number; three of them used to show nothing. */
+      .field { display: block; margin: 0.35rem 0; }
+      .field > span { font-size: 0.9em; }
+      .field > output {
+        float: right;
+        font-size: 0.9em;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+      }
+      .field > input[type="range"] { display: block; width: 100%; margin-top: 0.1rem; }
+      /* Nothing showed which view or draw mode was active. */
+      .row button[aria-pressed="true"] {
+        font-weight: 700;
+        outline: 2px solid currentColor;
+        outline-offset: -2px;
+      }
+      .controls #preset-select { font: inherit; max-width: 100%; }
+      #param-list { margin-top: 0.4rem; }
+      /* A parameter row is [pin] name [value] over its slider. The pin is
+         the whole model in one control: filled means this preset decides
+         the value, hollow means it is free and a shuffle may move it. */
+      .param { display: block; margin: 0.4rem 0; }
+      .param-head { display: flex; align-items: baseline; gap: 0.35rem; }
+      .param-pin {
+        flex: 0 0 auto;
+        width: 1.35em;
+        font: inherit;
+        line-height: 1;
+        padding: 0 0.15em;
+        cursor: pointer;
+        background: none;
+        border: 0;
+        opacity: 0.35;
+      }
+      .param-pin[aria-pressed="true"] { opacity: 1; }
+      .param-name { flex: 1 1 auto; font-size: 0.9em; }
+      .param.free .param-name { opacity: 0.55; }
+      .param-value {
+        font-size: 0.9em;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.8;
+      }
+      .param input[type="range"] { display: block; width: 100%; margin: 0.05rem 0 0; }
+      .param-group {
+        margin: 0.7rem 0 0.2rem;
+        font-size: 0.72em;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.45;
       }
       .controls button:disabled {
         opacity: 0.35;
@@ -285,51 +375,76 @@
   </head>
   <body>
     <div class="controls">
-      <p>
-        View:
-        <button onclick="setViewMode('globe')">Globe</button>
-        <button onclick="setViewMode('equirect')">Equirect</button>
-        <br>
-        Draw:
-        <button onclick="setDrawMode('quads')">Quads</button>
-        <button onclick="setDrawMode('centroid')">Flat</button>
-        <button onclick="setDrawMode('plates')">Plates</button>
-        <button onclick="setDrawMode('crust')">Crust</button>
-        <button onclick="setDrawMode('climate')">Climate</button>
-        <br>
-        <label><input type="checkbox" oninput="setDrawPlateVectors(this.checked)">Plate vectors</label>
-        <label><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)">Plate boundaries</label>
-        <label><input type="checkbox" oninput="setMergeOceanPlates(this.checked)">Merge ocean plates</label>
-        <label><input type="checkbox" oninput="setConnectOceans(this.checked)">Connect oceans</label>
-        <label><input type="checkbox" checked oninput="setPolarStraits(this.checked)">Polar straits</label>
-        <br>
-        <label><input type="checkbox" checked oninput="setSimulateTectonics(this.checked)">Simulate tectonics</label>
-        <label><input type="checkbox" checked oninput="setDetailPass(this.checked)">Detail pass</label>
-        <br>
-        Tectonic history (<span id="sim-steps-label">200</span> Myr):
-        <input id="sim-steps" type="range" min="0" max="40" value="20" oninput="document.getElementById('sim-steps-label').textContent = this.valueAsNumber * 10; setSimSteps(this.valueAsNumber)">
-        <br>
-        Number of regions:
-        <input type="range" min="2" max="5" step="0.001" value="4" oninput="setN(Math.pow(10, this.valueAsNumber) | 0)">
-        <br>
-        Number of plates:
-        <input type="range" min="5" max="100" value="20" oninput="setP(this.valueAsNumber)">
-        <br>
-        Jitter:
-        <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber)">
-        <br>
-        Seed:
-        <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="88" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
-        <button type="button" onclick="shuffleSeed()">Shuffle</button>
-        <button type="button" id="seed-undo" onclick="undoSeed()" disabled title="Undo seed (⌘Z)">Undo</button>
-        <button type="button" id="seed-redo" onclick="redoSeed()" disabled title="Redo seed (⌘⇧Z)">Redo</button>
-        <button type="button" id="saved-seeds-btn" popovertarget="saved-seeds-popover" aria-haspopup="dialog" aria-controls="saved-seeds-popover" aria-expanded="false" title="Saved seeds">Saved</button>
-        <span class="globe-only">
-        <br>
-        Sphere rotation:
-        <input id="sphere-rotation" type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)">
-        </span>
-      </p>
+      <details class="panel" open>
+        <summary>View</summary>
+        <div class="row" id="view-mode" role="group" aria-label="View">
+          <button data-view="globe" onclick="setViewMode('globe')">Globe</button>
+          <button data-view="equirect" onclick="setViewMode('equirect')">Equirect</button>
+        </div>
+        <div class="row" id="draw-mode" role="group" aria-label="Draw">
+          <button data-draw="quads" onclick="setDrawMode('quads')">Quads</button>
+          <button data-draw="centroid" onclick="setDrawMode('centroid')">Flat</button>
+          <button data-draw="plates" onclick="setDrawMode('plates')">Plates</button>
+          <button data-draw="crust" onclick="setDrawMode('crust')">Crust</button>
+          <button data-draw="climate" onclick="setDrawMode('climate')">Climate</button>
+        </div>
+        <label class="check"><input type="checkbox" oninput="setDrawPlateVectors(this.checked)"><span>Plate vectors</span></label>
+        <label class="check"><input type="checkbox" oninput="setDrawPlateBoundaries(this.checked)"><span>Plate boundaries</span></label>
+        <div class="globe-only">
+          <label class="field"><span>Sphere rotation</span>
+            <input id="sphere-rotation" type="range" min="-5" max="5" step="0.001" value="-2" oninput="setRotation(this.valueAsNumber)">
+          </label>
+        </div>
+      </details>
+
+      <details class="panel" open>
+        <summary>Planet</summary>
+        <div class="row">
+          <select id="preset-select" aria-label="Preset" onchange="loadPreset(this.value)"></select>
+          <span id="preset-state" class="muted"></span>
+        </div>
+        <!-- Generated from params.js: every exposed parameter, with a pin
+             toggle. Pinned means this preset decides it; free means it is
+             left at its default and a shuffle may move it. -->
+        <div id="param-list"></div>
+      </details>
+
+      <details class="panel" open>
+        <summary>Model</summary>
+        <label class="check"><input type="checkbox" checked oninput="setSimulateTectonics(this.checked)"><span>Simulate tectonics</span></label>
+        <label class="check"><input type="checkbox" checked oninput="setDetailPass(this.checked)"><span>Detail pass</span></label>
+        <label class="check"><input id="polar-straits" type="checkbox" checked oninput="setPolarStraits(this.checked)"><span>Polar straits</span></label>
+        <label class="check"><input type="checkbox" oninput="setMergeOceanPlates(this.checked)"><span>Merge ocean plates</span></label>
+        <label class="check"><input type="checkbox" oninput="setConnectOceans(this.checked)"><span>Connect oceans</span></label>
+        <label class="field"><span>Tectonic history</span><output id="sim-steps-label">200 Myr</output>
+          <input id="sim-steps" type="range" min="0" max="40" value="20" oninput="setSimSteps(this.valueAsNumber)">
+        </label>
+      </details>
+
+      <details class="panel" open>
+        <summary>Seed</summary>
+        <div class="row">
+          <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="88" aria-label="Seed" onchange="setSeed(this.value)" onkeydown="if (event.key === 'Enter') this.blur()">
+          <button type="button" onclick="shuffleSeed()">Shuffle</button>
+        </div>
+        <div class="row">
+          <button type="button" id="seed-undo" onclick="undoSeed()" disabled title="Undo seed (\u2318Z)">Undo</button>
+          <button type="button" id="seed-redo" onclick="redoSeed()" disabled title="Redo seed (\u2318\u21e7Z)">Redo</button>
+          <button type="button" id="saved-seeds-btn" popovertarget="saved-seeds-popover" aria-haspopup="dialog" aria-controls="saved-seeds-popover" aria-expanded="false" title="Saved seeds">Saved</button>
+        </div>
+      </details>
+
+      <!-- Mesh resolution, not geography: changing these must not change the
+           planet, which is why they are not parameters. -->
+      <details class="panel">
+        <summary>Compute</summary>
+        <label class="field"><span>Regions</span><output id="regions-label">10000</output>
+          <input type="range" min="2" max="5" step="0.001" value="4" oninput="setN(Math.pow(10, this.valueAsNumber) | 0); document.getElementById('regions-label').textContent = (Math.pow(10, this.valueAsNumber) | 0)">
+        </label>
+        <label class="field"><span>Jitter</span><output id="jitter-label">0.50</output>
+          <input type="range" min="0" max="1" step="0.001" value="0.5" oninput="setJitter(this.valueAsNumber); document.getElementById('jitter-label').textContent = this.valueAsNumber.toFixed(2)">
+        </label>
+      </details>
     </div>
 
     <figure>
@@ -371,6 +486,6 @@
       </form>
       <div id="saved-seeds-list"></div>
     </div>
-    <script type="module" src="./planet-generation.js"></script>
+    <script type="module" src="./src/planet-generation.js"></script>
   </body>
 </html>

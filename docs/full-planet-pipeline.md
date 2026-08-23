@@ -1,6 +1,6 @@
 # The full-planet pipeline
 
-Planetgen makes the coarse base. This note records the plan for everything after it: how one planetgen seed becomes a real-scale, pre-baked planet, which tools were chosen for each stage, and which alternatives were surveyed and rejected (Aug 2026). The regional sketch → diffusion handoff mechanics live in [preparing-for-diffusion.md](preparing-for-diffusion.md); this doc is the planet-scale architecture around it.
+Planetgen makes the coarse base. This note records the plan for everything after it: how one planetgen seed becomes a real-scale, pre-baked planet, which tools were chosen for each stage, and which alternatives were surveyed and rejected (Aug 2026). The regional sketch → diffusion handoff mechanics live in [preparing-for-diffusion.md](preparing-for-diffusion.md); this doc is the planet-scale architecture around it. Compute, 90 m vs 30 m, and what actually ships: [full-planet-bake.md](full-planet-bake.md).
 
 Status labels: **decided** (settled), **recommended** (researched, needs a trial before committing), **open** (known problem, no chosen answer).
 
@@ -10,10 +10,10 @@ Status labels: **decided** (settled), **recommended** (researched, needs a trial
 planetgen (sphere, ~220 km cells)                    base: plates, heightmap, climate
     → coarse conditioning map (23 km/px, 5 channels)  sketch + bake-time climate
     → terrain-diffusion coarse model                  realism pass, weak SNR
-    → base + decoder cascade                          90 m (or 30 m) DEM, per cubesphere face
+    → base + decoder cascade                          90 m DEM, per cubesphere face
     → hydrology / erosion                             rivers, canyons, lakes
-    → amplification below 90 m                        non-ML, procedural
-    → cubesphere quadtree store                       what the game streams
+    → cubesphere residual pyramid                     what the game ships
+    → analytic octaves below 90 m                     lazy, in game
 ```
 
 Offline bake of one reference planet first. On-demand generation (the model's InfiniteDiffusion random access makes it possible) is a later project; nothing here should preclude it, so tiles are deterministic functions of (seed, face, level, i, j) wherever we can manage it.
@@ -58,15 +58,15 @@ Regional crops work today (preparing-for-diffusion.md). The full planet is diffe
 - **Generate per face** on the face's raster via `WorldPipeline` + `set_custom_conditioning_import()`, not `tiff-export`: conditioning for each face is the coarse map reprojected into that face's projection, extended past the edges with reprojected neighbor-face data so the 64-cell context pad sees real terrain, not `mode="edge"` repetition.
 - **Seams**: overlap generation bands across face edges and blend elevation in the overlap; corners (three faces meet) are the ugly case. The unmerged terrain-diffusion PR #15 "Sphere export" does cube-face sampling and is prior art to read, not code to trust. This is the one piece of genuinely novel engineering in the whole pipeline — **open** until proven on one edge and one corner.
 - **Poles**: cubesphere kills the equirect-distortion problem, but the ±60° training clip remains. Mitigation: pin climate channels cold at high SNR (the model saw cold-dry terrain south of 60°) and treat ice sheets as a post-pass. **Open** until a polar face looks right.
-- **Scale of the bake** (90 m model): ~10¹¹ output px ≈ 200 GB int16; on the order of 600k tile-samples with overlap ≈ single-digit GPU-days on a rented card. Feasible, not casual — which is why every stage upstream gets validated on crops first. 200 GB does not ship in a game client; the bake targets server-side streaming, and the on-demand variant is the later answer for shipped clients.
+- **Scale of the bake** (90 m model, Earth): ~10¹¹ output px ≈ 200 GB int16; on the order of 600k tile-samples with overlap ≈ single-digit GPU-days. **Thalos is a quarter of that** (half radius): ~150k tiles, one to two days on the home 4070 Ti. The dense DEM is the bake, not the install — the game ships a sparse residual pyramid (~2–3 GB for Thalos). See [full-planet-bake.md](full-planet-bake.md). Feasible, not casual — which is why every stage upstream gets validated on crops first.
 
 ### Hydrology and post — decided (documented elsewhere)
 
 Fine drainage — real river networks, discharge, lakes, canyons — runs on the baked DEM, never as a substitute for the planetgen mesh. The detail pass already does a first-stage shaping (priority-flood, stream power, glacial fjords) so the sketch the diffusion model sees has valleys and a coast that drains somewhere; that is rough texture, not the network. The pass structure for the fine stage (priority-flood, D8 accumulation, stream-power incision, hillslope) is in preparing-for-diffusion.md. Planet-scale addendum: flow routing must run on the cubesphere adjacency graph so rivers cross face edges; route at full resolution per drainage basin, or at an intermediate global level (~1 km) with carving applied to the fine tiles.
 
-### Below 90 m — open, later
+### Below 90 m — decided (runtime)
 
-The model floor is 90 m (30 m). Ground-level gameplay needs ~1 m. That layer is non-ML amplification (erosion-aware detail noise, slope/material displacement) and is out of scope until the bake exists.
+The model floor is 90 m. Ground-level gameplay needs ~1 m. That layer is non-ML amplification (erosion-aware detail noise, slope/material displacement), evaluated lazily in the game from the residual, slope, biome, and seed. Do not bake it. 30 m is a later measurement, not the global bake — see [full-planet-bake.md](full-planet-bake.md).
 
 ## Where things live
 
@@ -80,4 +80,4 @@ The model floor is 90 m (30 m). Ground-level gameplay needs ~1 m. That layer is 
 2. Cubesphere face raster + adjacency table, and one face generated via `WorldPipeline` with imported conditioning — compare against a `tiff-export` crop of the same region.
 3. One face edge + one corner, seam-blended. This proves or reshapes the whole bake plan.
 4. Full coarse planet (all six faces at 23 km conditioning, coarse model only) — cheap, and the first look at the planet as a planet.
-5. Scale out: full 90 m bake on rented GPUs, then hydrology.
+5. Scale out: full 90 m bake on the home 4070 Ti, then hydrology.

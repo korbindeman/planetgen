@@ -6,9 +6,10 @@ alwaysApply: true
 # Plates, crust and elevation
 
 The generator simulates tectonics. `tectonics.js` holds the whole model and is
-free of WebGL and DOM so it can be measured headlessly with `bun run stats`.
-Run that after any change to the model and check the numbers against Earth
-before judging the pictures.
+free of WebGL and DOM. Judge a change from the pictures — `bun run preview
+plates`, `bun run preview crust`, and `bun run sheet` — not from `bun run
+stats`. Those numbers can hint at a collapse; they cannot tell you the
+planet looks right.
 
 ## The rule that matters
 
@@ -37,7 +38,7 @@ Do not:
 
 ## The model
 
-Three layers, each measurable:
+Three layers:
 
 0. **Per-cell fields belong to their mesh.** `boundaryWarp` and the crust
    arrays are one value per cell, so a cached one is only valid for the mesh
@@ -78,9 +79,9 @@ Three layers, each measurable:
    into the middle of majors, where they sit as single-neighbour enclaves.
    Earth has no enclave plates, and neither does this model:
    `absorbEnclaves` hands any plate whose whole edge touches one neighbour
-   back to that neighbour, at birth and every step, and `stats` counts what
-   is left (it must read 0). Minors also spin faster than majors
-   (`microplateSpin`), as Earth's do.
+   back to that neighbour, at birth and every step. A leftover enclave
+   shows up on the plate capture as a single-neighbour island of colour.
+   Minors also spin faster than majors (`microplateSpin`), as Earth's do.
 
    **Subduction acts on the plates themselves.** Sites used to be immortal,
    so a converging plate's sites marched through whatever stood in the way;
@@ -100,8 +101,8 @@ Three layers, each measurable:
    microplates (`spawnBackArcPlate`, the Philippine Sea story) whenever
    the census is below the plate count asked for, so deaths at the
    trenches do not empty the map. `sitesPerPlate` doubles as the grain of
-   trench erosion: at 26 sites a 40k mesh resolves the eaten front as
-   raggedness 1.5; at 40 it reads ~1.2–1.3 at any mesh size.
+   trench erosion: too few sites and the eaten front looks chewed; around
+   40 the trench stays a line on any mesh size.
 
 2. **Motion.** Rigid rotation about an Euler pole, `omega x r`, in a
    no-net-rotation frame. A single constant vector per plate is tangent at
@@ -187,37 +188,26 @@ default. `mergeOceanPlates` only applies on the 1843 path.
 ## After a change
 
 Capture and **read** the images — code alone does not tell you whether it
-worked:
+worked, and neither does a stats line:
 
 ```
-bun run stats                         # numbers first, including plate cohesion
-bun run sheet                         # many seeds at once - judge the batch, not one lucky seed
-bun run sheet --view=globe
 bun run preview                       # globe + equirect
 bun run preview plates                # plate shapes, sizes, motion
 bun run preview crust                 # sea-floor age, orogeny, boundary types
+bun run sheet                         # many seeds at once — judge the batch, not one lucky seed
+bun run sheet --view=globe
 ```
 
-`bun run stats` reports **boundary raggedness** and **pieces per plate**.
-
-Raggedness is normalised: the raw perimeter-against-area ratio is divided by
-what a *perfect* spherical Voronoi scores on the same mesh at the same plate
-count, so **1.00 means "as straight as straight arcs can be drawn here"**.
-Normalising is not cosmetic. The raw ratio is not comparable across plate
-counts — on this mesh an exact Voronoi reads 1.38 at two plates and 2.27 at
-twenty, because the smaller each plate is the more of it is boundary. The
-figure of 1.42 that used to be quoted as the floor was measured on a two-plate
-split and is roughly twice too strict at twenty; against it the current
-partition looked half as good as it is. Flood-filled plates scored 3.0 raw
-and rose to 3.5 over a run — that is what "messy" meant.
-
-Judge aesthetics from `bun run sheet`, never from a single capture: a failure
-mode that affects every seed is easy to mistake for a bad roll, and a good roll
-is easy to mistake for a fix.
+Crop in on a margin when the full frame is too small to see whether a
+boundary is an arc or a chew, or whether a trench is a line. A failure
+mode that hits every seed is easy to mistake for a bad roll, and a good
+roll is easy to mistake for a fix — that is what `sheet` is for.
 
 `crust` is the view that shows what the simulation is actually doing: ridges
 with young pale crust beside them fading to dark old crust, trenches, and
-transform segments.
+transform segments. `bun run stats` is optional if a picture looks collapsed
+and you want a hint (enclaves, a plate in pieces). Do not tune toward its
+raggedness number.
 
 ## What the mesh cannot draw
 
@@ -231,8 +221,7 @@ plates and to push pieces per plate from 1.0 to 1.5, while the steps stayed
 invisible in captures at both resolutions. Do not rebuild it without first
 raising the mesh by an order of magnitude.
 
-The partition is not where the remaining gap to Earth is. Boundaries sit at
-1.2–1.3 on normalised raggedness — the tenth above the straight-arc floor is
-the trench fronts, which genuinely erode now; what is still unlike Earth is
-relief (about 3% of the surface above 2000 m against 5%, and in diffuse
-patches rather than linear belts).
+The partition is not where the remaining gap to Earth is. Boundaries are
+already close to straight arcs; the leftover roughness is trench fronts,
+which genuinely erode now. What still looks wrong is relief: mountains sit
+in diffuse patches rather than linear belts.

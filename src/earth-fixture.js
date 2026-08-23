@@ -13,25 +13,21 @@
 const {vec3} = require('gl-matrix');
 const Tectonics = require('./tectonics');
 const PLATE_DATA = require('./earth-plates-data.json');
+const PRESET = require('./presets/earth');
 
 const TOKEN = 'earth';
 const MESH_SEED = 1843;
 
-/* Present-day area knobs. The random path is born at 0.57 because the
- * 200 Myr run consumes crust; using that here would drown the map. */
-const EARTH_OPTS = {
-    continentFraction: 0.41,
-    emergentFraction: 0.64,       // block unions carry proportionally less rim than
-                                  // single caps, so more of the crust must start as
-                                  // drowned shelf to land near Earth's 29% land
-    cratons: 9,
-    sutures: 0,                   // belts and basins are authored here, not grown
+/* Earth's pins live in `presets/earth.js`, so Earth is a preset like any
+ * other rather than a hardcoded block only this file knows about. */
+const EARTH_OPTS = PRESET.values;
+
+/* Parameters the fixture has and the simulation does not: the one-shot
+ * kinematic paint has no loop to accumulate over. Registered in
+ * `params.js` under the `fixture` module. */
+const DEFAULTS = {
     paintPasses: 6,
     seafloorAgeCapMyr: 180,
-    polarStraits: true,
-    polarCapLand: 0.50,
-    polarStraitLat: 52,
-    polarStraitBand: 16,
 };
 
 const DEG = Math.PI / 180;
@@ -572,7 +568,9 @@ function buildEarthMap(mesh, map, options) {
 module.exports = {
     TOKEN,
     MESH_SEED,
+    DEFAULTS,
     EARTH_OPTS,
+    PRESET,
     isEarthSeed,
     numericSeed,
     lonLatToXyz,

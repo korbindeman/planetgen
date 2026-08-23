@@ -1,0 +1,6 @@
+{
+    "name": "@planetgen/hydrology",
+    "private": true,
+    "main": "index.js",
+    "description": "Stub: real rivers on the baked DEM. Not implemented."
+}

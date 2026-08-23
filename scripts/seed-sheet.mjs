@@ -19,8 +19,10 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
-const Planet = require(join(root, "planet.js"));
-const Render = require(join(root, "software-render.js"));
+const Planet = require(join(root, "src", "planet.js"));
+const Render = require(join(root, "src", "software-render.js"));
+const Presets = require(join(root, "src", "presets"));
+const Params = require(join(root, "src", "params.js"));
 
 const previewDir = join(root, "preview");
 
@@ -29,6 +31,18 @@ const args = Object.fromEntries(
     .filter((a) => a.startsWith("--"))
     .map((a) => a.replace(/^--/, "").split("=")),
 );
+
+/* A sheet of one preset's planets: `--preset=thalos`, plus any registered
+   parameter as `--radiusKm=3186`. Pins are resolved from the pristine
+   defaults exactly as the app does, so the sheet and the panel agree. */
+const pins = {};
+if (args.preset) Object.assign(pins, Presets.byName(args.preset).values);
+for (const name of Object.keys(Params.all())) {
+  if (args[name] !== undefined) pins[name] = Number(args[name]);
+}
+if (Object.keys(pins).length) {
+  console.log(`${args.preset ?? "override"}: ${Object.keys(pins).length} pinned`);
+}
 
 const view = args.view ?? "equirect";
 const overlay = args.overlay ?? null;
@@ -44,6 +58,8 @@ for (const seed of seeds) {
   const planet = Planet.generatePlanet({
     seed,
     simulateTectonics: !noTectonics,
+    preset: args.preset,
+    values: pins,
   });
   const png = view === "globe"
     ? Render.captureGlobe(planet, { overlay })

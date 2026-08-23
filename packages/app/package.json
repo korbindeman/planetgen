@@ -1,0 +1,5 @@
+{
+    "name": "@planetgen/app",
+    "private": true,
+    "description": "Browser studio. Entry is the repo-root index.html; the bundle is src/planet-generation.js."
+}

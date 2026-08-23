@@ -245,7 +245,7 @@ Do not upsample the 720×360 `world/` raster in one shot.
 
 **Resolution / delivery**
 
-- Stay on 90 m for worldbuilding; switch to 30 m where a game camera needs local noise.
+- Stay on 90 m for the planet. 30 m is not the global bake; human-scale is analytic and lazy. Compute, ship size, and the 90 vs 30 call: [full-planet-bake.md](full-planet-bake.md).
 - `coarse_pooling` in `WorldPipeline` compresses horizontal space and intensifies terrain; that is a generation knob, not a planetgen export.
 - Downstream consumers (game mesh, Minecraft mod, hydrology sim) should read the int16 GeoTIFF, not the planetgen canvas.
 

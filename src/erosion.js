@@ -22,22 +22,18 @@ const SimplexNoise = require('simplex-noise');
 const {makeRandFloat} = require('@redblobgames/prng');
 const Tectonics = require('./tectonics');
 
-const EARTH_RADIUS_KM = 6371;
-const EARTH_AREA_KM2 = 4 * Math.PI * EARTH_RADIUS_KM * EARTH_RADIUS_KM;
-
-
-function cellAreaKm2(numRegions) {
-    return EARTH_AREA_KM2 / numRegions;
+function cellAreaKm2(numRegions, radiusKm) {
+    return 4 * Math.PI * radiusKm * radiusKm / numRegions;
 }
 
-function chordKm(r_xyz, a, b) {
+function chordKm(r_xyz, a, b, radiusKm) {
     const dx = r_xyz[3 * a] - r_xyz[3 * b];
     const dy = r_xyz[3 * a + 1] - r_xyz[3 * b + 1];
     const dz = r_xyz[3 * a + 2] - r_xyz[3 * b + 2];
     const chord = Math.hypot(dx, dy, dz);
     if (chord < 1e-8) return 1e-3;
     const half = Math.min(1, 0.5 * chord);
-    return 2 * EARTH_RADIUS_KM * Math.asin(half);
+    return 2 * radiusKm * Math.asin(half);
 }
 
 
@@ -273,7 +269,7 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
     const distKm = new Float32Array(n);
     const flow = new Float32Array(n);
     const delta = new Float32Array(n);
-    const areaKm2 = cellAreaKm2(n);
+    const areaKm2 = cellAreaKm2(n, opts.radiusKm);
 
     let glacIdx = null, paleoIdx = null, iceSheet = null;
     let iceTo = null, iceFlow = null, iceUp = null;
@@ -327,7 +323,7 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
                 const t = steepestDown(mesh, meters, r, neighbors);
                 if (t < 0) continue;
                 drainTo[r] = t;
-                distKm[r] = chordKm(r_xyz, r, t);
+                distKm[r] = chordKm(r_xyz, r, t, opts.radiusKm);
             }
             flow.fill(0);
             for (let i = 0; i < land.length; i++) flow[land[i]] = areaKm2;
@@ -381,7 +377,7 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
                     if (ocean[nb]) continue;
                     const nh = meters[nb];
                     if (nh >= h) continue;
-                    const d = chordKm(r_xyz, r, nb) * 1000;
+                    const d = chordKm(r_xyz, r, nb, opts.radiusKm) * 1000;
                     const slope = (h - nh) / d;
                     if (slope > talus) {
                         const excess = (slope - talus) * d;
@@ -462,7 +458,7 @@ function erodeComposite(mesh, r_xyz, meters, ocean, temperature, opts) {
                 for (let k = 0; k < neighbors.length; k++) {
                     const nb = neighbors[k];
                     if (ocean[nb]) continue;
-                    const d = chordKm(r_xyz, r, nb);
+                    const d = chordKm(r_xyz, r, nb, opts.radiusKm);
                     const slope = Math.abs(meters[r] - meters[nb]) / Math.max(1, d * 1000);
                     meters[nb] -= deepening * opts.glacialWiden * Math.max(0, 1 - slope);
                 }

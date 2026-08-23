@@ -24,6 +24,8 @@ const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const Tectonics = require('./tectonics');
 const EarthFixture = require('./earth-fixture');
 const Detail = require('./detail');
+const Presets = require('./presets');
+const Params = require('./params');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 const Planet = require('./planet');
 const Look = require('./look');
@@ -87,22 +89,31 @@ let equirectZoom = 1;
 window.__PLANET_READY__ = false;
 
 window.setN = newN => { N = newN; generateMesh(); };
-window.setP = newP => { P = newP; generateMap(); };
 window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
+/* Plate count is a registered parameter now, so the Planet panel renders it
+   and this is only the seam `embed.html` still drives it through. */
+window.setP = newP => setParam('plates', newP);
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
 window.setDrawMode = newMode => {
     if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(newMode) === -1) return;
     drawMode = newMode;
+    syncModeButtons();
     draw();
 };
-window.setViewMode = newMode => { applyViewMode(newMode); };
+window.setViewMode = newMode => { applyViewMode(newMode); syncModeButtons(); };
 window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
 window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
 window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(); };
 window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
-window.setPolarStraits = flag => { polar_straits = !!flag; generateMap(); };
+window.setPolarStraits = flag => { polar_straits = !!flag; markPresetModified(); generateMap(); };
 window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
-window.setSimSteps = steps => { sim_steps = Math.max(0, steps | 0); generateMap(); };
+window.setSimSteps = steps => {
+    sim_steps = Math.max(0, steps | 0);
+    const label = document.getElementById('sim-steps-label');
+    if (label) label.textContent = `${sim_steps * lastResolved.options.tectonics.stepMyr} Myr`;
+    markPresetModified();
+    generateMap();
+};
 window.setDetailPass = flag => { detail_pass = !!flag; generateMap(); };
 window.setDetailN = n => { detailN = Math.max(0, n | 0); generateMap(); };
 window.getSeed = () => seed;
@@ -402,15 +413,229 @@ window.setSeed = next => {
    capture without editing the file. Preview scripts use this; the UI does not. */
 window.setTectonicOption = (key, value) => {
     if (!(key in Tectonics.DEFAULTS)) throw new Error(`unknown tectonic option: ${key}`);
-    Tectonics.DEFAULTS[key] = value;
-    generateMesh();
+    pins[key] = value;
+    markPresetModified();
+    applyPins(true);
 };
 window.setDetailOption = (key, value) => {
     if (!(key in Detail.DEFAULTS)) throw new Error(`unknown detail option: ${key}`);
-    Detail.DEFAULTS[key] = value;
+    pins[key] = value;
     if (key === 'n') detailN = value | 0;
-    generateMap();
+    markPresetModified();
+    applyPins(true);
 };
+/* Presets and parameters.
+ *
+ * A preset is a named set of pins: it decides the parameters it names and
+ * leaves the rest free. The panel is that object made visible — `pins` below
+ * *is* a preset's `values`, so loading one copies it and editing one adds to
+ * it. Controls are generated from `params.js` rather than written out here,
+ * so a newly registered parameter appears on its own and there is no second
+ * list to keep in step.
+ *
+ * Applying always resolves the whole set from the pristine defaults, so a
+ * parameter that stops being pinned goes back to its default instead of
+ * keeping the last value it happened to have.
+ */
+let activePreset = 'defaults';
+let pins = {};
+let presetModified = false;
+
+const MODULE_ORDER = ['world', 'tectonics', 'climate', 'detail'];
+const GROUP_LABEL = {body: 'Body', history: 'History', continents: 'Continents',
+                     volcanism: 'Volcanism', mesh: 'Detail mesh'};
+
+function paramOrder() {
+    const registry = Params.all();
+    return Params.exposed().slice().sort((a, b) => {
+        const ma = MODULE_ORDER.indexOf(registry[a].module);
+        const mb = MODULE_ORDER.indexOf(registry[b].module);
+        return ma - mb || a.localeCompare(b);
+    });
+}
+
+function paramValue(name) {
+    return name in pins ? pins[name] : Presets.PRISTINE[Params.all()[name].module][name];
+}
+
+function formatValue(meta, value) {
+    if (value == null) return 'free';
+    if (typeof value === 'boolean') return value ? 'on' : 'off';
+    if (meta.unit === 'count' || meta.unit === 'step' || meta.unit === 'km' || meta.unit === 'm') {
+        return String(Math.round(value));
+    }
+    if (meta.unit === 'frac' || meta.unit === '1') return value.toFixed(3);
+    return String(Math.round(value * 10) / 10);
+}
+
+/* `simSteps`, `polarStraits` and `detailN` are passed to the generator from
+   the app's own state (see generateMap). They follow the resolved preset,
+   not the module DEFAULTS. */
+function syncPresetShadowedState() {
+    const tectonics = lastResolved.options.tectonics;
+    const detail = lastResolved.options.detail;
+    sim_steps = tectonics.steps;
+    polar_straits = tectonics.polarStraits !== false;
+    detailN = detail.n;
+    P = tectonics.plates;
+
+    const steps = document.getElementById('sim-steps');
+    if (steps) steps.value = String(sim_steps);
+    const label = document.getElementById('sim-steps-label');
+    if (label) label.textContent = `${sim_steps * tectonics.stepMyr} Myr`;
+    const polar = document.getElementById('polar-straits');
+    if (polar) polar.checked = polar_straits;
+}
+
+function renderParams() {
+    const host = document.getElementById('param-list');
+    if (!host) return;
+    host.textContent = '';
+    const registry = Params.all();
+    let lastGroup = null;
+
+    for (const name of paramOrder()) {
+        const meta = registry[name];
+        const pinned = name in pins;
+        const value = paramValue(name);
+
+        if (meta.group !== lastGroup) {
+            lastGroup = meta.group;
+            const heading = document.createElement('div');
+            heading.className = 'param-group';
+            heading.textContent = GROUP_LABEL[meta.group] || meta.group;
+            host.append(heading);
+        }
+
+        const row = document.createElement('div');
+        row.className = pinned ? 'param' : 'param free';
+
+        const head = document.createElement('div');
+        head.className = 'param-head';
+
+        const pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'param-pin';
+        pin.textContent = pinned ? '◉' : '○';
+        pin.setAttribute('aria-pressed', String(pinned));
+        pin.title = pinned ? `${name} is pinned by this preset — click to free it`
+                           : `${name} is free — click to pin it at its current value`;
+        pin.onclick = () => toggleParamPin(name);
+
+        const label = document.createElement('span');
+        label.className = 'param-name';
+        label.textContent = name;
+
+        const readout = document.createElement('span');
+        readout.className = 'param-value';
+        readout.textContent = formatValue(meta, value);
+
+        head.append(pin, label, readout);
+        row.append(head);
+
+        if (meta.range) {
+            const [lo, hi] = meta.range;
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = String(lo);
+            slider.max = String(hi);
+            slider.step = (meta.unit === 'count' || meta.unit === 'step') ? '1' : String((hi - lo) / 200);
+            /* A free parameter still has to show something, so an unset one
+               sits at the middle of its range rather than at zero. */
+            slider.value = String(value == null ? (lo + hi) / 2 : value);
+            slider.oninput = () => { readout.textContent = formatValue(meta, slider.valueAsNumber); };
+            slider.onchange = () => setParam(name, slider.valueAsNumber);
+            row.append(slider);
+        }
+
+        host.append(row);
+    }
+}
+
+function renderPresetState() {
+    const state = document.getElementById('preset-state');
+    if (!state) return;
+    const count = Object.keys(pins).length;
+    state.textContent = presetModified ? `${count} pinned, edited` : `${count} pinned`;
+}
+
+let lastResolved = Presets.resolve({name: 'defaults', values: {}});
+
+/* Resolve the whole constraint set. The models read it as a frozen
+   snapshot passed into generatePlanet — not by mutating DEFAULTS. */
+function applyPins(rebuild) {
+    lastResolved = Presets.resolve({name: activePreset, values: pins});
+    syncPresetShadowedState();
+    renderParams();
+    renderPresetState();
+    if (rebuild) generateMesh();
+}
+
+/* Setting a value is what deciding one looks like, so it pins. */
+function setParam(name, value) {
+    pins[name] = value;
+    presetModified = true;
+    applyPins(true);
+}
+
+function toggleParamPin(name) {
+    if (name in pins) delete pins[name];
+    else pins[name] = paramValue(name);
+    presetModified = true;
+    applyPins(true);
+}
+
+/* Any change to a registered parameter after a load means the planet on
+   screen is no longer the preset, so say so rather than keep claiming it. */
+function markPresetModified() {
+    if (presetModified) return;
+    presetModified = true;
+    renderPresetState();
+}
+
+window.loadPreset = name => {
+    const preset = Presets.byName(name);
+    activePreset = preset.name;
+    pins = Object.assign({}, preset.values);
+    presetModified = false;
+
+    applyPins(false);
+
+    /* A preset with no seed is a change of pins, not a change of planet.
+       commitSeed returns early without rebuilding when the seed is already
+       what it asks for, so reloading a preset onto its own seed has to
+       rebuild here or the pins would change and the planet would not. */
+    const before = seed;
+    if (preset.seed != null) commitSeed(preset.seed);
+    if (preset.seed == null || seed === before) generateMesh();
+};
+
+/* Nothing used to show which view or draw mode was active. */
+function syncModeButtons() {
+    for (const b of document.querySelectorAll('#view-mode button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.view === viewMode));
+    }
+    for (const b of document.querySelectorAll('#draw-mode button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.draw === drawMode));
+    }
+}
+
+function populatePresetUI() {
+    const select = document.getElementById('preset-select');
+    if (select) {
+        for (const preset of Presets.PRESETS) {
+            const option = document.createElement('option');
+            option.value = preset.name;
+            option.textContent = preset.label;
+            select.append(option);
+        }
+        select.value = activePreset;
+    }
+    renderParams();
+    renderPresetState();
+    syncModeButtons();
+}
+
 window.shuffleSeed = () => {
     let next;
     do { next = (Math.random() * 0x7fffffff) | 0; } while (next === seed);
@@ -633,6 +858,8 @@ function generateMap() {
         connectOceans: connect_oceans,
         detailPass: detail_pass,
         detailN,
+        preset: activePreset,
+        values: pins,
     }, planetCache);
     simMesh = result.simMesh;
     simMap = result.simMap;
@@ -2095,6 +2322,7 @@ restoreViewState();
 setupSavedSeeds();
 applySeed(seed);
 syncSeedHistoryButtons();
+populatePresetUI();
 generateMesh();
 document.addEventListener('keydown', event => {
     if (!(event.metaKey || event.ctrlKey)) return;

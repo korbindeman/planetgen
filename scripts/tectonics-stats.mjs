@@ -18,9 +18,10 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(join(root, 'package.json'));
 const { makeRandFloat } = require('@redblobgames/prng');
-const SphereMesh = require(join(root, 'sphere-mesh.js'));
-const Tectonics = require(join(root, 'tectonics.js'));
-const EarthFixture = require(join(root, 'earth-fixture.js'));
+const SphereMesh = require(join(root, 'src', 'sphere-mesh.js'));
+const Tectonics = require(join(root, 'src', 'tectonics.js'));
+const World = require(join(root, 'src', 'world.js'));
+const EarthFixture = require(join(root, 'src', 'earth-fixture.js'));
 
 const args = Object.fromEntries(
     process.argv.slice(2)
@@ -35,7 +36,7 @@ const SEEDS = EARTH ? [EarthFixture.TOKEN] : (args.seeds ?? '123,42,7,2024,99').
 const OPTIONS = {};
 /* every key in DEFAULTS is overridable from the command line, so a sweep
  * never silently does nothing because the list here fell behind */
-for (const key of Object.keys(Tectonics.DEFAULTS)) {
+for (const key of Object.keys(Tectonics.DEFAULTS).concat(Object.keys(World.DEFAULTS))) {
     if (args[key] !== undefined) OPTIONS[key] = Number(args[key]);
 }
 
@@ -103,7 +104,7 @@ function run(seed) {
     if (EarthFixture.isEarthSeed(seed)) {
         EarthFixture.buildEarthMap(mesh, map, Object.assign({seed}, OPTIONS));
     } else {
-        Object.assign(map, Tectonics.generatePlates(mesh, P, seed, OPTIONS));
+        Object.assign(map, Tectonics.generatePlates(mesh, seed, Object.assign({plates: P}, OPTIONS)));
         Tectonics.simulateTectonics(mesh, map, seed, OPTIONS);
     }
     const ms = Date.now() - started;

@@ -6,29 +6,41 @@ This repo generates a coarse planetary **base**: tectonic plates, a heightmap, a
 
 The goal is a generator that, given a new seed, produces another plausible Earth-like planet. "Earth-like" means the general physical rules that make a planet of this kind look right: plate tectonics, isostasy, half-space cooling, moisture advection, Hadley cells, land that clusters instead of spreading evenly. It does not mean Earth's particular continents, ocean layout, mountain names, or any other accident of this planet's history.
 
-Earth is a reference for *kinds* of outcomes. `bun run stats` and `bun run climate` compare against Earth's numbers (land fraction, relief, climate asymmetry) because those are the statistics of a working planet, not because the output should resemble a map of Earth. A seed shuffle should yield another believable world. Judge a change on whether most seeds look like planets that could exist, not on whether any one of them looks like Earth.
+Earth is a reference for *kinds* of outcomes, not a scoreboard. A seed
+shuffle should yield another believable world. Judge a change from the
+pictures — capture, compare, crop in — on whether most seeds *look* like
+planets that could exist, not on whether a metric moved toward Earth's
+numbers. `bun run stats` and `bun run climate` are optional helpers when a
+picture looks collapsed; they are not the verdict.
 
 Do not hard-code this planet's geography into the model. Do not pin a Pacific, a Sahara, or an Andes at a named longitude. Do not grow continents toward a reconstruction of Pangaea or today's landmasses. If a rule only works because it copies Earth, it is the wrong rule.
 
-The tectonic model lives in `tectonics.js`, kept free of WebGL and DOM so it can be measured without a browser:
+The tectonic model lives in `tectonics.js`, kept free of WebGL and DOM so
+captures and the optional headless helpers share one model:
 
 ```
-bun run stats                                # compares the model against Earth
-bun run stats --seeds=1,2,3 --steps=30       # any --option overrides a tectonics DEFAULTS key
+bun run preview                              # globe + equirect — start here
+bun run preview plates                       # plate shapes and motion
+bun run preview crust                        # ridges, trenches, sea-floor age
+bun run preview climate                      # moisture field on its own
+bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400
 bun run sheet                                # 12 seeds in one contact sheet, preview/seed-sheet.png
 bun run sheet --count=9 --view=globe --overlay=plates
-bun run stats --n=40000                      # the model should read the same at any mesh size
-bun run climate                              # compares the climate model against Earth
+bun run check:presets                        # presets resolve, and loading one clears the last
 ```
+
+`bun run stats`, `bun run climate`, and `bun run check:earth` exist if a
+picture looks wrong and you want a hint, or if the Earth fixture drifted.
+Do not lead with them, and do not treat a green number as done.
 
 The climate model lives in `climate.js`, also browser-free. Moisture is
 carried downwind from the sea rather than painted on by latitude, which is
 what gives continents a wet and a dry coast instead of one dry girdle; see
 `.cursor/rules/climate.mdc`.
 
-Run `stats` and `climate` before judging pictures, and `sheet` when judging how the planets
-*look* — a failure mode that hits every seed reads as a bad roll if you only
-ever capture one. Continents are seeded as aggregates of welded cratonic blocks, not a noise threshold. A plate is a rigid
+Judge how the planets *look* from captures and from `sheet` — a failure
+mode that hits every seed reads as a bad roll if you only ever capture one.
+Continents are seeded as aggregates of welded cratonic blocks, not a noise threshold. A plate is a rigid
 body made of sites that rotate with it, so its boundaries are arcs meeting at
 triple junctions and it stays one coherent body; each has a stable id, a
 generated name, a birth time and a parent, and keeps them through rifts and
@@ -60,7 +72,10 @@ The original 1843 distance-field blend is still available for comparison: the **
 
 ## Visual check
 
-The planet is a WebGL canvas. You cannot see it until you capture a PNG. Do not finish visual work from code alone.
+This is an aesthetic pursuit. The planet is a WebGL canvas. You cannot see
+it until you capture a PNG. Do not finish visual work from code or from a
+number. Read the picture, crop in on the feature you are judging, compare
+before and after.
 
 ```
 bun run preview                 # globe 2x2 + equirect
@@ -74,7 +89,7 @@ bun run preview climate         # the moisture field on its own
 bun run preview --no-tectonics  # the 1843 blend, for comparison
 ```
 
-Then read the **compare** sheet for that view if it exists, otherwise the latest capture.
+Then read the **compare** sheet for that view if it exists, otherwise the latest capture. Crop in when the feature is small on the full frame (`bun run crop preview/equirect.png --x=800 --y=200 --w=600 --h=400` → `preview/crop.png`).
 
 | Capture | Files | What it shows | Use when |
 | --- | --- | --- | --- |
@@ -84,7 +99,34 @@ Then read the **compare** sheet for that view if it exists, otherwise the latest
 | **crust** | `preview/crust.png`, `preview/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
 | **climate** | `preview/climate.png`, `preview/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
 
-After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, run `bun run stats` first, then also read `bun run preview crust`. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian.
+`bun run check:earth` locks the Earth fixture's `stats` report to a checked-in
+baseline (`scripts/earth-baseline.txt`) so a model change cannot drift Earth
+unnoticed. It is a tripwire, not a taste test: if it fails, look at the
+Earth captures, decide whether the picture moved the right way, then
+`bun run check:earth --update` to accept the new numbers.
+
+The planet's physical properties live in `world.js` — radius, gravity, land
+fraction, day length, tilt, age — separate from the model parameters because all
+three models read them. Every derivation there is a ratio against Earth and is
+exactly 1 at Earth's defaults, so a default run is bit-identical to one from
+before they existed. `landFraction` is solved for exactly by shifting sea level
+after the run (`solveSeaLevel`), so it is what you get rather than what you aim
+at; null leaves sea level where the crust puts it.
+
+Presets live in `presets/`, loaded from the **Preset** dropdown at the top of the
+app's controls, where every exposed parameter is a row with a pin toggle: pinned
+means this preset decides it, free means it sits at its default. Those rows are
+generated from `params.js`, so registering and exposing a parameter is all it
+takes to put it on screen. A preset is a named set
+of pins: every parameter it names is decided and everything it omits is free, so
+loading one *assigns* whole option sets rather than merging them — otherwise a
+parameter the new preset does not pin keeps the last preset's value and the
+planet belongs to neither. `presets/thalos.js` is deliberately near-empty; Thalos
+is being discovered, and gains a pin each time something is decided. `params.js` is the registry of all 176
+parameters with their units and ranges; it validates presets and throws if a
+parameter is added without being registered.
+
+After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, read `bun run preview crust` — ridges, trenches, age — not a stats dump. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian. Crop in rather than guessing from a thumbnail.
 
 Previous shots: `preview/planet-before.png`, `preview/equirect-before.png`, `preview/plates-before.png`, `preview/equirect-plates-before.png`, `preview/history/`.
 

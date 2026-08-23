@@ -26,6 +26,7 @@
 
 const SimplexNoise = require('simplex-noise');
 const {makeRandFloat} = require('@redblobgames/prng');
+const World = require('./world');
 
 function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
@@ -193,7 +194,7 @@ function buildUpwindGraph(mesh, r_xyz, shiftDeg, opts) {
 
 
 function assignClimate(mesh, {r_xyz, r_elevation, r_moisture, r_temperature}, seed, options) {
-    const opts = Object.assign({}, DEFAULTS, options);
+    const opts = World.derive(Object.assign({}, World.DEFAULTS, DEFAULTS, options), mesh.numRegions);
     const noise = new SimplexNoise(makeRandFloat(seed || 1));
     const {numRegions} = mesh;
 

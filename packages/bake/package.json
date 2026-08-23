@@ -1,0 +1,6 @@
+{
+    "name": "@planetgen/bake",
+    "private": true,
+    "main": "index.js",
+    "description": "Stub: cubesphere faces, seams, WorldPipeline. Not implemented."
+}

@@ -1,0 +1,6 @@
+{
+    "name": "@planetgen/look",
+    "private": true,
+    "main": "index.js",
+    "description": "Colormap and lighting. A view of the Planet, not a generation stage."
+}

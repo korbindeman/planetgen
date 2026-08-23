@@ -112,7 +112,7 @@ def main():
         'source': 'Bird 2003 PB2002 outlines (fraxen/tectonicplates GeoJSON), merged to the 16-plate USGS-style map. Poles are NNR-MORVEL56 (Argus, Gordon, DeMets 2011).',
         'plates': out_plates,
     }
-    dest = ROOT / 'earth-plates-data.json'
+    dest = ROOT / 'src' / 'earth-plates-data.json'
     dest.write_text(json.dumps(payload, separators=(',', ':')))
     print(f'wrote {dest} ({dest.stat().st_size} bytes)')
 
