@@ -127,7 +127,12 @@ export async function submitJob(root, body) {
       );
     }
   }
-  const layers = decodeLayers(body.layers, cropW, cropH);
+  const padCells = Math.max(0, body.padCells | 0);
+  const originI = Number.isFinite(Number(body.originI)) ? Number(body.originI) | 0 : 0;
+  const originJ = Number.isFinite(Number(body.originJ)) ? Number(body.originJ) | 0 : 0;
+  const layerW = cropW + 2 * padCells;
+  const layerH = cropH + 2 * padCells;
+  const layers = decodeLayers(body.layers, layerW, layerH);
   const tile = readTile(body.tile);
   /*
    * A tile owns its folder. The name is (face, level, i, j), so baking the
@@ -165,6 +170,9 @@ export async function submitJob(root, body) {
     tile,
     cropW,
     cropH,
+    padCells,
+    originI,
+    originJ,
     scaleKm: Number(body.scaleKm) || 23,
     seed: body.seed ?? null,
     snr: body.snr || DEFAULT_SNR,
@@ -173,7 +181,10 @@ export async function submitJob(root, body) {
   jobs.set(job.id, job);
 
   await writeTdFolder(dir, layers, bounds);
-  await writeFile(join(dir, "coarse.png"), hillshadePng(layers.heightmap, cropW, cropH));
+  const previewMap = padCells
+    ? interiorField(layers.heightmap, layerW, padCells, cropW, cropH)
+    : layers.heightmap;
+  await writeFile(join(dir, "coarse.png"), hillshadePng(previewMap, cropW, cropH));
   /*
    * The GeoTIFF's geotransform is a nominal lon/lat box, because a cube tile
    * is not an axis-aligned WGS84 rectangle and no CRS we could write would
@@ -189,6 +200,9 @@ export async function submitJob(root, body) {
       variant,
       scaleKm: Number(body.scaleKm) || 23,
       cells: cropW,
+      padCells,
+      originI,
+      originJ,
       nominalBounds: bounds,
     }, null, 2));
   }
@@ -279,6 +293,16 @@ function decodeLayers(raw, w, h) {
   return layers;
 }
 
+/* The thumbnail is the tile, not the context pad around it. */
+function interiorField(src, fullW, pad, innerW, innerH) {
+  const out = new Float32Array(innerW * innerH);
+  for (let y = 0; y < innerH; y++) {
+    const srcOff = (y + pad) * fullW + pad;
+    out.set(src.subarray(srcOff, srcOff + innerW), y * innerW);
+  }
+  return out;
+}
+
 function kickQueue(root) {
   if (queueRunning) return;
   queueRunning = true;
@@ -308,23 +332,49 @@ async function bakeJob(root, job) {
   const python = tdPython();
   const tdRootDir = tdCheckout();
   const outTif = join(job.dir, "output.tif");
-  const args = [
-    "-u",
-    "-m", "terrain_diffusion.inference.tiff_export",
-    job.model,
-    job.dir,
-    outTif,
-    "--snr", job.snr,
-    "--no-compile",
-    "--device", tdDevice(),
-  ];
+  const pad = job.padCells | 0;
+  /*
+   * Cube tiles arrive already padded with real neighbour cells. Feeding
+   * those to tiff-export would pad again (edge-repeat of the pad) and
+   * generate the whole thing as a crop starting at (0,0). td-bake.py
+   * uses the pad as the U-Net context and the face-grid origin so
+   * adjacent tiles share noise at the seam.
+   */
+  const args = pad > 0
+    ? [
+        "-u",
+        join(root, "scripts", "td-bake.py"),
+        job.model,
+        job.dir,
+        outTif,
+        "--snr", job.snr,
+        "--no-compile",
+        "--device", tdDevice(),
+        "--pad", String(pad),
+        "--origin-i", String(job.originI | 0),
+        "--origin-j", String(job.originJ | 0),
+        "--crop-w", String(job.cropW),
+        "--crop-h", String(job.cropH),
+      ]
+    : [
+        "-u",
+        "-m", "terrain_diffusion.inference.tiff_export",
+        job.model,
+        job.dir,
+        outTif,
+        "--snr", job.snr,
+        "--no-compile",
+        "--device", tdDevice(),
+      ];
   if (job.seed != null && Number.isFinite(Number(job.seed))) {
     args.push("--seed", String(Number(job.seed) | 0));
   }
 
   job.status = "baking";
   job.progress = 0;
-  job.log.push(`tiff-export ${job.cropW}×${job.cropH} on ${tdDevice()}`);
+  job.log.push(pad > 0
+    ? `td-bake ${job.cropW}×${job.cropH} +${pad} pad on ${tdDevice()}`
+    : `tiff-export ${job.cropW}×${job.cropH} on ${tdDevice()}`);
 
   const code = await spawnLogged(python, args, {
     cwd: tdRootDir,

@@ -5,6 +5,7 @@
     "": {
       "name": "@redblobgames/1843-planet-generation",
       "dependencies": {
+        "@fortawesome/free-solid-svg-icons": "^7.3.1",
         "@redblobgames/dual-mesh": "https://github.com/redblobgames/dual-mesh",
         "@redblobgames/prng": "https://github.com/redblobgames/prng",
         "delaunator": "^3.0",
@@ -14,8 +15,47 @@
         "simplex-noise": "^2",
       },
     },
+    "packages/app": {
+      "name": "@planetgen/app",
+    },
+    "packages/bake": {
+      "name": "@planetgen/bake",
+    },
+    "packages/export": {
+      "name": "@planetgen/export",
+    },
+    "packages/hydrology": {
+      "name": "@planetgen/hydrology",
+    },
+    "packages/look": {
+      "name": "@planetgen/look",
+    },
+    "packages/models": {
+      "name": "@planetgen/models",
+    },
+    "packages/pipeline": {
+      "name": "@planetgen/pipeline",
+    },
   },
   "packages": {
+    "@fortawesome/fontawesome-common-types": ["@fortawesome/fontawesome-common-types@7.3.1", "", {}, "sha512-k0C0sdHmZtAo6dRDtd1Z/qcpyHbL0CKsjV8seMY/21xGhY5Wsv0XRmiI/xEEH4y2c9b1+jvgNs/3EqhV27yUEA=="],
+
+    "@fortawesome/free-solid-svg-icons": ["@fortawesome/free-solid-svg-icons@7.3.1", "", { "dependencies": { "@fortawesome/fontawesome-common-types": "7.3.1" } }, "sha512-v0BLa0eqg7ubvVWeNSHVBs8fWH/GJicERZoJaxJ3FE/lj67VSqzoMg9pzfZVOfLMX10y0pGwQAuxoRVVH2patg=="],
+
+    "@planetgen/app": ["@planetgen/app@workspace:packages/app"],
+
+    "@planetgen/bake": ["@planetgen/bake@workspace:packages/bake"],
+
+    "@planetgen/export": ["@planetgen/export@workspace:packages/export"],
+
+    "@planetgen/hydrology": ["@planetgen/hydrology@workspace:packages/hydrology"],
+
+    "@planetgen/look": ["@planetgen/look@workspace:packages/look"],
+
+    "@planetgen/models": ["@planetgen/models@workspace:packages/models"],
+
+    "@planetgen/pipeline": ["@planetgen/pipeline@workspace:packages/pipeline"],
+
     "@redblobgames/dual-mesh": ["@redblobgames/dual-mesh@github:redblobgames/dual-mesh#4a8504d", { "dependencies": { "delaunator": "^4.0.0" } }, "redblobgames-dual-mesh-4a8504d", "sha512-uLq/WapJBttRwYIuXrNqoeH/b5y7ZJQiAazJiWA8ekOIZcXT20abrMkiIHWjOrs/plf+RNzKSN2aZ1jMe5mUsQ=="],
 
     "@redblobgames/prng": ["@redblobgames/prng@github:redblobgames/prng#1104cf9", { "dependencies": { "hash-int": "*" } }, "redblobgames-prng-1104cf9", "sha512-P3fvzCGteMjPySvIqzRztetjdYjPLXE9dWdDo+ztWDk86jjnaow9v3cXS9PrRFzWDm8wcNhf98JM5if/ewIPDw=="],

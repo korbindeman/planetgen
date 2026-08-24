@@ -169,19 +169,31 @@ function parseTileName(name) {
 }
 
 /*
- * Pixel position inside a tile's raster, row 0 at the north edge. Returns
- * null only when the point is on the far hemisphere and has no projection at
- * all. Values outside [0, width] are meaningful and wanted: the rasterizer
- * clips them, and a mesh triangle with one vertex just off the tile still
- * paints the part of itself that lands inside.
+ * The tile's face-space square grown by `padA` / `padB` coarse cells. The
+ * mapping already continues past |a|,|b| of 1, so a pad that steps off the
+ * face is neighbouring-face terrain in this face's projection — not empty,
+ * and not a repeated rim.
+ */
+function paddedExtent(tile, padA, padB, cellsA, cellsB) {
+    const e = tileExtent(tile);
+    const da = (e.a1 - e.a0) * padA / cellsA;
+    const db = (e.b1 - e.b0) * padB / cellsB;
+    return {a0: e.a0 - da, a1: e.a1 + da, b0: e.b0 - db, b1: e.b1 + db};
+}
+
+/*
+ * Pixel position inside a raster covering `e`, row 0 at the north edge.
+ * Returns null only when the point is on the far hemisphere and has no
+ * projection at all. Values outside [0, width] are meaningful and wanted:
+ * the rasterizer clips them, and a mesh triangle with one vertex just off
+ * the tile still paints the part of itself that lands inside.
  *
  * Takes radians and hoists the face basis out, because this runs per mesh
  * vertex per tile — the rest of the module is the readable degrees wrapper
  * around it, so there is one copy of the projection.
  */
-function tileProjector(tile, width, height) {
-    const f = FACES[tile.face];
-    const e = tileExtent(tile);
+function projectorFromExtent(face, e, width, height) {
+    const f = FACES[face];
     const sx = width / (e.a1 - e.a0);
     const sy = height / (e.b1 - e.b0);
     return function project(lonRad, latRad) {
@@ -197,23 +209,108 @@ function tileProjector(tile, width, height) {
     };
 }
 
+function tileProjector(tile, width, height) {
+    return projectorFromExtent(tile.face, tileExtent(tile), width, height);
+}
+
+/* Interior `cellsW`×`cellsH`, plus `padW`/`padH` cells of real neighbour
+ * ground on each side. pad=0 is tileProjector. */
+function paddedProjector(tile, cellsW, cellsH, padW, padH) {
+    return projectorFromExtent(
+        tile.face,
+        paddedExtent(tile, padW, padH, cellsW, cellsH),
+        cellsW + 2 * padW,
+        cellsH + 2 * padH,
+    );
+}
+
 function tilePixel(tile, lonDeg, latDeg, width, height) {
     return tileProjector(tile, width, height)(lonDeg * DEG, latDeg * DEG);
 }
 
 /*
- * The inverse of tilePixel: a raster sample (s, t) in [0, 1], row 0 at
- * the north edge, back to lon/lat. The overlay and the exporter both have
- * to go through this — a second copy is how a bake landed next to the
- * cell it was picked from.
+ * A raster sample (s, t) in [0, 1], row 0 at the north edge, as a unit
+ * ECEF direction. This is the tile's physical location: the same vector
+ * the globe mesh uses. Overlay vertices, the exporter and tileLonLat all
+ * go through here — converting to lon/lat and back is how a bake used to
+ * float off the cell it was picked from.
  */
-function tileLonLat(tile, s, t) {
+function tileDirection(tile, s, t) {
     const e = tileExtent(tile);
-    return xyzToLonLat(faceDirection(
+    return faceDirection(
         tile.face,
         e.a0 + (e.a1 - e.a0) * s,
         e.b1 + (e.b0 - e.b1) * t,
+    );
+}
+
+function tileLonLat(tile, s, t) {
+    return xyzToLonLat(tileDirection(tile, s, t));
+}
+
+/*
+ * A triangle mesh for the tile, in the globe's own ECEF. Vertices are
+ * tileDirection(s, t); UVs are the raster. The renderer draws this with
+ * the same projection as the coarse surface, so the bake is pinned to
+ * the ground rather than composited as a 2D billboard.
+ */
+function tileMesh(tile, steps) {
+    const n = Math.max(1, steps | 0);
+    return gridMesh(n, n, (s, t) => tileDirection(tile, s, t));
+}
+
+/*
+ * Legacy lon/lat crops (andes / japan / islands, and anything baked
+ * before the grid). Same ECEF as the globe, so they pin the same way
+ * cube tiles do. east may be less than west, or greater than 180, for
+ * a box that crosses the antimeridian.
+ */
+function lonLatMesh(west, south, east, north, steps) {
+    let east2 = east;
+    if (east2 < west) east2 += 360;
+    const n = Math.max(1, steps | 0);
+    return gridMesh(n, n, (s, t) => lonLatToXyz(
+        west + (east2 - west) * s,
+        north + (south - north) * t,
     ));
+}
+
+function gridMesh(nx, ny, at) {
+    const vx = nx + 1;
+    const vy = ny + 1;
+    const xyz = new Float32Array(vx * vy * 3);
+    const uv = new Float32Array(vx * vy * 2);
+    const indices = new Uint32Array(nx * ny * 6);
+    let p = 0;
+    let t = 0;
+    for (let j = 0; j <= ny; j++) {
+        const v = j / ny;
+        for (let i = 0; i <= nx; i++) {
+            const u = i / nx;
+            const d = at(u, v);
+            xyz[p++] = d[0];
+            xyz[p++] = d[1];
+            xyz[p++] = d[2];
+            uv[t++] = u;
+            uv[t++] = v;
+        }
+    }
+    let k = 0;
+    for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+            const a = j * vx + i;
+            const b = a + 1;
+            const c = a + vx;
+            const d = c + 1;
+            indices[k++] = a;
+            indices[k++] = c;
+            indices[k++] = b;
+            indices[k++] = b;
+            indices[k++] = c;
+            indices[k++] = d;
+        }
+    }
+    return {xyz, uv, indices};
 }
 
 /* Corners in raster order: NW, NE, SE, SW. */
@@ -390,12 +487,17 @@ module.exports = {
     makeTile,
     tileAt,
     tileExtent,
+    paddedExtent,
     sameTile,
     tileName,
     parseTileName,
     tileProjector,
+    paddedProjector,
     tilePixel,
+    tileDirection,
     tileLonLat,
+    tileMesh,
+    lonLatMesh,
     tileCorners,
     tileOutline,
     tileBBox,

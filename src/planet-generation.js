@@ -77,8 +77,6 @@ window.__PLANET_READY__ = false;
 
 function setTdCrops(flag) {
     TdOverlay.setEnabled(flag);
-    const list = document.getElementById('td-crop-list');
-    if (list) list.hidden = !flag;
     const toggle = document.getElementById('td-crops-toggle');
     if (toggle) toggle.checked = !!flag;
     draw();
@@ -327,6 +325,55 @@ void main() {
         a_tm: regl.prop('a_tm'),
     },
 });
+
+/*
+ * A baked crop, drawn as a mesh of the same ECEF directions the globe
+ * uses. Depth against the coarse surface is what stops a tile floating
+ * in front of the planet or vanishing behind its neighbour; the 2D
+ * overlay could do neither, because it was a billboard.
+ */
+const renderBakedTile = regl({
+    frag: `
+precision mediump float;
+uniform sampler2D u_image;
+varying vec2 v_uv;
+void main() {
+  gl_FragColor = texture2D(u_image, v_uv);
+}
+`,
+    vert: `
+precision mediump float;
+uniform mat4 u_projection;
+attribute vec3 a_xyz;
+attribute vec2 a_uv;
+varying vec2 v_uv;
+void main() {
+  v_uv = a_uv;
+  gl_Position = u_projection * vec4(a_xyz, 1);
+}
+`,
+    uniforms: {
+        u_projection: regl.prop('u_projection'),
+        u_image: regl.prop('u_image'),
+    },
+    attributes: {
+        a_xyz: regl.prop('a_xyz'),
+        a_uv: regl.prop('a_uv'),
+    },
+    elements: regl.prop('elements'),
+    depth: {
+        enable: true,
+        mask: true,
+        func: 'lequal',
+    },
+    polygonOffset: {
+        enable: true,
+        offset: (context, props) => ({factor: -1.5, units: props.offsetUnits}),
+    },
+});
+
+const bakedGpu = new Map();
+const EQUIRECT_TILE_Z = -0.55;
 
 /**********************************************************************
  * Geometry
@@ -634,8 +681,8 @@ function syncViewModeDom() {
         document.body.classList.remove('view-equirect');
         const toggle = document.querySelector('.view-mode-toggle');
         if (toggle) {
-            toggle.title = 'Equirectangular map';
-            toggle.setAttribute('aria-label', 'Equirectangular map');
+            toggle.title = 'Map view';
+            toggle.setAttribute('aria-label', 'Map view');
         }
     }
 }
@@ -856,12 +903,120 @@ function drawEquirectPlateBoundaries(u_projection, mesh, {t_xyz, r_plate}) {
     });
 }
 
+function cropEquirectMesh(mesh) {
+    const {xyz, uv, indices} = mesh;
+    const outXYZ = [];
+    const outUV = [];
+    for (let i = 0; i < indices.length; i += 3) {
+        const verts = [indices[i], indices[i + 1], indices[i + 2]].map((idx) => ({
+            lon: Math.atan2(xyz[idx * 3 + 1], xyz[idx * 3]),
+            lat: Math.asin(Math.max(-1, Math.min(1, xyz[idx * 3 + 2]))),
+            u: uv[idx * 2],
+            v: uv[idx * 2 + 1],
+        }));
+        for (let k = 1; k < 3; k++) {
+            while (verts[k].lon - verts[0].lon > PI) verts[k].lon -= TWO_PI;
+            while (verts[0].lon - verts[k].lon > PI) verts[k].lon += TWO_PI;
+        }
+        function emit(shift) {
+            for (const p of verts) {
+                outXYZ.push((p.lon + shift) / PI, (2 * p.lat) / PI, EQUIRECT_TILE_Z);
+                outUV.push(p.u, p.v);
+            }
+        }
+        emit(0);
+        const minL = Math.min(verts[0].lon, verts[1].lon, verts[2].lon);
+        const maxL = Math.max(verts[0].lon, verts[1].lon, verts[2].lon);
+        if (minL < -PI) emit(TWO_PI);
+        if (maxL > PI) emit(-TWO_PI);
+    }
+    const outI = new Uint32Array(outXYZ.length / 3);
+    for (let i = 0; i < outI.length; i++) outI[i] = i;
+    return {
+        xyz: new Float32Array(outXYZ),
+        uv: new Float32Array(outUV),
+        indices: outI,
+    };
+}
+
+function gpuForCrop(crop) {
+    const img = TdOverlay.surfaceFor(crop);
+    if (!img) return null;
+    let gpu = bakedGpu.get(crop.name);
+    if (!gpu) {
+        gpu = {tex: null, imageEl: null, mesh: null, meshKey: '', equirect: null};
+        bakedGpu.set(crop.name, gpu);
+    }
+    if (gpu.imageEl !== img) {
+        if (gpu.tex) gpu.tex.destroy();
+        try {
+            gpu.tex = regl.texture({
+                data: img,
+                min: 'linear',
+                mag: 'linear',
+                wrapS: 'clamp',
+                wrapT: 'clamp',
+            });
+            gpu.imageEl = img;
+        } catch {
+            gpu.tex = null;
+            gpu.imageEl = null;
+            return null;
+        }
+    }
+    const meshKey = crop.tile
+        ? `t:${crop.tile.face}:${crop.tile.level}:${crop.tile.i}:${crop.tile.j}`
+        : `b:${crop.west}:${crop.south}:${crop.east}:${crop.north}`;
+    if (gpu.meshKey !== meshKey) {
+        const mesh = TdOverlay.cropMesh(crop);
+        gpu.mesh = mesh;
+        gpu.equirect = mesh ? cropEquirectMesh(mesh) : null;
+        gpu.meshKey = meshKey;
+    }
+    return gpu.mesh && gpu.tex ? gpu : null;
+}
+
+function pruneBakedGpu(keep) {
+    for (const name of [...bakedGpu.keys()]) {
+        if (keep.has(name)) continue;
+        const gpu = bakedGpu.get(name);
+        if (gpu.tex) gpu.tex.destroy();
+        bakedGpu.delete(name);
+    }
+}
+
+function drawBakedTiles(u_projection, mode) {
+    if (!TdOverlay.isEnabled()) {
+        pruneBakedGpu(new Set());
+        return;
+    }
+    const crops = TdOverlay.visibleCrops().slice().sort((a, b) => (
+        TdOverlay.cropRank(a) - TdOverlay.cropRank(b)
+    ));
+    pruneBakedGpu(new Set(crops.map((c) => c.name)));
+    crops.forEach((crop, i) => {
+        const gpu = gpuForCrop(crop);
+        if (!gpu) return;
+        const mesh = mode === 'equirect' ? gpu.equirect : gpu.mesh;
+        if (!mesh) return;
+        renderBakedTile({
+            u_projection,
+            a_xyz: mesh.xyz,
+            a_uv: mesh.uv,
+            elements: mesh.indices,
+            u_image: gpu.tex,
+            offsetUnits: -2 * (i + 1),
+        });
+    });
+}
+
 function drawEquirect() {
     const geo = getEquirectSurfaceGeometry();
     const overlay = usePlateOverlay();
     for (const xshift of [-2, 0, 2]) {
         const u_projection = equirectProjection(xshift);
         drawSurface(u_projection, geo.xyz, geo.tm, geo.count);
+        drawBakedTiles(u_projection, 'equirect');
         if (!overlay && draw_plateVectors) {
             drawEquirectPlateVectors(u_projection, simMesh, simMap);
         }
@@ -983,6 +1138,8 @@ function _draw() {
         drawSurface(u_projection, quadGeometry.xyz, tm);
     }
 
+    drawBakedTiles(u_projection, 'globe');
+
     if (!overlay) drawNorthPole(u_projection);
 
     if (!overlay && draw_plateVectors) {
@@ -1065,8 +1222,8 @@ function rasterizeLonLatBox(westDeg, southDeg, eastDeg, northDeg, width, height,
     return Planet.rasterizeLonLatBox(mesh, map, westDeg, southDeg, eastDeg, northDeg, width, height, lon0);
 }
 
-function rasterizeCubeTile(tile, width, height, lon0) {
-    return Planet.rasterizeCubeTile(mesh, map, tile, width, height, lon0);
+function rasterizeCubeTile(tile, width, height, lon0, padCells) {
+    return Planet.rasterizeCubeTile(mesh, map, tile, width, height, lon0, padCells);
 }
 
 function latOfRow(y, height) {
@@ -1750,17 +1907,25 @@ function draw() {
  * space, so the cells sit where the bake will put them; the lon/lat box that
  * rides along is nominal, for the GeoTIFF's geotransform and for framing the
  * view. The tile identity is what actually places the result.
+ *
+ * The raster is the tile plus CONTEXT_PAD cells of real neighbour ground.
+ * tiff-export would fill that window by repeating the rim, which is why
+ * adjacent bakes met at a hard seam: each U-Net saw a wall, not the coast
+ * continuing. Origin is the face-grid cell of that padded top-left, so two
+ * tiles that share an edge share WorldPipeline coordinates and noise.
  */
 function exportTdTile(tile) {
     const cells = tdTileCells();
-    const raw = rasterizeCubeTile(tile, cells, cells, 0);
-    const e = Cubesphere.tileExtent(tile);
-    const layers = fieldsToTdLayers(raw, cells, cells, (row) => {
-        const b = e.b1 - (row + 0.5) / cells * (e.b1 - e.b0);
+    const pad = TdTile.CONTEXT_PAD;
+    const raw = rasterizeCubeTile(tile, cells, cells, 0, pad);
+    const e = Cubesphere.paddedExtent(tile, pad, pad, cells, cells);
+    const layers = fieldsToTdLayers(raw, raw.width, raw.height, (row) => {
+        const b = e.b1 - (row + 0.5) / raw.height * (e.b1 - e.b0);
         const mid = Cubesphere.xyzToLonLat(Cubesphere.faceDirection(tile.face, (e.a0 + e.a1) / 2, b));
         return mid.lat * PI / 180;
     });
     const box = Cubesphere.tileBBox(tile);
+    const origin = TdTile.contextOrigin(tile, cells, pad);
     return {
         name: Cubesphere.tileName(tile),
         tile,
@@ -1770,6 +1935,9 @@ function exportTdTile(tile) {
         north: box.north,
         cropW: cells,
         cropH: cells,
+        padCells: pad,
+        originI: origin.originI,
+        originJ: origin.originJ,
         scaleKm: TdTile.SCALE_KM,
         seed: studio.seed,
         project: studio.project,

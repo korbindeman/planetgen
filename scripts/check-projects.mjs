@@ -330,6 +330,74 @@ for (const project of Projects.PROJECTS) {
         }) == null);
     check("nothing is guessed when the catalog has no target",
         Variants.resumeId({variants: pair}) == null);
+    const first = Variants.ofWorking({
+        project: "thalos", seed: 21, pins, values: {plates: 16},
+    });
+    const same = Variants.ofWorking({
+        project: "thalos", seed: 21, pins, values: {plates: 16},
+    });
+    check("dirty is false for the same recipe",
+        !Variants.dirty(same, first) && Variants.sameRecipe(first, same));
+    check("dirty is true when the working planet moved",
+        Variants.dirty(Variants.ofWorking({
+            project: "thalos", seed: 22, pins, values: {plates: 16},
+        }), first));
+    const grown = Variants.append([first], Variants.ofWorking({
+        project: "thalos", parent: first.id, seed: 23, pins, values: {plates: 11}, name: "ridge",
+    }));
+    check("a name appends a child branch instead of updating the parent",
+        grown.length === 2
+        && grown[0].id !== first.id
+        && grown[0].parent === first.id
+        && grown[0].name === "ridge"
+        && grown[1].id === first.id);
+    const moved = Variants.update(grown, first.id, Variants.ofWorking({
+        project: "thalos", seed: 24, pins, values: {plates: 18},
+    }));
+    check("an unnamed save updates the current version in place",
+        moved.length === 2
+        && moved[1].id === first.id
+        && moved[1].seed === 24
+        && moved[1].values.plates === 18
+        && moved[1].generation === 2
+        && moved[1].parent === first.parent);
+    check("a new name is a branch, the same name is not",
+        Variants.wouldBranch(first, "ridge") && !Variants.wouldBranch(first, "")
+        && !Variants.wouldBranch(grown[0], "ridge"));
+    check("a new seed is a branch even without a name",
+        Variants.wouldBranch(first, {seed: first.seed + 1})
+        && !Variants.wouldBranch(first, {seed: first.seed}));
+    check("an explore draw is a branch even on the same seed",
+        Variants.wouldBranch(first, {discover: true, seed: first.seed}));
+    const ranged = Variants.setRanges(moved, first.id, {continentFraction: [0.40, 0.44]});
+    check("explore writes ranges without starting a new generation",
+        ranged[1].id === first.id
+        && ranged[1].generation === 2
+        && ranged[1].ranges.continentFraction[0] === 0.40);
+    check("two versions may share a recipe",
+        Variants.parseVariants([first, same], pins).length === 2);
+    check("a parent with a child is not the tip",
+        Variants.isTip(grown, grown[0].id) && !Variants.isTip(grown, first.id));
+    const headed = Variants.advanceHead({
+        project: "thalos",
+        committed: first.id,
+        variants: grown,
+    }, first.id, grown[0].id);
+    check("the first save on a line can adopt that version",
+        headed.committed === grown[0].id);
+    const side = Variants.ofWorking({
+        project: "thalos", seed: 30, pins, values: {plates: 9},
+    });
+    const sideChild = Variants.ofWorking({
+        project: "thalos", parent: side.id, seed: 31, pins, values: {plates: 8}, name: "wet",
+    });
+    const branched = Variants.advanceHead({
+        project: "thalos",
+        committed: first.id,
+        variants: [sideChild, side, first],
+    }, side.id, sideChild.id);
+    check("a named branch leaves the committed head",
+        branched.committed === first.id);
 }
 
 /* 10. A crop is a folder. Whatever files it holds, the directory is what

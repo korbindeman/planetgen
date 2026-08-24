@@ -202,7 +202,8 @@ const cropA = {
 }
 
 /* 7. Overlay placement is the inverse of the tile raster, so a bake cannot
- * land next door to the grid cell it was picked from. */
+ * land next door to the grid cell it was picked from. The renderer uses
+ * tileMesh (ECEF), not a lon/lat box; this is the same inverse. */
 {
     let bad = 0;
     let seed = 20260823;
@@ -218,11 +219,30 @@ const cropA = {
         };
         const s = rnd();
         const u = rnd();
-        const ll = Cube.tileLonLat(t, s, u);
+        const d = Cube.tileDirection(t, s, u);
+        const ll = Cube.xyzToLonLat(d);
         const px = Cube.tilePixel(t, ll.lon, ll.lat, 256, 256);
         if (!px || Math.abs(px.x - s * 256) > 1e-4 || Math.abs(px.y - u * 256) > 1e-4) bad++;
     }
-    check("tileLonLat is the inverse of tilePixel", bad === 0, `${bad} misplaced`);
+    check("tileDirection is the inverse of tilePixel", bad === 0, `${bad} misplaced`);
+}
+
+/* 8. A cube crop is placed by its tile mesh. The nominal bbox is a
+ * different region — using it is how a grid bake floated while a lon/lat
+ * crop (andes, japan, islands) stayed put. */
+{
+    const tile = {face: 0, level: 3, i: 7, j: 0};
+    const mesh = Cube.tileMesh(tile, 2);
+    const mid = Cube.tileDirection(tile, 0.5, 0.5);
+    const p = (1 * 3 + 1) * 3;
+    check("a cube crop's mesh centre is the tile centre",
+        Math.abs(mesh.xyz[p] - mid[0]) < 1e-6
+        && Math.abs(mesh.xyz[p + 1] - mid[1]) < 1e-6
+        && Math.abs(mesh.xyz[p + 2] - mid[2]) < 1e-6);
+    const box = Cube.tileBBox(tile);
+    const boxed = Cube.lonLatToXyz((box.west + box.east) / 2, (box.south + box.north) / 2);
+    const gap = Math.hypot(mid[0] - boxed[0], mid[1] - boxed[1], mid[2] - boxed[2]);
+    check("a cube crop is not placed from its bbox", gap > 1e-4, `gap ${gap.toFixed(6)}`);
 }
 
 check("earth's token is a seed, not a wildcard",

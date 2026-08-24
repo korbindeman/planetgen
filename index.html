@@ -57,9 +57,8 @@
         font: inherit;
         font-variant-numeric: tabular-nums;
       }
-      /* One flat paragraph of <br>s was why this read as a pile. Sections
-         group by the question each answers: what planet, how am I looking at
-         it, what is the model doing, which roll, how finely computed. */
+      /* Sidebar is the world: identity, progress, parameters. Looking lives
+         on the canvas. Only Advanced collapses. */
       .controls { flex: 0 0 17rem; }
       .panel {
         border-top: 1px solid currentColor;
@@ -106,11 +105,9 @@
         opacity: 0.75;
       }
       .field > input[type="range"] { display: block; width: 100%; margin-top: 0.1rem; }
-      /* Nothing showed which view or draw mode was active. */
-      .row button[aria-pressed="true"] {
+      /* Selected is weight, not outline. Outline is for keyboard focus. */
+      .controls .row button[aria-pressed="true"] {
         font-weight: 700;
-        outline: 2px solid currentColor;
-        outline-offset: -2px;
       }
       .app-nav {
         display: flex;
@@ -144,7 +141,7 @@
         font-size: 1.05em;
         text-wrap: balance;
       }
-      .pipeline { margin: 0.55rem 0 0.15rem; }
+      .pipeline { margin: 0 0 0.15rem; }
       .pipeline .param-group { margin-top: 0; }
       .pipeline-row {
         display: flex;
@@ -177,7 +174,8 @@
         padding: 0 0.15em;
         cursor: pointer;
       }
-      #param-list { margin-top: 0.55rem; }
+      #param-list { margin-top: 0; }
+      #param-list .param-group:first-child { margin-top: 0; }
       /* A parameter row is [pin] name [value] over its slider. The pin is
          the whole model in one control: filled means this project decides
          the value, hollow means it is free and a shuffle may move it. */
@@ -215,13 +213,28 @@
         opacity: 0.35;
         cursor: default;
       }
+      #variants-btn {
+        position: relative;
+      }
+      #variants-btn.is-dirty::after {
+        content: "";
+        display: inline-block;
+        width: 0.45em;
+        height: 0.45em;
+        margin-left: 0.35em;
+        border-radius: 50%;
+        background: currentColor;
+        vertical-align: 0.08em;
+      }
       #variants-popover {
         inset: auto;
         margin: 0;
-        padding: 6px;
-        width: 20rem;
+        padding: 8px;
+        width: 24rem;
+        max-height: min(40rem, 86vh);
+        overflow: auto;
         border: 0;
-        border-radius: 12px;
+        border-radius: 16px;
         background: #fff;
         color: #000;
         font: inherit;
@@ -248,98 +261,214 @@
           transform: scale(0.96);
         }
       }
+      .versions-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.6rem;
+        padding: 2px 4px 8px;
+      }
       .variants-title {
-        padding: 4px 6px 6px;
         font-weight: 600;
         font-size: 0.82rem;
+        text-wrap: balance;
+      }
+      .versions-status {
+        font-size: 0.75rem;
+        opacity: 0.5;
+        text-align: right;
+        text-wrap: pretty;
       }
       #variants-form {
         display: flex;
-        gap: 0.35rem;
-        padding: 0 2px 8px;
-        margin: 0 0 4px;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        flex-direction: column;
+        gap: 6px;
+        padding: 0 0 10px;
+        margin: 0 0 8px;
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
       }
       #variant-name {
-        flex: 1;
-        min-width: 0;
-        width: 0;
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0.45rem 0.6rem;
+        border: 0;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.05);
+        color: inherit;
         font: inherit;
       }
+      #variant-name:focus {
+        outline: 2px solid currentColor;
+        outline-offset: 1px;
+      }
+      #variant-save {
+        width: 100%;
+        margin: 0;
+        padding: 0.55rem 0.7rem;
+        border: 0;
+        border-radius: 8px;
+        background: #111;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        transition-property: transform, opacity;
+        transition-duration: 160ms;
+        transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      #variant-save:disabled {
+        background: rgba(0, 0, 0, 0.06);
+        color: inherit;
+        font-weight: 500;
+        opacity: 0.55;
+        cursor: default;
+      }
+      #variant-save:not(:disabled):active {
+        transform: scale(0.96);
+      }
+      .versions-hint {
+        margin: 0;
+        padding: 0 2px;
+        font-size: 0.75rem;
+        line-height: 1.35;
+        opacity: 0.5;
+        text-wrap: pretty;
+      }
+      .versions-compare {
+        padding: 0 0 10px;
+        margin: 0 0 8px;
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+      }
+      .versions-compare[hidden] { display: none; }
+      .versions-compare-stage {
+        position: relative;
+        aspect-ratio: 2 / 1;
+        border-radius: 8px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.06);
+        outline: 1px solid rgba(0, 0, 0, 0.1);
+        outline-offset: -1px;
+        --split: 50%;
+      }
+      .versions-compare-stage img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      #versions-compare-b {
+        clip-path: inset(0 calc(100% - var(--split)) 0 0);
+      }
+      .versions-compare-stage::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: var(--split);
+        width: 1px;
+        background: #fff;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.28);
+        pointer-events: none;
+      }
+      #versions-compare-slider {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        opacity: 0;
+        cursor: ew-resize;
+      }
+      .versions-compare-labels {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.6rem;
+        margin-top: 0.35rem;
+        padding: 0 2px;
+        font-size: 0.72rem;
+        opacity: 0.55;
+      }
+      .versions-compare-labels span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #versions-compare-b-label { text-align: right; }
       #variants-list {
-        max-height: min(24rem, 60vh);
+        max-height: min(22rem, 46vh);
         overflow: auto;
       }
       .variants-empty {
-        padding: 0.7rem 0.5rem;
+        padding: 0.85rem 0.5rem;
         opacity: 0.5;
         font-size: 0.9em;
       }
+      .variant-edge {
+        padding: 6px 4px 2px;
+        font-size: 0.72rem;
+        line-height: 1.2;
+        opacity: 0.45;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .variant-row {
         display: flex;
-        align-items: center;
-        gap: 2px;
-        border-radius: 6px;
+        flex-direction: column;
+        gap: 0;
+        margin: 4px 0;
+        border-radius: 8px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.035);
+        transition-property: background-color;
+        transition-duration: 160ms;
+        transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
       }
       .variant-row.is-current {
-        background: rgba(0, 0, 0, 0.07);
+        background: rgba(0, 0, 0, 0.08);
       }
-      .variant-row.is-committed .variant-committed {
-        opacity: 1;
-      }
-      .variant-commit,
-      .variant-committed {
-        flex: 0 0 auto;
-        margin: 0;
-        padding: 0 0.4rem;
-        border: 0;
-        border-radius: 6px;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        font-size: 0.75rem;
-        line-height: 1;
-        opacity: 0.45;
-      }
-      .variant-commit {
-        cursor: pointer;
+      .variant-row.is-compare {
+        box-shadow: inset 0 0 0 1.5px currentColor;
       }
       .variant-item {
-        flex: 1;
-        min-width: 0;
         display: flex;
-        align-items: center;
-        gap: 0.55rem;
+        flex-direction: column;
+        width: 100%;
         margin: 0;
-        padding: 0.35rem 0.4rem;
+        padding: 0;
         border: 0;
-        border-radius: 6px;
+        border-radius: 0;
         background: transparent;
         color: inherit;
         font: inherit;
         text-align: left;
         cursor: pointer;
       }
-      .variant-thumb {
-        flex: 0 0 4.4rem;
-        width: 4.4rem;
-        height: 2.2rem;
+      .variant-thumb,
+      .variant-thumb-empty {
+        display: block;
+        width: 100%;
+        aspect-ratio: 2 / 1;
         object-fit: cover;
+        background: rgba(0, 0, 0, 0.06);
         outline: 1px solid rgba(0, 0, 0, 0.1);
         outline-offset: -1px;
-        background: rgba(0, 0, 0, 0.06);
+        border-radius: 8px 8px 0 0;
+      }
+      .variant-thumb-empty {
+        display: grid;
+        place-items: center;
+        font-size: 0.72rem;
+        opacity: 0.4;
       }
       .variant-meta {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .variant-text {
         display: flex;
         align-items: baseline;
-        gap: 0.45rem;
+        gap: 0.4rem;
+        padding: 0.4rem 0.5rem 0.2rem;
         min-width: 0;
       }
       .variant-name {
@@ -348,61 +477,81 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        font-weight: 600;
+        font-size: 0.85rem;
       }
       .variant-seed {
         flex: 0 0 auto;
         font-variant-numeric: tabular-nums;
-        opacity: 0.5;
-      }
-      .variant-refine {
-        display: block;
-        height: 3px;
-        border-radius: 2px;
-        background: rgba(0, 0, 0, 0.08);
-        overflow: hidden;
-      }
-      .variant-refine-fill {
-        display: block;
-        height: 100%;
-        border-radius: inherit;
-        background: rgba(0, 0, 0, 0.45);
-      }
-      .variant-edge {
-        padding: 2px 0.4rem 1px;
-        font-size: 0.72rem;
-        line-height: 1.2;
+        font-size: 0.75rem;
         opacity: 0.45;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
       }
+      .variant-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        padding: 0 0.5rem 0.35rem;
+      }
+      .variant-badge {
+        font-size: 0.68rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        opacity: 0.55;
+      }
+      .variant-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 4px 4px;
+      }
+      .variant-open,
+      .variant-commit,
+      .variant-committed,
       .variant-delete {
-        flex: 0 0 28px;
-        width: 28px;
-        height: 28px;
+        position: relative;
         margin: 0;
-        padding: 0;
+        padding: 0.35rem 0.5rem;
         border: 0;
         border-radius: 6px;
         background: transparent;
         color: inherit;
         font: inherit;
+        font-size: 0.75rem;
         line-height: 1;
         cursor: pointer;
+      }
+      .variant-committed {
+        cursor: default;
+        opacity: 0.55;
+      }
+      .variant-delete {
+        margin-left: auto;
         opacity: 0.4;
       }
+      .variant-open::before,
+      .variant-commit::before,
+      .variant-delete::before {
+        content: "";
+        position: absolute;
+        inset: -8px -4px;
+        min-width: 40px;
+        min-height: 40px;
+      }
       @media (hover: hover) and (pointer: fine) {
-        .variant-item:hover {
+        .variant-row:hover {
           background: rgba(0, 0, 0, 0.06);
         }
-        .variant-delete:hover,
-        .variant-commit:hover {
-          opacity: 1;
+        .variant-open:hover,
+        .variant-commit:hover,
+        .variant-delete:hover {
           background: rgba(0, 0, 0, 0.08);
+          opacity: 1;
         }
       }
-      .variant-item:active,
-      .variant-delete:active {
+      .variant-open:active,
+      .variant-commit:active,
+      .variant-delete:active,
+      .variant-item:active {
         transform: scale(0.96);
       }
       @media (prefers-reduced-motion: reduce) {
@@ -419,12 +568,16 @@
             transform: none;
           }
         }
-        .variant-item:active,
-        .variant-delete:active {
+        #variant-save:not(:disabled):active,
+        .variant-open:active,
+        .variant-commit:active,
+        .variant-delete:active,
+        .variant-item:active {
           transform: none;
         }
       }
       figure {
+        position: relative;
         flex: 1;
         margin: 0;
         min-width: 0;
@@ -434,10 +587,14 @@
         place-items: center;
       }
       body.search-mode figure {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr);
         place-items: stretch;
-        overflow: auto;
+        overflow: hidden;
       }
-      body.search-mode .globe { display: none; }
+      body.search-mode .globe,
+      body.search-mode .look-bar { display: none; }
       #search-sheet {
         display: none;
         box-sizing: border-box;
@@ -445,7 +602,11 @@
         min-height: 100%;
         padding: 0.7rem 0.8rem 1rem;
       }
-      body.search-mode #search-sheet { display: block; }
+      body.search-mode #search-sheet {
+        display: block;
+        min-height: 0;
+        overflow: auto;
+      }
       #search-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -529,9 +690,80 @@
         .search-tile-open:active,
         .search-tile-keep:active { transform: none; }
       }
-      #search-controls { margin-top: 0.55rem; }
+      /* Next / Back / Done belong to the sheet, not the sidebar.
+         Hover is pointer-only; outline is keyboard-only. Click must
+         not leave either. */
+      .explore-bar {
+        display: none;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+        padding: 0.7rem 0.8rem 0.55rem;
+        background: #fff;
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+        line-height: normal;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+      }
+      body.search-mode .explore-bar:not([hidden]) {
+        display: flex;
+      }
+      .explore-bar[hidden] {
+        display: none;
+      }
+      .explore-bar button {
+        appearance: none;
+        -webkit-appearance: none;
+        margin: 0;
+        padding: 0.35rem 0.7rem;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 0.85em;
+        line-height: 1.2;
+        cursor: pointer;
+        transition-property: transform, background-color;
+        transition-duration: 150ms;
+        transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+      }
+      .explore-bar button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .explore-bar :focus {
+        outline: none;
+      }
+      .explore-bar :focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+      .explore-bar button:active:not(:disabled) {
+        transform: scale(0.96);
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .explore-bar button:hover:not(:disabled) {
+          background: rgba(0, 0, 0, 0.06);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .explore-bar button {
+          transition-duration: 0ms;
+        }
+        .explore-bar button:active {
+          transform: none;
+        }
+      }
+      .explore-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.15rem;
+        align-items: center;
+      }
       #search-ranges {
-        margin-top: 0.35rem;
+        margin-top: 0.7rem;
         font-size: 0.8em;
         font-variant-numeric: tabular-nums;
         line-height: 1.45;
@@ -542,6 +774,83 @@
         max-width: 100cqw;
         max-height: 100cqh;
         line-height: 0;
+      }
+      /* Window chrome, not sidebar widgets. Lives on the figure so it
+         stays in the viewport even when the globe is letterboxed. */
+      .look-bar {
+        position: absolute;
+        top: 0.7rem;
+        left: 0.7rem;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        width: max-content;
+        max-width: calc(100% - 1.4rem);
+        padding: 4px;
+        border-radius: 12px;
+        color: #2a2e36;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.08),
+          0 1px 2px rgba(0, 0, 0, 0.12),
+          0 6px 16px rgba(0, 0, 0, 0.14);
+        pointer-events: auto;
+        line-height: normal;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+      }
+      .look-bar .row { margin-bottom: 0; }
+      .look-bar button {
+        appearance: none;
+        margin: 0;
+        padding: 0.35rem 0.7rem;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 0.85em;
+        line-height: 1.2;
+        cursor: pointer;
+        transition-property: transform, background-color;
+        transition-duration: 150ms;
+        transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+      }
+      .look-bar button[aria-pressed="true"] {
+        font-weight: 650;
+        background: rgba(0, 0, 0, 0.1);
+      }
+      .look-bar button:active {
+        transform: scale(0.96);
+      }
+      .look-bar .check {
+        padding: 0.2rem 0.45rem;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .look-bar :focus {
+        outline: none;
+      }
+      .look-bar :focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .look-bar button:hover {
+          background: rgba(0, 0, 0, 0.06);
+        }
+        .look-bar button[aria-pressed="true"]:hover {
+          background: rgba(0, 0, 0, 0.14);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .look-bar button {
+          transition-duration: 0ms;
+        }
+        .look-bar button:active {
+          transform: none;
+        }
       }
       canvas {
         display: block;
@@ -566,7 +875,7 @@
         display: flex;
         flex-direction: column;
         gap: 0.12rem;
-        margin: 0.15rem 0 0 1.25rem;
+        margin: 0.35rem 0 0;
       }
       #td-crop-list .td-frame {
         font: inherit;
@@ -618,11 +927,15 @@
         gap: 0.5rem;
       }
       .globe-hud-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         width: 48px;
         height: 48px;
         padding: 0;
         border: 0;
         border-radius: 50%;
+        color: #2a2e36;
         background: rgba(255, 255, 255, 0.92);
         box-shadow:
           0 0 0 1px rgba(0, 0, 0, 0.08),
@@ -634,31 +947,41 @@
         transition-duration: 150ms;
         transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
       }
-      .globe-hud-btn:hover {
-        box-shadow:
-          0 0 0 1px rgba(0, 0, 0, 0.1),
-          0 2px 4px rgba(0, 0, 0, 0.12),
-          0 8px 20px rgba(0, 0, 0, 0.16);
+      .globe-hud-btn:focus {
+        outline: none;
+      }
+      .globe-hud-btn:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
       }
       .globe-hud-btn:active {
         transform: scale(0.96);
       }
-      .view-reset-icon {
+      @media (hover: hover) and (pointer: fine) {
+        .globe-hud-btn:hover {
+          box-shadow:
+            0 0 0 1px rgba(0, 0, 0, 0.1),
+            0 2px 4px rgba(0, 0, 0, 0.12),
+            0 8px 20px rgba(0, 0, 0, 0.16);
+        }
+      }
+      .hud-icon {
         display: block;
         width: 22px;
         height: 22px;
-        margin: 12.5px auto 13.5px;
       }
       .north-compass-rose {
-        display: block;
-        width: 40px;
-        height: 40px;
-        margin: 4px;
+        display: flex;
         transform-origin: 50% 50%;
         will-change: transform;
       }
+      /* Font Awesome's compass needle points NE; turn the tip to north. */
+      .north-compass-rose .hud-icon {
+        transform: rotate(-45deg);
+      }
       @media (prefers-color-scheme: dark) {
-        .globe-hud { filter: invert(1); }
+        .globe-hud,
+        .look-bar { filter: invert(1); }
       }
       body.view-equirect .globe-only {
         display: none;
@@ -788,67 +1111,11 @@
     </div>
     <div id="workspace">
     <div class="controls">
-      <div class="app-nav">
-        <button type="button" class="back-projects" id="back-to-projects" data-action="back-to-projects">← Projects</button>
-        <span id="project-title" class="project-title"></span>
-      </div>
-      <details class="panel" open>
-        <summary>View</summary>
-        <div class="row" id="view-mode" role="group" aria-label="View">
-          <button type="button" data-action="view" data-view="globe">Globe</button>
-          <button type="button" data-action="view" data-view="equirect">Equirect</button>
+      <div class="panel">
+        <div class="app-nav">
+          <button type="button" class="back-projects" id="back-to-projects" data-action="back-to-projects">← Projects</button>
+          <span id="project-title" class="project-title"></span>
         </div>
-        <div class="row" id="draw-mode" role="group" aria-label="Draw">
-          <button type="button" data-action="draw" data-draw="quads">Quads</button>
-          <button type="button" data-action="draw" data-draw="centroid">Flat</button>
-          <button type="button" data-action="draw" data-draw="plates">Plates</button>
-          <button type="button" data-action="draw" data-draw="crust">Crust</button>
-          <button type="button" data-action="draw" data-draw="climate">Climate</button>
-        </div>
-        <label class="check"><input type="checkbox" data-action="plate-vectors"><span>Plate vectors</span></label>
-        <label class="check"><input type="checkbox" data-action="plate-boundaries"><span>Plate boundaries</span></label>
-        <label class="check"><input id="td-crops-toggle" type="checkbox" data-action="td-crops"><span>TD crops</span></label>
-        <div id="td-crop-list" hidden></div>
-        <div class="globe-only">
-          <label class="field"><span>Sphere rotation</span>
-            <input id="sphere-rotation" type="range" min="-5" max="5" step="0.001" value="-2" data-action="rotation">
-          </label>
-        </div>
-      </details>
-
-      <details class="panel" open>
-        <summary>Project</summary>
-        <div class="row">
-          <button type="button" id="search-start" data-action="search-start">Search</button>
-          <button type="button" id="variants-btn" popovertarget="variants-popover" aria-haspopup="dialog" aria-controls="variants-popover" aria-expanded="false" title="Variants of this project">Variants</button>
-          <span id="project-state" class="muted"></span>
-        </div>
-        <div id="project-pipeline" class="pipeline" hidden></div>
-        <div id="search-controls" hidden>
-          <div class="row">
-            <button type="button" id="search-next" data-action="search-next">Next generation</button>
-            <button type="button" id="search-back" data-action="search-back" disabled>Back</button>
-            <button type="button" id="search-done" data-action="search-done">Done</button>
-          </div>
-          <div id="search-status" class="muted"></div>
-          <div id="search-ranges"></div>
-        </div>
-        <!-- Generated from params.js: every exposed parameter, with a pin
-             toggle. Pinned means this project decides it; free means it is
-             left at its default and a shuffle may move it. -->
-        <div id="param-list"></div>
-      </details>
-
-      <details class="panel" open>
-        <summary>Model</summary>
-        <label class="check"><input type="checkbox" data-action="simulate-tectonics" checked><span>Simulate tectonics</span></label>
-        <label class="check"><input type="checkbox" data-action="detail-pass" checked><span>Detail pass</span></label>
-        <label class="check"><input type="checkbox" data-action="merge-ocean-plates"><span>Merge ocean plates</span></label>
-        <label class="check"><input type="checkbox" data-action="connect-oceans"><span>Connect oceans</span></label>
-      </details>
-
-      <details class="panel" open>
-        <summary>Seed</summary>
         <div class="row">
           <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="1003" aria-label="Seed" data-action="seed">
           <button type="button" data-action="shuffle-seed">Shuffle</button>
@@ -857,24 +1124,77 @@
           <button type="button" id="seed-undo" data-action="undo-seed" disabled title="Undo seed (\u2318Z)">Undo</button>
           <button type="button" id="seed-redo" data-action="redo-seed" disabled title="Redo seed (\u2318\u21e7Z)">Redo</button>
         </div>
-      </details>
+        <div class="row">
+          <button type="button" id="search-start" data-action="search-start">Explore</button>
+          <button type="button" id="variants-btn" popovertarget="variants-popover" aria-haspopup="dialog" aria-controls="variants-popover" aria-expanded="false" title="Versions of this project">Versions</button>
+          <span id="project-state" class="muted"></span>
+        </div>
+      </div>
 
-      <!-- Mesh resolution, not geography: changing these must not change the
-           planet, which is why they are not parameters. -->
+      <div class="panel">
+        <h2>Progress</h2>
+        <div id="project-pipeline" class="pipeline" hidden></div>
+        <div id="td-crop-list"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Parameters</h2>
+        <!-- Generated from params.js: every exposed parameter, with a pin
+             toggle. Pinned means this project decides it; free means it is
+             left at its default and a shuffle may move it. -->
+        <div id="param-list"></div>
+      </div>
+
       <details class="panel">
-        <summary>Compute</summary>
-        <label class="field"><span>Regions</span><output id="regions-label">10000</output>
+        <summary>Advanced</summary>
+        <label class="check"><input type="checkbox" data-action="simulate-tectonics" checked><span>Live tectonics</span></label>
+        <label class="check"><input type="checkbox" data-action="detail-pass" checked><span>Terrain detail</span></label>
+        <label class="check"><input type="checkbox" data-action="merge-ocean-plates"><span>Merge ocean plates</span></label>
+        <label class="check"><input type="checkbox" data-action="connect-oceans"><span>One world ocean</span></label>
+        <div class="row">
+          <button type="button" data-action="draw" data-draw="centroid">Flat cells</button>
+        </div>
+        <div class="globe-only">
+          <label class="field"><span>Spin</span>
+            <input id="sphere-rotation" type="range" min="-5" max="5" step="0.001" value="-2" data-action="rotation">
+          </label>
+        </div>
+        <!-- Mesh resolution, not geography: changing these must not change the
+             planet, which is why they are not parameters. -->
+        <label class="field"><span>Mesh size</span><output id="regions-label">10000</output>
           <input type="range" min="2" max="5" step="0.001" value="4" data-action="regions">
         </label>
-        <label class="field"><span>Jitter</span><output id="jitter-label">0.50</output>
+        <label class="field"><span>Mesh jitter</span><output id="jitter-label">0.50</output>
           <input type="range" min="0" max="1" step="0.001" value="0.5" data-action="jitter">
         </label>
       </details>
     </div>
 
     <figure>
+      <div class="explore-bar" id="search-controls" hidden>
+        <div class="explore-actions">
+          <button type="button" id="search-next" data-action="search-next">Next generation</button>
+          <button type="button" id="search-back" data-action="search-back" disabled>Back</button>
+          <button type="button" id="search-done" data-action="search-done">Done</button>
+        </div>
+        <div id="search-status" class="muted"></div>
+      </div>
       <div id="search-sheet" hidden>
         <div id="search-grid"></div>
+        <div id="search-ranges"></div>
+      </div>
+      <div class="look-bar">
+        <div class="row" id="draw-mode" role="group" aria-label="Look">
+          <button type="button" data-action="draw" data-draw="quads">Surface</button>
+          <button type="button" data-action="draw" data-draw="plates">Plates</button>
+          <button type="button" data-action="draw" data-draw="crust">Crust</button>
+          <button type="button" data-action="draw" data-draw="climate">Climate</button>
+        </div>
+        <div class="row" role="group" aria-label="Overlays">
+          <label class="check"><input type="checkbox" data-action="plate-vectors"><span>Motion</span></label>
+          <label class="check"><input type="checkbox" data-action="plate-boundaries"><span>Boundaries</span></label>
+          <label class="check"><input id="td-crops-toggle" type="checkbox" data-action="td-crops"><span>Tiles</span></label>
+        </div>
       </div>
       <div class="globe">
         <canvas id="output" width="2048" height="1024"></canvas>
@@ -882,38 +1202,42 @@
         <canvas id="plate-overlay" width="2048" height="1024"></canvas>
         <div class="globe-hud">
           <button type="button" class="globe-hud-btn view-mode-toggle" data-action="view-toggle" title="Globe view" aria-label="Globe view">
-            <svg class="view-reset-icon icon-to-map" viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="#2a2e36" stroke-width="1.8"/>
-              <path d="M5.5 12c2.2-3.2 3.8 3.2 6.5 0s4.3 3.2 6.5 0" fill="none" stroke="#2a2e36" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <svg class="view-reset-icon icon-to-globe" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="7.5" fill="none" stroke="#2a2e36" stroke-width="1.8"/>
-              <ellipse cx="12" cy="12" rx="3.2" ry="7.5" fill="none" stroke="#2a2e36" stroke-width="1.5"/>
-              <path d="M4.5 12h15" stroke="#2a2e36" stroke-width="1.5"/>
-            </svg>
+            <i data-icon="map" class="hud-icon icon-to-map" aria-hidden="true"></i>
+            <i data-icon="globe" class="hud-icon icon-to-globe" aria-hidden="true"></i>
           </button>
           <button type="button" class="globe-hud-btn view-reset" title="Reset view" aria-label="Reset view">
-            <svg class="view-reset-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="#2a2e36" d="M12 3.6 3.2 11.2h3.1v8.2h5.1v-5.4h4.2v5.4h5.1v-8.2h3.1L12 3.6z"/>
-            </svg>
+            <i data-icon="house" class="hud-icon" aria-hidden="true"></i>
           </button>
           <button type="button" class="globe-hud-btn north-compass" title="Click to reorient north" aria-label="Reorient north">
-            <svg class="north-compass-rose" viewBox="0 0 48 48" aria-hidden="true">
-              <polygon points="24,26 19.5,36 24,45 28.5,36" fill="#c5c9d1"/>
-              <polygon points="24,3 19.5,20 24,26 28.5,20" fill="#e23d2b"/>
-              <text x="24" y="17.5" text-anchor="middle" fill="#fff" font-size="9" font-weight="700" font-family="system-ui, sans-serif">N</text>
-            </svg>
+            <span class="north-compass-rose">
+              <i data-icon="compass" class="hud-icon" aria-hidden="true"></i>
+            </span>
           </button>
         </div>
       </div>
     </figure>
     </div>
     <div id="variants-popover" popover role="dialog" aria-labelledby="variants-title">
-      <div id="variants-title" class="variants-title">Lineage</div>
+      <div class="versions-head">
+        <div id="variants-title" class="variants-title">Versions</div>
+        <div id="versions-status" class="versions-status"></div>
+      </div>
       <form id="variants-form">
-        <input id="variant-name" type="text" maxlength="48" placeholder="Name (optional)" autocomplete="off" spellcheck="false" aria-label="Variant name">
-        <button type="submit">Save</button>
+        <input id="variant-name" type="text" maxlength="48" placeholder="Name to branch" autocomplete="off" spellcheck="false" aria-label="Branch name">
+        <button type="submit" id="variant-save" title="Save or branch (\u2318S)">Save</button>
+        <p id="versions-save-hint" class="versions-hint"></p>
       </form>
+      <div id="versions-compare" class="versions-compare" hidden>
+        <div class="versions-compare-stage" id="versions-compare-stage">
+          <img id="versions-compare-a" alt="">
+          <img id="versions-compare-b" alt="">
+          <input id="versions-compare-slider" type="range" min="0" max="100" value="50" aria-label="Compare versions">
+        </div>
+        <div class="versions-compare-labels">
+          <span id="versions-compare-a-label"></span>
+          <span id="versions-compare-b-label"></span>
+        </div>
+      </div>
       <div id="variants-list"></div>
     </div>
     <script type="module" src="./src/planet-generation.js"></script>

@@ -181,6 +181,92 @@ console.log("cubesphere tiles");
     check("tileLonLat is the inverse of tilePixel", bad === 0, `${bad} misplaced`);
 }
 
+/* 6c. Placement is ECEF, not a lon/lat round-trip. The globe shader takes
+ * a unit direction; converting through degrees and back is what let a bake
+ * sit next to the cell it came from, and float as the camera moved. */
+{
+    let bad = 0;
+    for (let k = 0; k < 2000; k++) {
+        const level = 1 + Math.floor(rnd() * 5);
+        const n = 1 << level;
+        const tile = {
+            face: Math.floor(rnd() * 6),
+            level,
+            i: Math.floor(rnd() * n),
+            j: Math.floor(rnd() * n),
+        };
+        const s = rnd();
+        const t = rnd();
+        const d = Cube.tileDirection(tile, s, t);
+        const len = Math.hypot(d[0], d[1], d[2]);
+        const px = Cube.tilePixel(tile, ...lonlat(d), 256, 256);
+        if (Math.abs(len - 1) > 1e-9) bad++;
+        if (!px || Math.abs(px.x - s * 256) > 1e-4 || Math.abs(px.y - t * 256) > 1e-4) bad++;
+    }
+    check("tileDirection is a unit vector on the raster", bad === 0, `${bad} adrift`);
+}
+
+function lonlat(d) {
+    const ll = Cube.xyzToLonLat(d);
+    return [ll.lon, ll.lat];
+}
+
+/* 6d. The mesh the renderer draws is that same direction field. A vertex
+ * that had gone through lon/lat would not equal tileDirection, and would
+ * not share the globe's transform. */
+{
+    let bad = 0;
+    const steps = 4;
+    for (let k = 0; k < 400; k++) {
+        const level = 1 + Math.floor(rnd() * 4);
+        const n = 1 << level;
+        const tile = {
+            face: Math.floor(rnd() * 6),
+            level,
+            i: Math.floor(rnd() * n),
+            j: Math.floor(rnd() * n),
+        };
+        const mesh = Cube.tileMesh(tile, steps);
+        const verts = steps + 1;
+        if (mesh.xyz.length !== verts * verts * 3) { bad++; continue; }
+        if (mesh.indices.length !== steps * steps * 6) { bad++; continue; }
+        for (let j = 0; j <= steps; j++) {
+            for (let i = 0; i <= steps; i++) {
+                const d = Cube.tileDirection(tile, i / steps, j / steps);
+                const p = (j * verts + i) * 3;
+                if (Math.abs(mesh.xyz[p] - d[0]) > 1e-6
+                    || Math.abs(mesh.xyz[p + 1] - d[1]) > 1e-6
+                    || Math.abs(mesh.xyz[p + 2] - d[2]) > 1e-6) bad++;
+                const u = (j * verts + i) * 2;
+                if (Math.abs(mesh.uv[u] - i / steps) > 1e-6
+                    || Math.abs(mesh.uv[u + 1] - j / steps) > 1e-6) bad++;
+            }
+        }
+    }
+    check("tileMesh vertices are tileDirection", bad === 0, `${bad} skewed`);
+}
+
+/* 6e. A cube tile is not its nominal lon/lat box. Placing a bake from
+ * tileBBox is how a grid crop floated while andes/japan/islands (real
+ * lon/lat rasters) stayed put. */
+{
+    const tile = {face: 0, level: 3, i: 7, j: 0};
+    const mid = Cube.tileDirection(tile, 0.5, 0.5);
+    const box = Cube.tileBBox(tile);
+    const boxed = Cube.lonLatToXyz(
+        (box.west + box.east) / 2,
+        (box.south + box.north) / 2,
+    );
+    const far = Math.hypot(mid[0] - boxed[0], mid[1] - boxed[1], mid[2] - boxed[2]);
+    check("a cube tile's centre is not its bbox centre", far > 1e-4, `gap ${far.toFixed(6)}`);
+    const mesh = Cube.lonLatMesh(-10, -5, 10, 5, 2);
+    const nw = Cube.lonLatToXyz(-10, 5);
+    check("lonLatMesh corners sit on the box",
+        Math.abs(mesh.xyz[0] - nw[0]) < 1e-6
+        && Math.abs(mesh.xyz[1] - nw[1]) < 1e-6
+        && Math.abs(mesh.xyz[2] - nw[2]) < 1e-6);
+}
+
 /* 7. The mapping stays continuous just past a tile edge. A mesh triangle
  * straddling the edge has to rasterize its share rather than fly off. */
 {
@@ -307,6 +393,56 @@ function arc(p, q) {
         }
     }
     check("every offered level is bakeable, at every radius", bad === 0, `${bad} out of range`);
+}
+
+/*
+ * 13. Neighbour pad. tiff-export fills a 64-cell window by repeating the
+ * rim, which is why adjacent bakes seamed. The pad has to be real
+ * neighbouring ground, and two tiles that share an edge have to agree
+ * where that ground sits in WorldPipeline coordinates.
+ */
+{
+    const TdTile = require(join(root, "src", "td-tile.js"));
+    const DEG = Math.PI / 180;
+    const cells = 8;
+    const pad = TdTile.CONTEXT_PAD;
+    const left = {face: 0, level: 3, i: 3, j: 4};
+    const right = {face: 0, level: 3, i: 4, j: 4};
+    const north = {face: 0, level: 3, i: 3, j: 5};
+
+    const mid = Cube.tileLonLat(left, 0.3, 0.7);
+    const a = Cube.tileProjector(left, cells, cells)(mid.lon * DEG, mid.lat * DEG);
+    const b = Cube.paddedProjector(left, cells, cells, 0, 0)(mid.lon * DEG, mid.lat * DEG);
+    check("pad 0 is the unpadded projector",
+        a && b && Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9);
+
+    const e = Cube.tileExtent(left);
+    const east = Cube.xyzToLonLat(Cube.faceDirection(0, e.a1, (e.b0 + e.b1) / 2));
+    const lp = Cube.paddedProjector(left, cells, cells, pad, pad)(east.lon * DEG, east.lat * DEG);
+    const rp = Cube.paddedProjector(right, cells, cells, pad, pad)(east.lon * DEG, east.lat * DEG);
+    check("shared east edge is the interior's right column on the left tile",
+        lp && Math.abs(lp.x - (pad + cells)) < 1e-6, lp ? `x=${lp.x}` : "null");
+    check("shared east edge is the interior's left column on the right tile",
+        rp && Math.abs(rp.x - pad) < 1e-6, rp ? `x=${rp.x}` : "null");
+
+    const rightMid = Cube.tileLonLat(right, 0.5, 0.5);
+    const inPad = Cube.paddedProjector(left, cells, cells, pad, pad)(
+        rightMid.lon * DEG, rightMid.lat * DEG,
+    );
+    check("left tile's pad contains the right tile's centre",
+        inPad && Math.abs(inPad.x - (pad + 1.5 * cells)) < 0.05,
+        inPad ? `x=${inPad.x.toFixed(3)}` : "null");
+
+    const oL = TdTile.contextOrigin(left, cells);
+    const oR = TdTile.contextOrigin(right, cells);
+    const oN = TdTile.contextOrigin(north, cells);
+    check("east neighbour originJ steps by the interior width",
+        oR.originJ === oL.originJ + cells, `${oR.originJ} vs ${oL.originJ + cells}`);
+    check("east neighbour shares originI", oR.originI === oL.originI);
+    check("north neighbour originI steps toward row 0",
+        oN.originI === oL.originI - cells, `${oN.originI} vs ${oL.originI - cells}`);
+    check("CONTEXT_PAD is the U-Net window tiff-export uses",
+        TdTile.CONTEXT_PAD === 64);
 }
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall good");

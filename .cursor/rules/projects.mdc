@@ -20,9 +20,13 @@ the **fixture**, not a tree.
   (`planetgen.activeProject`); a restart resumes that project. Switching
   means going back to the project page — there is no in-workspace dropdown.
 - A **variant** is a saved candidate: seed, body, gene draws, body **pins**,
-  **ranges**, and a parent. Only an explicit Save writes one. Search starts
-  from the selected variant. Likes are session-only; Save writes a child
-  with the session box. Pins are body-only. Earth has no variants.
+  **ranges**, and a parent. Shuffle, a new seed, or an explore tile is a
+  different planet — **Save** branches (child of **head**, even with no
+  name). Tilt, pins, and genes on this seed are the same planet — Save
+  writes a newer generation of the current version. A name labels a
+  branch; it is not what makes one. The UI word is Save, never Update.
+  Explore likes write **ranges** to the current version as they go. Pins
+  are body-only. Earth has no variants.
 - Artifacts belong to a variant: `preview/<project>/v/<id>/`, catalog at
   `preview/<project>/variants.json`. Earth and a project with no variant
   still use `preview/<project>/`. Listing without a variant id does not

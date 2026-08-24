@@ -708,12 +708,19 @@ function rasterizeLonLatBox(mesh, map, westDeg, southDeg, eastDeg, northDeg, wid
  * space rather than in lon/lat. Longitude shifts do not apply here: the
  * projector goes through a direction vector, which is already periodic, so
  * a triangle unwrapped past the antimeridian lands where it should.
+ *
+ * `padCells` grows the raster by that many coarse cells on each side, so
+ * a bake's 64-cell context window sees neighbouring ground instead of a
+ * repeated rim. Zero is the tile itself.
  */
 const NO_SHIFT = [0];
-function rasterizeCubeTile(mesh, map, tile, width, height, lon0) {
-    const project = Cubesphere.tileProjector(tile, width, height);
+function rasterizeCubeTile(mesh, map, tile, width, height, lon0, padCells) {
+    const pad = padCells | 0;
+    const rw = width + 2 * pad;
+    const rh = height + 2 * pad;
+    const project = Cubesphere.paddedProjector(tile, width, height, pad, pad);
     return rasterizeSphereGrid(
-        mesh, map, width, height,
+        mesh, map, rw, rh,
         (pt) => project(pt.lon, pt.lat),
         lon0,
         () => NO_SHIFT,

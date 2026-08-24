@@ -12,6 +12,7 @@ const Search = require('../search');
 const EarthFixture = require('../earth-fixture');
 const TdOverlay = require('../td-overlay');
 const Boot = require('./boot');
+const { mountHudIcons } = require('./icons.js');
 
 const SEED_HISTORY_MAX = 50;
 const VARIANTS_KEY = 'planetgen.variants';
@@ -49,6 +50,9 @@ function createSession(startup) {
         variant: null,
         workingParent: null,
         workingRanges: null,
+        workingThumb: '',
+        compareId: null,
+        discovery: false,
         catalog: Variants.emptyCatalog(project),
         pendingVariantId: startup.variant || null,
         seedFromQuery: !!startup.seedFromQuery,
@@ -102,6 +106,7 @@ function loadVariantState(session, variant) {
     session.workingValues = Object.assign({}, variant.body, variant.values);
     session.workingParent = null;
     session.workingRanges = null;
+    session.discovery = false;
 }
 
 
@@ -133,8 +138,10 @@ function paramValue(session, name) {
 
 
 function syncContext(session) {
-    TdOverlay.setContext(session.project, session.seed, session.variant && session.variant.id);
-    Boot.syncAddressBar(session.project, session.seed, session.variant && session.variant.id);
+    const id = session.variant && session.variant.id;
+    const overlayId = id && !isWorkingDirty(session) ? id : null;
+    TdOverlay.setContext(session.project, session.seed, overlayId);
+    Boot.syncAddressBar(session.project, session.seed, id);
 }
 
 
@@ -154,6 +161,8 @@ function applyPins(session, rebuild) {
     renderParams(session);
     renderProjectState(session);
     renderPipeline(session);
+    syncVariantsUI(session);
+    syncContext(session);
     if (rebuild) session.host.generateMesh();
 }
 
@@ -270,11 +279,12 @@ function renderProjectState(session) {
     const state = document.getElementById('project-state');
     if (!state) return;
     const bits = [];
-    if (Projects.isFixture(session.project)) bits.push('fixture');
-    else bits.push(`${Object.keys(session.pins).length} pinned`);
-    if (session.projectModified) bits.push('edited');
-    if (session.variant && session.catalog.committed === session.variant.id) bits.push('committed');
-    else if (session.variant) bits.push('variant');
+    if (!Projects.isFixture(session.project)) {
+        bits.push(`${Object.keys(session.pins).length} locked`);
+    }
+    if (isWorkingDirty(session)) bits.push('uncommitted');
+    if (session.variant && session.catalog.committed === session.variant.id) bits.push('adopted');
+    else if (session.variant) bits.push('HEAD');
     state.textContent = bits.join(', ');
 }
 
@@ -287,11 +297,6 @@ function renderPipeline(session) {
     const factById = new Map((session.pipelineFact && session.pipelineFact.stages || []).map((s) => [s.id, s]));
     hostEl.textContent = '';
     hostEl.hidden = false;
-
-    const heading = document.createElement('div');
-    heading.className = 'param-group';
-    heading.textContent = 'Pipeline';
-    hostEl.append(heading);
 
     for (const stage of Projects.STAGES) {
         const live = factById.get(stage.id);
@@ -325,7 +330,7 @@ function renderPipeline(session) {
             bake.type = 'button';
             bake.className = 'pipeline-action';
             bake.dataset.action = 'bake-previews';
-            bake.textContent = session.pipelineBakeBusy ? 'Baking…' : 'Bake previews';
+            bake.textContent = session.pipelineBakeBusy ? 'Baking…' : 'Bake tiles';
             bake.disabled = session.pipelineBakeBusy;
             tail.append(bake);
         }
@@ -376,7 +381,7 @@ async function bakeProjectPreviews(session) {
         session.host.startTdJobPoll();
         await refreshPipeline(session);
     } catch (err) {
-        window.alert(`Bake previews failed: ${err.message || err}`);
+        window.alert(`Bake tiles failed: ${err.message || err}`);
     } finally {
         session.pipelineBakeBusy = false;
         renderPipeline(session);
@@ -462,6 +467,9 @@ async function loadProject(session, name) {
     session.variant = null;
     session.workingParent = null;
     session.workingRanges = null;
+    session.workingThumb = '';
+    session.compareId = null;
+    session.discovery = false;
     session.catalog = Variants.emptyCatalog(project.name);
     session.pendingVariantId = lastId;
     session.seedFromQuery = false;
@@ -538,7 +546,7 @@ function setSeed(session, next) {
         if (input) input.value = String(session.seed);
         return;
     }
-    dropVariant(session);
+    if (session.variant) session.discovery = true;
     commitSeed(session, parsed);
 }
 
@@ -546,7 +554,7 @@ function setSeed(session, next) {
 function shuffleSeed(session) {
     let next;
     do { next = (Math.random() * 0x7fffffff) | 0; } while (next === session.seed);
-    dropVariant(session);
+    if (session.variant) session.discovery = true;
     commitSeed(session, next);
 }
 
@@ -554,7 +562,7 @@ function shuffleSeed(session) {
 function undoSeed(session) {
     if (session.seedHistoryIndex <= 0) return;
     session.seedHistoryIndex--;
-    dropVariant(session);
+    if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
@@ -565,18 +573,11 @@ function undoSeed(session) {
 function redoSeed(session) {
     if (session.seedHistoryIndex >= session.seedHistory.length - 1) return;
     session.seedHistoryIndex++;
-    dropVariant(session);
+    if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
     syncContext(session);
-}
-
-
-function dropVariant(session) {
-    if (!session.variant) return;
-    session.variant = null;
-    applyPins(session, false);
 }
 
 
@@ -740,10 +741,37 @@ function readVariants(session) {
 function variantThumbOf(canvas) {
     if (!canvas || typeof canvas.toDataURL !== 'function') return '';
     try {
-        return canvas.toDataURL('image/jpeg', 0.72);
+        const width = 480;
+        const height = 240;
+        const off = document.createElement('canvas');
+        off.width = width;
+        off.height = height;
+        const ctx = off.getContext('2d');
+        if (!ctx) return canvas.toDataURL('image/jpeg', 0.72);
+        ctx.drawImage(canvas, 0, 0, width, height);
+        return off.toDataURL('image/jpeg', 0.72);
     } catch (_) {
         return '';
     }
+}
+
+
+function captureWorkingThumb(session) {
+    const thumb = variantThumbOf(document.getElementById('output'));
+    if (thumb) session.workingThumb = thumb;
+    return session.workingThumb || '';
+}
+
+
+function versionLabel(variant) {
+    if (!variant) return 'working';
+    if (variant.name) return variant.name;
+    return String(variant.seed);
+}
+
+
+function isWorkingDirty(session) {
+    return Variants.dirty(workingVariant(session), session.variant);
 }
 
 
@@ -772,13 +800,6 @@ function selectedVariant(session, items) {
 }
 
 
-function matchingVariant(session, items) {
-    const selected = selectedVariant(session, items);
-    if (selected) return selected;
-    return Variants.findByRecipe(items, workingVariant(session));
-}
-
-
 function renderVariantsList(session, items) {
     const list = document.getElementById('variants-list');
     if (!list) return;
@@ -786,7 +807,7 @@ function renderVariantsList(session, items) {
     if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'variants-empty';
-        empty.textContent = 'No variants yet';
+        empty.textContent = 'No versions yet. Save the globe to start the tree.';
         list.append(empty);
         return;
     }
@@ -794,94 +815,222 @@ function renderVariantsList(session, items) {
     for (const rowInfo of Variants.treeRows(items)) {
         const variant = rowInfo.variant;
         const committed = session.catalog.committed === variant.id;
-        const score = Variants.refinement(variant);
+        const isHead = current && current.id === variant.id;
+        const isCompare = session.compareId === variant.id;
 
         if (rowInfo.notes.length) {
             const edge = document.createElement('div');
             edge.className = 'variant-edge';
-            edge.style.paddingLeft = `${10 + rowInfo.depth * 12}px`;
+            edge.style.paddingLeft = `${8 + rowInfo.depth * 16}px`;
             edge.textContent = rowInfo.notes.join(' · ');
             list.append(edge);
         }
 
         const row = document.createElement('div');
         row.className = 'variant-row'
-            + (current && current.id === variant.id ? ' is-current' : '')
+            + (isHead ? ' is-current' : '')
+            + (isCompare ? ' is-compare' : '')
             + (committed ? ' is-committed' : '');
-        row.style.paddingLeft = `${rowInfo.depth * 12}px`;
+        row.style.marginLeft = `${rowInfo.depth * 16}px`;
 
-        const load = document.createElement('button');
-        load.type = 'button';
-        load.className = 'variant-item';
-        load.dataset.action = 'open-variant';
-        load.dataset.id = variant.id;
-        const refinePct = Math.round(score * 100);
-        load.title = variant.name
-            ? `${variant.name} (seed ${variant.seed}, ${refinePct}% refined)`
-            : `Open variant seed ${variant.seed} · ${refinePct}% refined`;
+        const pick = document.createElement('button');
+        pick.type = 'button';
+        pick.className = 'variant-item';
+        pick.dataset.action = 'compare-variant';
+        pick.dataset.id = variant.id;
+        pick.title = `Compare ${versionLabel(variant)}`;
 
         if (variant.thumb) {
             const img = document.createElement('img');
             img.className = 'variant-thumb';
             img.src = variant.thumb;
             img.alt = '';
-            load.append(img);
+            pick.append(img);
+        } else {
+            const blank = document.createElement('span');
+            blank.className = 'variant-thumb-empty';
+            blank.textContent = 'No thumbnail';
+            pick.append(blank);
         }
-
         const meta = document.createElement('span');
         meta.className = 'variant-meta';
-
-        const text = document.createElement('span');
-        text.className = 'variant-text';
         const label = document.createElement('span');
         label.className = 'variant-name';
-        label.textContent = variant.name || String(variant.seed);
-        text.append(label);
-        if (variant.name) {
-            const num = document.createElement('span');
-            num.className = 'variant-seed';
-            num.textContent = String(variant.seed);
-            text.append(num);
+        label.textContent = versionLabel(variant);
+        const num = document.createElement('span');
+        num.className = 'variant-seed';
+        num.textContent = String(variant.seed);
+        meta.append(label, num);
+        pick.append(meta);
+        row.append(pick);
+
+        const badges = document.createElement('div');
+        badges.className = 'variant-badges';
+        if (isHead) {
+            const head = document.createElement('span');
+            head.className = 'variant-badge';
+            head.textContent = 'HEAD';
+            badges.append(head);
         }
-        meta.append(text);
+        if (committed) {
+            const adopted = document.createElement('span');
+            adopted.className = 'variant-badge';
+            adopted.textContent = 'adopted';
+            badges.append(adopted);
+        }
+        if ((variant.generation || 1) > 1) {
+            const gen = document.createElement('span');
+            gen.className = 'variant-badge';
+            gen.textContent = `gen ${variant.generation}`;
+            badges.append(gen);
+        }
+        if (badges.childNodes.length) row.append(badges);
 
-        const track = document.createElement('span');
-        track.className = 'variant-refine';
-        track.setAttribute('aria-hidden', 'true');
-        const fill = document.createElement('span');
-        fill.className = 'variant-refine-fill';
-        fill.style.width = `${Math.max(0, Math.min(100, refinePct))}%`;
-        track.append(fill);
-        meta.append(track);
-        load.append(meta);
-
+        const actions = document.createElement('div');
+        actions.className = 'variant-actions';
+        if (!isHead) {
+            const open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'variant-open';
+            open.dataset.action = 'open-variant';
+            open.dataset.id = variant.id;
+            open.textContent = 'Open';
+            open.title = isWorkingDirty(session)
+                ? `Check out ${versionLabel(variant)} — unsaved work is not kept`
+                : `Check out ${versionLabel(variant)}`;
+            actions.append(open);
+        }
         if (committed) {
             const mark = document.createElement('span');
             mark.className = 'variant-committed';
-            mark.title = 'Committed — expensive stages use this variant';
-            mark.textContent = 'in';
-            row.append(load, mark);
+            mark.title = 'Adopted — expensive stages use this version';
+            mark.textContent = 'Adopted';
+            actions.append(mark);
         } else {
-            const commit = document.createElement('button');
-            commit.type = 'button';
-            commit.className = 'variant-commit';
-            commit.dataset.action = 'commit-variant';
-            commit.dataset.id = variant.id;
-            commit.title = 'Commit this variant';
-            commit.textContent = 'Commit';
-            row.append(load, commit);
+            const adopt = document.createElement('button');
+            adopt.type = 'button';
+            adopt.className = 'variant-commit';
+            adopt.dataset.action = 'commit-variant';
+            adopt.dataset.id = variant.id;
+            adopt.title = 'Adopt this version for the pipeline';
+            adopt.textContent = 'Adopt';
+            actions.append(adopt);
         }
-
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'variant-delete';
         del.dataset.action = 'delete-variant';
         del.dataset.id = variant.id;
-        del.setAttribute('aria-label', `Remove ${variant.name || variant.seed}`);
+        del.setAttribute('aria-label', `Remove ${versionLabel(variant)}`);
         del.textContent = '×';
-
-        row.append(del);
+        actions.append(del);
+        row.append(actions);
         list.append(row);
+    }
+}
+
+
+function comparePair(session, items) {
+    const head = selectedVariant(session, items);
+    const other = session.compareId ? Variants.findById(items, session.compareId) : null;
+    const dirty = isWorkingDirty(session);
+    if (other && (!head || other.id !== head.id)) {
+        return {
+            a: {
+                label: dirty ? 'Uncommitted' : `${versionLabel(head)} · HEAD`,
+                thumb: dirty ? session.workingThumb : (head && head.thumb),
+            },
+            b: {label: versionLabel(other), thumb: other.thumb},
+        };
+    }
+    if (dirty && head) {
+        return {
+            a: {label: 'Uncommitted', thumb: session.workingThumb},
+            b: {label: `${versionLabel(head)} · HEAD`, thumb: head.thumb},
+        };
+    }
+    return null;
+}
+
+
+function renderVersionCompare(session, items) {
+    const host = document.getElementById('versions-compare');
+    const stage = document.getElementById('versions-compare-stage');
+    const imgA = document.getElementById('versions-compare-a');
+    const imgB = document.getElementById('versions-compare-b');
+    const labelA = document.getElementById('versions-compare-a-label');
+    const labelB = document.getElementById('versions-compare-b-label');
+    if (!host || !imgA || !imgB) return;
+    const pair = comparePair(session, items);
+    if (!pair || !pair.a.thumb || !pair.b.thumb) {
+        host.hidden = true;
+        return;
+    }
+    host.hidden = false;
+    imgA.hidden = !pair.a.thumb;
+    imgB.hidden = !pair.b.thumb;
+    if (pair.a.thumb) imgA.src = pair.a.thumb;
+    if (pair.b.thumb) imgB.src = pair.b.thumb;
+    if (labelA) labelA.textContent = pair.a.label;
+    if (labelB) labelB.textContent = pair.b.label;
+    const slider = document.getElementById('versions-compare-slider');
+    if (stage && slider) stage.style.setProperty('--split', `${slider.value}%`);
+}
+
+
+function typedVersionName() {
+    const nameInput = document.getElementById('variant-name');
+    return nameInput ? nameInput.value.trim().slice(0, Variants.NAME_MAX) : '';
+}
+
+
+function branchInput(session, name) {
+    return {
+        name: name != null ? name : typedVersionName(),
+        seed: session.seed,
+        discover: !!session.discovery,
+    };
+}
+
+
+function isBranching(session, name) {
+    return Variants.wouldBranch(session.variant, branchInput(session, name));
+}
+
+
+function saveHint(session, items) {
+    const name = typedVersionName();
+    const dirty = isWorkingDirty(session);
+    const head = selectedVariant(session, items);
+    if (isBranching(session, name)) {
+        if (name) return `Branches from ${versionLabel(head)} as ${name}.`;
+        return `A new planet — save will branch from ${versionLabel(head)}.`;
+    }
+    if (!head) return 'Saves the globe as the first version.';
+    if (dirty) return `Saves ${versionLabel(head)} — a newer generation of this line.`;
+    return '';
+}
+
+
+function syncSaveButton(session) {
+    const items = readVariants(session);
+    const selected = selectedVariant(session, items);
+    const dirty = isWorkingDirty(session);
+    const name = typedVersionName();
+    const branching = isBranching(session, name);
+    const saveBtn = document.getElementById('variant-save');
+    if (saveBtn) {
+        if (branching) saveBtn.textContent = name ? `Branch as ${name}` : 'Branch';
+        else if (!selected) saveBtn.textContent = name ? `Save as ${name}` : 'Save';
+        else if (dirty) saveBtn.textContent = 'Save';
+        else saveBtn.textContent = 'Saved';
+        saveBtn.disabled = !branching && !dirty && !!selected;
+    }
+    const hint = document.getElementById('versions-save-hint');
+    if (hint) {
+        const text = saveHint(session, items);
+        hint.textContent = text;
+        hint.hidden = !text;
     }
 }
 
@@ -889,20 +1038,32 @@ function renderVariantsList(session, items) {
 function syncVariantsUI(session) {
     const items = readVariants(session);
     const selected = selectedVariant(session, items);
-    const matching = matchingVariant(session, items);
-    const nameInput = document.getElementById('variant-name');
-    if (nameInput && document.activeElement !== nameInput) {
-        nameInput.value = selected && selected.name ? selected.name : '';
+    const dirty = isWorkingDirty(session);
+    syncSaveButton(session);
+    const status = document.getElementById('versions-status');
+    if (status) {
+        if (dirty && selected) status.textContent = `On ${versionLabel(selected)} · uncommitted`;
+        else if (dirty && session.workingParent) {
+            const parent = Variants.findById(items, session.workingParent);
+            status.textContent = parent ? `From ${versionLabel(parent)} · uncommitted` : 'Uncommitted';
+        } else if (dirty) status.textContent = 'Uncommitted';
+        else if (selected) status.textContent = `HEAD · ${versionLabel(selected)}`;
+        else status.textContent = '';
     }
-    const saveBtn = document.querySelector('#variants-form button[type="submit"]');
-    if (saveBtn) saveBtn.textContent = matching ? 'Update' : 'Save';
     const button = document.getElementById('variants-btn');
     if (button) {
         const blocked = Projects.isFixture(session.project);
         button.hidden = blocked;
         button.disabled = blocked;
-        button.textContent = items.length ? `Variants ${items.length}` : 'Variants';
+        button.textContent = items.length ? `Versions ${items.length}` : 'Versions';
+        button.classList.toggle('is-dirty', dirty && !blocked);
+        button.title = dirty
+            ? (isBranching(session)
+                ? 'Uncommitted — a new planet, save will branch'
+                : 'Uncommitted — save this version, or name a branch')
+            : 'Versions of this project';
     }
+    renderVersionCompare(session, items);
     renderVariantsList(session, items);
 }
 
@@ -913,7 +1074,7 @@ function positionVariantsPopover() {
     if (!button || !popover) return;
     const rect = button.getBoundingClientRect();
     const gap = 8;
-    const width = Math.min(320, window.innerWidth - 16);
+    const width = Math.min(384, window.innerWidth - 16);
     let left = rect.right + gap;
     let top = rect.top;
     if (left + width > window.innerWidth - 8) {
@@ -942,6 +1103,7 @@ function setupVariants(session) {
             const open = event.newState === 'open';
             document.getElementById('variants-btn')?.setAttribute('aria-expanded', open ? 'true' : 'false');
             if (!open) return;
+            captureWorkingThumb(session);
             syncVariantsUI(session);
             positionVariantsPopover();
             document.getElementById('variant-name')?.focus();
@@ -949,18 +1111,25 @@ function setupVariants(session) {
         window.addEventListener('resize', () => {
             if (popover.matches(':popover-open')) positionVariantsPopover();
         });
+        const slider = document.getElementById('versions-compare-slider');
+        const stage = document.getElementById('versions-compare-stage');
+        if (slider && stage) {
+            slider.addEventListener('input', () => {
+                stage.style.setProperty('--split', `${slider.value}%`);
+            });
+        }
+        const nameInput = document.getElementById('variant-name');
+        if (nameInput) {
+            nameInput.addEventListener('input', () => syncSaveButton(session));
+        }
     }
     syncVariantsUI(session);
 }
 
 
 function syncModeButtons(session) {
-    const viewMode = session.host.getViewMode();
     const drawMode = session.host.getDrawMode();
-    for (const b of document.querySelectorAll('#view-mode button')) {
-        b.setAttribute('aria-pressed', String(b.dataset.view === viewMode));
-    }
-    for (const b of document.querySelectorAll('#draw-mode button')) {
+    for (const b of document.querySelectorAll('[data-action="draw"]')) {
         b.setAttribute('aria-pressed', String(b.dataset.draw === drawMode));
     }
 }
@@ -976,7 +1145,7 @@ function renderSearchChrome(session) {
         start.hidden = !!session.searchSession;
         start.disabled = blocked || !!session.searchSession;
         start.title = Projects.isFixture(session.project)
-            ? 'Earth is the fixture — search does not run there'
+            ? 'Earth is a reference — explore does not run there'
             : 'Sample freeable ranges and pick the planets you like';
     }
     if (controls) controls.hidden = !session.searchSession;
@@ -995,7 +1164,7 @@ function renderSearchChrome(session) {
         const n = s.population.length;
         const ready = s.canvases.filter(Boolean).length;
         const saved = readVariants(session).length;
-        const savedBit = saved ? ` · ${saved} variants` : '';
+        const savedBit = saved ? ` · ${saved} versions` : '';
         status.textContent = s.busy
             ? `Generation ${s.generation + 1} · ${ready} / ${n}`
             : `Generation ${s.generation + 1} · ${s.liked.size} liked${savedBit}`;
@@ -1047,7 +1216,7 @@ function mountSearchTiles(session) {
         open.dataset.action = 'open-search';
         open.dataset.index = String(i);
         open.setAttribute('aria-label', 'Open in the viewer without saving');
-        open.title = 'Open in the main viewer without saving as a variant';
+        open.title = 'Open as uncommitted work — save will branch';
         open.textContent = 'Open';
 
         const keep = document.createElement('button');
@@ -1056,8 +1225,11 @@ function mountSearchTiles(session) {
         keep.dataset.action = 'toggle-variant';
         keep.dataset.index = String(i);
         keep.setAttribute('aria-pressed', String(kept));
-        keep.setAttribute('aria-label', kept ? 'Remove variant' : 'Save as variant');
-        keep.textContent = kept ? 'Saved' : 'Save';
+        keep.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a branch');
+        keep.title = kept
+            ? 'This planet is already a version'
+            : (session.variant ? 'Save as a branch of the current version' : 'Save as the first version');
+        keep.textContent = kept ? 'Saved' : (session.variant ? 'Branch' : 'Save');
 
         actions.append(open, keep);
         tile.append(face, actions);
@@ -1096,6 +1268,38 @@ async function fillSearchSheet(session) {
 }
 
 
+function writeHeadRanges(session, ranges) {
+    if (!session.variant) {
+        session.workingRanges = ranges;
+        return;
+    }
+    const items = readVariants(session);
+    const next = Variants.setRanges(items, session.variant.id, ranges);
+    if (next === items) return;
+    setCatalogVariants(session, next);
+    const found = Variants.findById(next, session.variant.id);
+    if (found) session.variant = found;
+}
+
+
+function syncExploreRanges(session) {
+    const s = session.searchSession;
+    if (!s) return;
+    const baseline = s.baseRanges || s.ranges;
+    const next = Search.rangesFromLikes({
+        genes: s.genes,
+        vouched: s.vouched,
+        population: s.population,
+        liked: [...s.liked],
+        ranges: baseline,
+    });
+    s.ranges = next;
+    writeHeadRanges(session, next);
+    renderSearchChrome(session);
+    syncVariantsUI(session);
+}
+
+
 function toggleSearchLike(session, i) {
     if (!session.searchSession) return;
     if (session.searchSession.liked.has(i)) session.searchSession.liked.delete(i);
@@ -1108,7 +1312,7 @@ function toggleSearchLike(session, i) {
         face.setAttribute('aria-pressed', String(liked));
         face.setAttribute('aria-label', liked ? 'Unlike this planet' : 'Like this planet');
     }
-    renderSearchChrome(session);
+    syncExploreRanges(session);
 }
 
 
@@ -1135,8 +1339,8 @@ function syncSearchVariantTile(session, i, kept) {
     if (tile) tile.classList.toggle('is-kept', kept);
     if (button) {
         button.setAttribute('aria-pressed', String(kept));
-        button.setAttribute('aria-label', kept ? 'Remove variant' : 'Save as variant');
-        button.textContent = kept ? 'Saved' : 'Save';
+        button.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a branch');
+        button.textContent = kept ? 'Saved' : (session.variant ? 'Branch' : 'Save');
     }
 }
 
@@ -1150,14 +1354,13 @@ function openSearchTile(session, i) {
     const incoming = Variants.ofIndividual(ind, extra);
     if (!incoming) return;
     const pins = searchPins(session);
-    const parent = s.parentId || (session.variant && session.variant.id) || null;
     const ranges = s.ranges;
     exitSearch(session);
-    session.variant = null;
     session.pins = pins;
     session.workingValues = Object.assign({}, incoming.body, incoming.values);
-    session.workingParent = parent;
     session.workingRanges = ranges;
+    session.projectModified = true;
+    if (session.variant) session.discovery = true;
     applyPins(session, false);
     if (session.seed === incoming.seed) {
         session.host.generateMesh();
@@ -1170,7 +1373,7 @@ function openSearchTile(session, i) {
 }
 
 
-function toggleSearchVariant(session, i) {
+async function toggleSearchVariant(session, i) {
     const s = session.searchSession;
     if (!s) return;
     const ind = s.population[i];
@@ -1178,30 +1381,60 @@ function toggleSearchVariant(session, i) {
     const extra = searchExtra(session);
     const thumb = variantThumbOf(s.canvases[i]);
     if (thumb) extra.thumb = thumb;
+    extra.ranges = s.ranges;
     const incoming = Variants.ofIndividual(ind, extra);
-    const next = Variants.toggleRecipe(readVariants(session), incoming);
-    setCatalogVariants(session, next);
-    const saved = Variants.findByRecipe(next, incoming);
-    if (saved && extra.thumb) persistThumb(session, saved.id, extra.thumb);
-    syncSearchVariantTile(session, i, Variants.hasRecipe(next, ind, extra));
+    if (!incoming) return;
+    const head = session.variant;
+    if (head && Variants.sameRecipe(head, incoming)) {
+        syncSearchVariantTile(session, i, true);
+        return;
+    }
+    const already = Variants.findByRecipe(readVariants(session), incoming);
+    if (already) {
+        syncSearchVariantTile(session, i, true);
+        return;
+    }
+    extra.parent = head ? head.id : extra.parent;
+    extra.ranges = s.ranges;
+    const child = Variants.ofIndividual(ind, extra);
+    if (thumb) child.thumb = thumb;
+    const next = Variants.append(readVariants(session), child);
+    const saved = Variants.findById(next, child.id) || next[0];
+    session.catalog = {
+        project: session.project,
+        committed: session.catalog.committed,
+        variants: next,
+    };
+    if (saved && !head) session.catalog = Variants.advanceHead(session.catalog, null, saved.id);
+    await persistCatalog(session);
+    session.variant = saved;
+    session.discovery = false;
+    if (saved && thumb) persistThumb(session, saved.id, thumb);
+    Boot.writeStoredVariant(session.project, saved && saved.id);
+    session.workingValues = Object.assign({}, incoming.body, incoming.values);
+    session.workingRanges = s.ranges;
+    session.projectModified = false;
+    if (session.seed !== incoming.seed) applySeed(session, incoming.seed);
+    const extras = searchExtra(session);
+    s.population.forEach((tile, index) => {
+        syncSearchVariantTile(session, index, Variants.hasRecipe(readVariants(session), tile, extras));
+    });
     renderSearchChrome(session);
     syncVariantsUI(session);
+    syncContext(session);
 }
 
 
-async function saveWorkingVariant(session) {
-    if (Projects.isFixture(session.project)) return session.variant;
-    const nameInput = document.getElementById('variant-name');
-    const name = nameInput ? nameInput.value.trim().slice(0, Variants.NAME_MAX) : '';
-    const incoming = workingVariant(session, {name});
-    if (!incoming) return session.variant;
-    const next = Variants.upsert(readVariants(session), incoming);
-    await setCatalogVariants(session, next);
-    const saved = Variants.findByRecipe(next, incoming) || Variants.findById(next, incoming.id);
-    if (saved) {
-        session.variant = saved;
-        Boot.writeStoredVariant(session.project, saved.id);
-    }
+async function applySavedVariant(session, saved, nameInput) {
+    session.variant = saved;
+    session.workingParent = null;
+    session.workingRanges = saved.ranges || null;
+    session.projectModified = false;
+    session.compareId = null;
+    session.discovery = false;
+    Boot.writeStoredVariant(session.project, saved.id);
+    if (saved.thumb) persistThumb(session, saved.id, saved.thumb);
+    if (nameInput) nameInput.value = '';
     syncContext(session);
     syncVariantsUI(session);
     renderProjectState(session);
@@ -1209,12 +1442,56 @@ async function saveWorkingVariant(session) {
 }
 
 
+async function saveWorkingVariant(session) {
+    if (Projects.isFixture(session.project)) return session.variant;
+    const nameInput = document.getElementById('variant-name');
+    const name = typedVersionName();
+    const head = session.variant;
+    const branching = isBranching(session, name);
+    if (!branching && !isWorkingDirty(session) && head) return head;
+    const thumb = captureWorkingThumb(session);
+    if (head && !branching) {
+        const incoming = workingVariant(session, {
+            name: name || head.name,
+            thumb,
+            parent: head.parent,
+            id: head.id,
+        });
+        const next = Variants.update(readVariants(session), head.id, incoming);
+        session.catalog = {
+            project: session.project,
+            committed: session.catalog.committed,
+            variants: next,
+        };
+        await persistCatalog(session);
+        const saved = Variants.findById(next, head.id);
+        return applySavedVariant(session, saved, nameInput);
+    }
+    const parentId = head ? head.id : session.workingParent;
+    const incoming = workingVariant(session, {name, thumb, parent: parentId});
+    if (!incoming) return session.variant;
+    const next = Variants.append(readVariants(session), incoming);
+    const saved = Variants.findById(next, incoming.id) || next[0];
+    session.catalog = {
+        project: session.project,
+        committed: session.catalog.committed,
+        variants: next,
+    };
+    if (saved && !branching) {
+        session.catalog = Variants.advanceHead(session.catalog, parentId, saved.id);
+    }
+    await persistCatalog(session);
+    return applySavedVariant(session, saved, nameInput);
+}
+
+
 function openVariant(session, id) {
     const variant = Variants.findById(readVariants(session), id);
     if (!variant) return;
-    document.getElementById('variants-popover')?.hidePopover?.();
     if (session.searchSession) exitSearch(session);
     loadVariantState(session, variant);
+    session.compareId = null;
+    session.projectModified = false;
     Boot.writeStoredVariant(session.project, variant.id);
     applyPins(session, false);
     if (session.seed === variant.seed) {
@@ -1224,6 +1501,14 @@ function openVariant(session, id) {
         return;
     }
     commitSeed(session, variant.seed);
+    syncVariantsUI(session);
+}
+
+
+function compareVariant(session, id) {
+    if (!Variants.findById(readVariants(session), id)) return;
+    session.compareId = session.compareId === id ? null : id;
+    captureWorkingThumb(session);
     syncVariantsUI(session);
 }
 
@@ -1250,6 +1535,8 @@ async function ensureVariant(session) {
 
 function deleteVariant(session, id) {
     const next = Variants.removeId(readVariants(session), id);
+    if (session.compareId === id) session.compareId = null;
+    if (session.workingParent === id) session.workingParent = null;
     setCatalogVariants(session, next);
     if (session.variant && session.variant.id === id) {
         session.variant = null;
@@ -1294,6 +1581,7 @@ function enterSearch(session) {
         parentId: session.variant && session.variant.id,
         genes: gen.genes,
         ranges: gen.ranges,
+        baseRanges: gen.ranges,
         vouched: gen.vouched,
         population: gen.population,
         liked: new Set(),
@@ -1313,6 +1601,7 @@ function nextSearch(session) {
     if (!s || s.busy) return;
     s.history.push({
         ranges: s.ranges,
+        baseRanges: s.baseRanges,
         population: s.population,
         liked: new Set(s.liked),
         generation: s.generation,
@@ -1327,10 +1616,12 @@ function nextSearch(session) {
         rng: Date.now() + s.generation + 1,
     });
     s.ranges = next.ranges;
+    s.baseRanges = next.ranges;
     s.population = next.population;
     s.liked = new Set();
     s.generation += 1;
     s.canvases = [];
+    writeHeadRanges(session, next.ranges);
     fillSearchSheet(session);
 }
 
@@ -1341,11 +1632,13 @@ function backSearch(session) {
     session.searchRun++;
     const prev = s.history.pop();
     s.ranges = prev.ranges;
+    s.baseRanges = prev.baseRanges || prev.ranges;
     s.population = prev.population;
     s.liked = prev.liked;
     s.generation = prev.generation;
     s.canvases = prev.canvases || [];
     s.busy = false;
+    syncExploreRanges(session);
     mountSearchTiles(session);
     renderSearchChrome(session);
 }
@@ -1354,6 +1647,7 @@ function backSearch(session) {
 function doneSearch(session) {
     const s = session.searchSession;
     if (!s || s.busy) return;
+    syncExploreRanges(session);
     exitSearch(session);
 }
 
@@ -1415,6 +1709,8 @@ function bind(session) {
             toggleSearchVariant(session, el.dataset.index | 0);
         } else if (action === 'open-variant') {
             openVariant(session, el.dataset.id);
+        } else if (action === 'compare-variant') {
+            compareVariant(session, el.dataset.id);
         } else if (action === 'delete-variant') {
             deleteVariant(session, el.dataset.id);
         } else if (action === 'commit-variant') {
@@ -1478,6 +1774,13 @@ function bind(session) {
             }
             return;
         }
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+            if (Projects.isFixture(session.project)) return;
+            if (document.documentElement.classList.contains('is-picker')) return;
+            event.preventDefault();
+            saveWorkingVariant(session);
+            return;
+        }
         if (!(event.metaKey || event.ctrlKey)) return;
         if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
         const key = event.key.toLowerCase();
@@ -1494,13 +1797,20 @@ function bind(session) {
 
 
 function mount(session, host) {
+    mountHudIcons();
     session.host = host;
     session.refreshPipeline = () => refreshPipeline(session);
     session.exitSearch = () => exitSearch(session);
     session.setParam = (name, value) => setParam(session, name, value);
     session.syncModeButtons = () => syncModeButtons(session);
     session.markProjectModified = () => markProjectModified(session);
-    session.setPlanetReady = (value) => { session.planetReady = !!value; };
+    session.setPlanetReady = (value) => {
+        session.planetReady = !!value;
+        if (!value) return;
+        captureWorkingThumb(session);
+        const popover = document.getElementById('variants-popover');
+        if (popover && popover.matches(':popover-open')) syncVariantsUI(session);
+    };
     bind(session);
     setupVariants(session);
     session.generateValues = () => effectiveValues(session);

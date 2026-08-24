@@ -6,8 +6,9 @@
  * Pins are body-only; a gene is constrained by ranges, not a pin.
  *
  * Browser-free, so `bun run check:projects` can hold the record without
- * opening the app. Artifacts key off the id; the recipe key is only
- * for dedup until hand-authoring can make two variants share a recipe.
+ * opening the app. Artifacts key off the id. An unnamed save updates the
+ * current version in place (a newer generation). A new name branches.
+ * Explore writes ranges through to head as likes reshape the box.
  */
 'use strict';
 
@@ -102,6 +103,8 @@ function parseVariant(item, adopted) {
         const name = item.name.trim().slice(0, NAME_MAX);
         if (name) variant.name = name;
     }
+    const generation = item.generation | 0;
+    variant.generation = generation >= 1 ? generation : 1;
     if (typeof item.thumb === 'string') {
         if (item.thumb.startsWith('data:image/') || item.thumb.startsWith('/preview/')) {
             variant.thumb = item.thumb;
@@ -123,15 +126,12 @@ function reparent(list) {
 function parseVariants(raw, adopted) {
     if (!Array.isArray(raw)) return [];
     const seenId = new Set();
-    const seenRecipe = new Set();
     const out = [];
     for (const item of raw) {
         const variant = parseVariant(item, adopted);
         if (!variant) continue;
-        const key = recipeKey(variant);
-        if (seenId.has(variant.id) || seenRecipe.has(key)) continue;
+        if (seenId.has(variant.id)) continue;
         seenId.add(variant.id);
-        seenRecipe.add(key);
         out.push(variant);
     }
     return reparent(out);
@@ -182,6 +182,23 @@ function findByRecipe(list, variant) {
 }
 
 
+function sameRecipe(a, b) {
+    return !!(a && b && recipeKey(a) === recipeKey(b));
+}
+
+
+function dirty(working, head) {
+    if (!working) return false;
+    if (!head) return true;
+    return recipeKey(working) !== recipeKey(head);
+}
+
+
+function isTip(list, id) {
+    return !!id && childrenOf(list, id).length === 0;
+}
+
+
 function findById(list, id) {
     return (list || []).find((item) => item.id === id) || null;
 }
@@ -215,6 +232,77 @@ function upsert(list, incoming) {
         return reparent(next);
     }
     return reparent([incoming, ...list]);
+}
+
+
+function append(list, incoming) {
+    if (!incoming) return list || [];
+    const keepId = incoming.id && !findById(list, incoming.id);
+    const item = Object.assign({}, incoming, {
+        id: keepId ? incoming.id : newId(),
+        generation: incoming.generation >= 1 ? incoming.generation : 1,
+    });
+    return reparent([item, ...(list || [])]);
+}
+
+
+/* A new name, a new seed, or an explore draw is a different planet.
+ * Same seed with only knobs moved is a newer generation of this one. */
+function wouldBranch(head, input) {
+    if (!head) return false;
+    if (typeof input === 'string' || input == null) input = {name: input || ''};
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    if (name && name !== (head.name || '')) return true;
+    if (input.discover) return true;
+    if (input.seed != null && (input.seed | 0) !== (head.seed | 0)) return true;
+    return false;
+}
+
+
+function update(list, id, patch) {
+    if (!id || !patch) return list || [];
+    const found = (list || []).findIndex((item) => item.id === id);
+    if (found < 0) return list || [];
+    const prev = list[found];
+    const next = list.slice();
+    const name = typeof patch.name === 'string' ? patch.name.trim().slice(0, NAME_MAX) : '';
+    next[found] = Object.assign({}, prev, {
+        seed: patch.seed != null ? patch.seed : prev.seed,
+        body: patch.body != null ? patch.body : prev.body,
+        values: patch.values != null ? patch.values : prev.values,
+        pins: patch.pins != null ? patch.pins : prev.pins,
+        ranges: patch.ranges != null ? parseRanges(patch.ranges) : prev.ranges,
+        thumb: patch.thumb || prev.thumb,
+        name: name || prev.name,
+        generation: (prev.generation || 1) + 1,
+        id: prev.id,
+        parent: prev.parent,
+        project: prev.project,
+    });
+    return reparent(next);
+}
+
+
+function setRanges(list, id, ranges) {
+    if (!id) return list || [];
+    const found = (list || []).findIndex((item) => item.id === id);
+    if (found < 0) return list || [];
+    const parsed = parseRanges(ranges);
+    const prev = list[found].ranges || {};
+    const names = new Set([...Object.keys(prev), ...Object.keys(parsed)]);
+    let same = true;
+    for (const name of names) {
+        const a = prev[name];
+        const b = parsed[name];
+        if (!a || !b || a[0] !== b[0] || a[1] !== b[1]) {
+            same = false;
+            break;
+        }
+    }
+    if (same) return list;
+    const next = list.slice();
+    next[found] = Object.assign({}, list[found], {ranges: parsed});
+    return next;
 }
 
 
@@ -381,6 +469,7 @@ function serializeCatalog(catalog) {
             };
             if (item.parent) out.parent = item.parent;
             if (item.name) out.name = item.name;
+            if (item.generation > 1) out.generation = item.generation;
             return out;
         }),
     };
@@ -391,6 +480,16 @@ function commit(catalog, id) {
     const next = parseCatalog(catalog, catalog && catalog.project);
     if (!findById(next.variants, id)) return next;
     next.committed = id;
+    return next;
+}
+
+
+/* Save moves head to the new child. The project's committed pointer
+ * follows only when the save is on that line — a branch leaves it. */
+function advanceHead(catalog, fromId, toId) {
+    const next = parseCatalog(catalog, catalog && catalog.project);
+    if (!findById(next.variants, toId)) return next;
+    if (!next.committed || next.committed === fromId) next.committed = toId;
     return next;
 }
 
@@ -472,10 +571,17 @@ module.exports = {
     ofIndividual,
     ofWorking,
     findByRecipe,
+    sameRecipe,
+    dirty,
+    isTip,
     findById,
     hasRecipe,
     toggleRecipe,
     upsert,
+    append,
+    wouldBranch,
+    update,
+    setRanges,
     removeId,
     stampThumb,
     valuesOf,
@@ -488,6 +594,7 @@ module.exports = {
     parseCatalog,
     serializeCatalog,
     commit,
+    advanceHead,
     migrate,
     resumeId,
     refinement,

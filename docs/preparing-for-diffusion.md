@@ -69,6 +69,8 @@ Consequences:
 - Features that exist only as a thin anomaly in a tiny crop get healed. A hand-drawn canyon one or two cells wide does not survive.
 - Prefer windows where the landform of interest is a **large fraction** of the crop, or use a bigger crop.
 
+Cube-grid preview tiles do not use that edge-repeat. The exporter rasterizes 64 cells of real neighbouring ground (including across a face edge) and `scripts/td-bake.py` feeds that pad to WorldPipeline at a face-grid origin, so adjacent tiles share coordinates at the seam instead of each starting at (0, 0). Isolated lon/lat crops still go through `tiff-export`.
+
 ### SNR (how hard to lock the sketch)
 
 `--snr` is five comma-separated values, one per channel:

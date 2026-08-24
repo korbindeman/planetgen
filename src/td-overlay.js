@@ -8,8 +8,12 @@
  * ran the bake, so it could never follow the map it sits on. The PNG is kept
  * only as a fallback for crops baked before the dump existed.
  *
- * Where a tile goes comes from its (face, level, i, j) on the cubesphere
- * grid, not from a lon/lat box. The box in the GeoTIFF is nominal.
+ * Where a tile goes is its (face, level, i, j) as a mesh of ECEF
+ * directions — the same vectors the globe shader takes. The 2D canvas is
+ * only the picker chrome. Painting the bake in screen space is what made
+ * a grid crop float and occlude behind its neighbour: it did not share
+ * the globe's transform or its depth buffer. Legacy lon/lat crops
+ * (andes / japan / islands) get the same treatment from their box.
  *
  * The catalog is the folders on disk for the current project. A reply
  * that left for a different project is dropped, not filtered after the
@@ -26,7 +30,6 @@ const Cube = require('./cubesphere');
 const Epoch = require('./td-epoch');
 
 const MAX_IMAGE = 4096;
-const GLOBE_STEPS = 10;
 const COLORS = (Look.CROP_COLORS_HEX || []).concat(['#c084fc', '#4ade80']);
 const TD_API = 'http://127.0.0.1:3748';
 
@@ -156,6 +159,19 @@ function visibleCrops() {
     return shownCrops().filter((c) => (
         (c.status === 'done' || !c.status) && (c.imageEl || c.elevM)
     ));
+}
+
+const CROP_MESH_STEPS = 12;
+
+function cropMesh(crop) {
+    if (!crop) return null;
+    if (crop.tile) return Cube.tileMesh(crop.tile, CROP_MESH_STEPS);
+    if (![crop.west, crop.south, crop.east, crop.north].every(Number.isFinite)) return null;
+    return Cube.lonLatMesh(crop.west, crop.south, crop.east, crop.north, CROP_MESH_STEPS);
+}
+
+function cropRank(crop) {
+    return crop.tile ? crop.tile.level + 8 : 0;
 }
 
 /*
@@ -487,10 +503,11 @@ function paint(view) {
         el.style.display = 'none';
         return;
     }
-    const crops = visibleCrops();
     const pending = pendingCrops();
     const chrome = grid.show || grid.picked.length > 0;
-    if (!crops.length && !pending.length && !chrome) {
+    /* Baked imagery is a WebGL mesh. This canvas is picker chrome and
+     * the dashed outline of a crop that is conditioned but not baked. */
+    if (!pending.length && !chrome) {
         if (el.width !== 1 || el.height !== 1) {
             el.width = 1;
             el.height = 1;
@@ -507,12 +524,9 @@ function paint(view) {
     ctx.imageSmoothingQuality = 'high';
     if (view.viewMode === 'equirect') {
         for (const shift of [-2, 0, 2]) {
-            for (const crop of crops) paintEquirectCrop(ctx, crop, view, el.width, el.height, shift);
-            /* Dashed: conditioning written, bake not run. */
-            for (const crop of pending) paintEquirectCrop(ctx, crop, view, el.width, el.height, shift, true);
+            for (const crop of pending) paintEquirectCrop(ctx, crop, view, el.width, el.height, shift);
         }
     } else {
-        for (const crop of crops) paintGlobeCrop(ctx, crop, view, el.width, el.height);
         for (const crop of pending) paintGlobeCrop(ctx, crop, view, el.width, el.height);
     }
     if (chrome) paintGridChrome(ctx, view, el.width, el.height);
@@ -703,16 +717,12 @@ function paintTileFill(ctx, project, tile, width, height, fill, stroke) {
     ctx.stroke();
 }
 
-function paintEquirectCrop(ctx, crop, view, width, height, xshift, dashed) {
-    /* A tile is a square in face space, so its edges are curves here, not a
-     * rectangle. Only the legacy lon/lat crops can take the cheap blit. */
+function paintEquirectCrop(ctx, crop, view, width, height, xshift) {
     if (crop.tile) {
-        paintTileCrop(ctx, crop, projector(view, width, height, xshift), width, height, dashed);
+        paintTileCrop(ctx, crop, projector(view, width, height, xshift), width, height);
         return;
     }
-    const img = surfaceFor(crop);
     const stroke = colorFor(crop.name);
-    const chrome = dashed || !img;
     for (const box of splitBoxes(crop)) {
         const nw = clipToCanvas(lonLatToEquirectClip(box.west, box.north, view, xshift), width, height);
         const se = clipToCanvas(lonLatToEquirectClip(box.east, box.south, view, xshift), width, height);
@@ -720,16 +730,10 @@ function paintEquirectCrop(ctx, crop, view, width, height, xshift, dashed) {
         const h = se.y - nw.y;
         if (!(w > 1 && h > 1)) continue;
         if (se.x < -8 || nw.x > width + 8 || se.y < -8 || nw.y > height + 8) continue;
-        if (img && crop.east !== crop.west) {
-            const sx = ((box.west - crop.west) / (crop.east - crop.west)) * img.width;
-            const sw = ((box.east - box.west) / (crop.east - crop.west)) * img.width;
-            ctx.drawImage(img, sx, 0, sw, img.height, nw.x, nw.y, w, h);
-        }
-        if (!chrome) continue;
         ctx.save();
         ctx.strokeStyle = stroke;
         ctx.lineWidth = 2;
-        if (dashed) ctx.setLineDash([6, 4]);
+        ctx.setLineDash([6, 4]);
         ctx.strokeRect(nw.x + 0.5, nw.y + 0.5, w - 1, h - 1);
         ctx.font = '700 13px ui-sans-serif, system-ui, sans-serif';
         ctx.textAlign = 'left';
@@ -747,52 +751,16 @@ function paintEquirectCrop(ctx, crop, view, width, height, xshift, dashed) {
 }
 
 /*
- * A baked tile, drawn through its own face mapping. Same treatment on the
- * globe and the equirect — the projector is the only difference — because
- * the image is a square in face space in both, and stretching it into a
- * lon/lat rectangle is exactly the mis-registration the grid exists to end.
+ * Outline a cube tile that is conditioned but not yet baked. The bake
+ * itself is a mesh of tileDirection samples, drawn with the globe.
  */
-function paintTileCrop(ctx, crop, project, width, height, dashed) {
-    const px = tileScreenSize(project, crop.tile, width, height);
-    if (px < 0) return;
-    /* Colour only what is on screen — a tile is a few megabytes of float. */
-    const img = surfaceFor(crop);
+function paintTileCrop(ctx, crop, project, width, height) {
+    if (tileScreenSize(project, crop.tile, width, height) < 0) return;
     const stroke = colorFor(crop.name);
-    const chrome = dashed || !img;
-    const n = Math.max(2, Math.min(24, Math.round(px / 24)));
-    if (img) {
-        const at = (s, t) => Cube.tileLonLat(crop.tile, s, t);
-        for (let iy = 0; iy < n; iy++) {
-            const t0 = iy / n;
-            const t1 = (iy + 1) / n;
-            for (let ix = 0; ix < n; ix++) {
-                const s0 = ix / n;
-                const s1 = (ix + 1) / n;
-                const p0 = at(s0, t0);
-                const p1 = at(s1, t0);
-                const p2 = at(s1, t1);
-                const p3 = at(s0, t1);
-                const a = project(p0.lon, p0.lat);
-                const b = project(p1.lon, p1.lat);
-                const c = project(p2.lon, p2.lat);
-                const d = project(p3.lon, p3.lat);
-                if (a.front === false || b.front === false || c.front === false || d.front === false) continue;
-                /* A cell straddling the seam would smear across the map; the
-                 * shifted copies draw it properly on their own pass. */
-                if (Math.max(a.x, b.x, c.x, d.x) - Math.min(a.x, b.x, c.x, d.x) > width / 2) continue;
-                const ua = {x: s0 * img.width, y: t0 * img.height};
-                const ub = {x: s1 * img.width, y: t0 * img.height};
-                const uc = {x: s1 * img.width, y: t1 * img.height};
-                const ud = {x: s0 * img.width, y: t1 * img.height};
-                drawMappedTriangle(ctx, img, a, b, d, ua, ub, ud);
-                drawMappedTriangle(ctx, img, b, c, d, ub, uc, ud);
-            }
-        }
-    }
-    if (!chrome) return;
     ctx.save();
     ctx.strokeStyle = stroke;
     ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
     ctx.beginPath();
     tilePath(ctx, project, crop.tile, GRID_SEGMENTS_PER_TILE);
     ctx.closePath();
@@ -800,6 +768,7 @@ function paintTileCrop(ctx, crop, project, width, height, dashed) {
     const [nw] = Cube.tileCorners(crop.tile);
     const label = project(nw.lon, nw.lat);
     if (label.front !== false) {
+        ctx.setLineDash([]);
         ctx.font = '700 13px ui-sans-serif, system-ui, sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'bottom';
@@ -814,52 +783,20 @@ function paintTileCrop(ctx, crop, project, width, height, dashed) {
 
 function paintGlobeCrop(ctx, crop, view, width, height) {
     if (crop.tile) {
-        paintTileCrop(ctx, crop, projector(view, width, height, 0), width, height, false);
+        paintTileCrop(ctx, crop, projector(view, width, height, 0), width, height);
         return;
     }
-    const img = surfaceFor(crop);
     const projection = view.globeProjection;
     const stroke = colorFor(crop.name);
-    const zoom = view.zoom || 1;
-    const nx = Math.min(48, Math.max(GLOBE_STEPS, Math.round(6 * Math.sqrt(zoom))));
-    const ny = Math.max(4, Math.round(nx * (crop.north - crop.south) / Math.max(0.2, crop.east - crop.west)));
-
     const project = (lon, lat) => clipToCanvas(
         projectGlobe(lonLatToXyz(lon, lat), projection),
         width, height,
     );
 
     ctx.save();
-    if (img) for (let iy = 0; iy < ny; iy++) {
-        const t0 = iy / ny;
-        const t1 = (iy + 1) / ny;
-        const lat0 = crop.north + (crop.south - crop.north) * t0;
-        const lat1 = crop.north + (crop.south - crop.north) * t1;
-        for (let ix = 0; ix < nx; ix++) {
-            const s0 = ix / nx;
-            const s1 = (ix + 1) / nx;
-            const lon0 = crop.west + (crop.east - crop.west) * s0;
-            const lon1 = crop.west + (crop.east - crop.west) * s1;
-            const a = project(lon0, lat0);
-            const b = project(lon1, lat0);
-            const c = project(lon1, lat1);
-            const d = project(lon0, lat1);
-            if (!a.front && !b.front && !c.front && !d.front) continue;
-            const ua = {x: s0 * img.width, y: t0 * img.height};
-            const ub = {x: s1 * img.width, y: t0 * img.height};
-            const uc = {x: s1 * img.width, y: t1 * img.height};
-            const ud = {x: s0 * img.width, y: t1 * img.height};
-            drawMappedTriangle(ctx, img, a, b, d, ua, ub, ud);
-            drawMappedTriangle(ctx, img, b, c, d, ub, uc, ud);
-        }
-    }
-    ctx.restore();
-
-    if (img) return;
-
-    ctx.save();
     ctx.strokeStyle = stroke;
     ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
     ctx.beginPath();
     let started = false;
     const edge = edgePoints(crop, 24);
@@ -877,6 +814,7 @@ function paintGlobeCrop(ctx, crop, view, width, height) {
         }
     }
     ctx.stroke();
+    ctx.setLineDash([]);
     const labelAt = project((crop.west + crop.east) / 2, crop.north);
     if (labelAt.front) {
         ctx.font = '700 13px ui-sans-serif, system-ui, sans-serif';
@@ -898,31 +836,6 @@ function edgePoints(crop, n) {
     for (let i = 1; i <= n; i++) pts.push({lon: crop.east + (crop.west - crop.east) * (i / n), lat: crop.south});
     for (let i = 1; i <= n; i++) pts.push({lon: crop.west, lat: crop.south + (crop.north - crop.south) * (i / n)});
     return pts;
-}
-
-/* Affine map of a source triangle onto a dest triangle, then clip. */
-function drawMappedTriangle(ctx, img, d0, d1, d2, s0, s1, s2) {
-    const denom = s0.x * (s1.y - s2.y) - s1.x * (s0.y - s2.y) + s2.x * (s0.y - s1.y);
-    if (Math.abs(denom) < 1e-6) return;
-    const x0 = d0.x, y0 = d0.y, x1 = d1.x, y1 = d1.y, x2 = d2.x, y2 = d2.y;
-    const u0 = s0.x, v0 = s0.y, u1 = s1.x, v1 = s1.y, u2 = s2.x, v2 = s2.y;
-    const m11 = -(v0 * (x2 - x1) - v1 * x2 + v2 * x1 + (v1 - v2) * x0) / denom;
-    const m12 = (v1 * y2 + v0 * (y1 - y2) - v2 * y1 + (v2 - v1) * y0) / denom;
-    const m21 = (u0 * (x2 - x1) - u1 * x2 + u2 * x1 + (u1 - u2) * x0) / denom;
-    const m22 = -(u1 * y2 + u0 * (y1 - y2) - u2 * y1 + (u2 - u1) * y0) / denom;
-    const dx = (u0 * (v2 * x1 - v1 * x2) + v0 * (u1 * x2 - u2 * x1) + (u2 * v1 - u1 * v2) * x0) / denom;
-    const dy = (u0 * (v2 * y1 - v1 * y2) + v0 * (u1 * y2 - u2 * y1) + (u2 * v1 - u1 * v2) * y0) / denom;
-    if (![m11, m12, m21, m22, dx, dy].every(Number.isFinite)) return;
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.closePath();
-    ctx.clip();
-    ctx.transform(m11, m12, m21, m22, dx, dy);
-    ctx.drawImage(img, 0, 0);
-    ctx.restore();
 }
 
 function renderCropList(host, {onToggle, onFrame, onBake, onClearDraft, onLevel, seed, radiusKm, scaleKm, minCells, maxCells}) {
@@ -1284,6 +1197,10 @@ module.exports = {
     isPicked,
     clearPicked,
     bakedTile,
+    visibleCrops,
+    surfaceFor,
+    cropMesh,
+    cropRank,
     setSurfacePainter,
     repaintSurfaces,
     getJobs,

@@ -32,9 +32,13 @@ function precipToM(mm) {
   return Math.pow(x, 1 / TD_PRECIP_POWER);
 }
 
-function sampleField(field, fw, fh, x, y) {
-  const u = Math.max(0, Math.min(fw - 1.001, x * fw));
-  const v = Math.max(0, Math.min(fh - 1.001, y * fh));
+/* `x`,`y` in [0, 1] over the interior. Cube crops store a neighbour pad
+ * around the GeoTIFF; skip it so climate lines up with the DEM. */
+function sampleField(field, fw, fh, x, y, pad = 0) {
+  const innerW = Math.max(1, fw - 2 * pad);
+  const innerH = Math.max(1, fh - 2 * pad);
+  const u = Math.max(0, Math.min(innerW - 1.001, pad + x * innerW));
+  const v = Math.max(0, Math.min(innerH - 1.001, pad + y * innerH));
   const x0 = Math.floor(u), y0 = Math.floor(v);
   const x1 = Math.min(fw - 1, x0 + 1), y1 = Math.min(fh - 1, y0 + 1);
   const tx = u - x0, ty = v - y0;
@@ -51,6 +55,15 @@ async function readChannel(dir, name) {
   }
 }
 
+async function readPad(dir) {
+  try {
+    const tile = JSON.parse(await readFile(join(dir, "tile.json"), "utf8"));
+    return Math.max(0, tile.padCells | 0);
+  } catch {
+    return 0;
+  }
+}
+
 export async function paintCropTerrain(dir) {
   const meta = JSON.parse(await readFile(join(dir, "output.elev.json"), "utf8"));
   const w = meta.width | 0;
@@ -58,6 +71,7 @@ export async function paintCropTerrain(dir) {
   const raw = await readFile(join(dir, "output.elev"));
   if (raw.byteLength < w * h * 4) throw new Error(`elev dump is short in ${dir}`);
   const elevM = new Float32Array(raw.buffer, raw.byteOffset, w * h);
+  const pad = await readPad(dir);
 
   const tempTiff = await readChannel(dir, "temperature");
   const precipTiff = await readChannel(dir, "precipitation");
@@ -74,10 +88,10 @@ export async function paintCropTerrain(dir) {
       const fx = (x + 0.5) / w;
       const fy = (y + 0.5) / h;
       const temp = tempTiff
-        ? tempCToT(sampleField(tempTiff.data, tempTiff.width, tempTiff.height, fx, fy))
+        ? tempCToT(sampleField(tempTiff.data, tempTiff.width, tempTiff.height, fx, fy, pad))
         : 0.85;
       const moist = precipTiff
-        ? precipToM(sampleField(precipTiff.data, precipTiff.width, precipTiff.height, fx, fy))
+        ? precipToM(sampleField(precipTiff.data, precipTiff.width, precipTiff.height, fx, fy, pad))
         : 0.55;
       const [r, g, b] = Look.surfaceAlbedo(e[i], moist, temp);
       const x0 = x === 0 ? x : x - 1;

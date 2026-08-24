@@ -1,0 +1,32 @@
+---
+description: Save vs branch — a new planet forks; the same seed is a newer generation.
+alwaysApply: true
+---
+
+# Versions
+
+The catalog is a tree of snapshots, like git without deltas. Uncommitted
+work stays on **head** until Save. The UI word is **Save**, never Update.
+
+## The rule
+
+- **Shuffle, a new seed, or an explore tile** is a different planet.
+  Saving it **branches**: a child of HEAD, even with no name.
+- **Tilt, pins, genes on this seed** is the same planet. Saving it writes
+  a newer generation of the current version.
+- **A name** labels a branch when you want one. It is not what makes a
+  branch. A nameless shuffle-save is still a branch.
+
+Do not fold a new seed or explore draw into the current version. Do not
+fork a new node for a knob move on the same seed. Explore likes may write
+**ranges** to HEAD as they go; that is not a save of the planet.
+
+## Language
+
+**Save** — write the working planet. Same seed → this version, newer
+generation. New planet → branch.
+_Avoid_: Update
+
+**Branch** — a child version. Automatic on shuffle / new seed / explore
+tile; optional name is a label.
+_Avoid_: Fork, copy, save as (unless naming)

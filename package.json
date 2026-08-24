@@ -3,6 +3,7 @@
     "version": "1.0.0",
     "workspaces": ["packages/*"],
     "dependencies": {
+        "@fortawesome/free-solid-svg-icons": "^7.3.1",
         "@redblobgames/dual-mesh": "https://github.com/redblobgames/dual-mesh",
         "@redblobgames/prng": "https://github.com/redblobgames/prng",
         "delaunator": "^3.0",

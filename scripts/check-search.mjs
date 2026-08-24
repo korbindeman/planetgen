@@ -234,8 +234,10 @@ console.log("search");
         {seed: incoming.seed, values: incoming.values, project: "thalos"},
         {seed: incoming.seed, values: incoming.values, project: "thalos"},
     ]);
-    check("parseVariants drops junk and dedupes",
-        parsed.length === 1 && parsed[0].seed === incoming.seed);
+    check("parseVariants drops junk and keeps shared recipes",
+        parsed.length === 2
+        && parsed.every((item) => item.seed === incoming.seed)
+        && parsed[0].id !== parsed[1].id);
 }
 
 /* 9. Inspecting a variant uses its values and does not pin. */

@@ -28,6 +28,28 @@ const SCALE_KM = 23;
 const MIN_CELLS = 6;
 const MAX_CELLS = 24;
 
+/*
+ * Coarse cells of real neighbouring terrain around a cube tile. Same count
+ * `tiff-export` uses for its `mode="edge"` pad — we replace that pad rather
+ * than stacking another 64 on top. The U-Net's window is 64, so this is
+ * the context it actually consumes at a crop border.
+ */
+const CONTEXT_PAD = 64;
+
+/*
+ * WorldPipeline cell of the padded raster's top-left. Adjacent tiles on
+ * one face share this plane, so they share noise at the edge instead of
+ * each starting at (0, 0) with a repeated rim. Row 0 is north (high j):
+ * a face is one north-up mosaic.
+ */
+function contextOrigin(tile, cells, pad = CONTEXT_PAD) {
+    const n = 1 << tile.level;
+    return {
+        originI: (n - 1 - tile.j) * cells - pad,
+        originJ: tile.i * cells - pad,
+    };
+}
+
 /* What a picked tile should cover on the ground, give or take. The level that
  * lands nearest this is the default, per planet — a tile is a fixed slice of
  * the sphere, so the same level means different ground on a smaller planet. */
@@ -49,8 +71,10 @@ module.exports = {
     SCALE_KM,
     MIN_CELLS,
     MAX_CELLS,
+    CONTEXT_PAD,
     TARGET_TILE_KM,
     ZOOM_MIN,
     ZOOM_MAX,
     wrapLon,
+    contextOrigin,
 };

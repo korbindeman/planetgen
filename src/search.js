@@ -3,9 +3,10 @@
  *
  * A generation is a sheet of planets. Each tile is a fresh seed plus a
  * draw from the current freeable ranges. Liked tiles reshape those
- * ranges; the next sheet is drawn from the new box. Saving a tile is
- * a variant — that lives in the project catalog, not here. Seed is
- * never a gene. Pins and DEFAULTS are not touched.
+ * ranges as they go (the studio writes that box to the current
+ * variant). Opening or saving a planet from the sheet is a new version
+ * — a branch off the current one. Seed is never a gene. Pins and
+ * DEFAULTS are not touched.
  *
  * Browser-free, so `bun run check:search` can hold the loop to its
  * invariants without opening the app.

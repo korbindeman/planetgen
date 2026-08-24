@@ -1,15 +1,14 @@
 # Giving the base planet detail
 
-Planetgen reads as a real planet at globe scale and as a toy up close. The layout
-is right — cratons cluster, one ocean is empty, 200 Myr of plate history leaves
-belts at collisions and age-graded floor — but land is mesh-scale blobs, every
-coast has the same single wavelength, and a mountain belt is a smooth swell.
+Historical design record (Aug 2026). The three steps below shipped: a second
+mesh with domain warp and island crests (A), phasor ridges on the belts (C),
+and first-stage erosion (E). Further work on how the pass looks, and a
+separate detail seed, live on [wanted.md](wanted.md) — not here.
 
-This note records the three steps chosen (Aug 2026) to fix that, after reading
-[World Orogen](https://orogen.studio)'s implementation. Steps A, C and E are
-implemented; this file is kept as the design record. Status labels follow
-[full-planet-pipeline.md](full-planet-pipeline.md): **decided**, **recommended**,
-**open**.
+Status labels follow [full-planet-pipeline.md](full-planet-pipeline.md):
+**decided**, **recommended**, **open**. The problem statement in each section
+is the one that was true when the step was chosen, after reading
+[World Orogen](https://orogen.studio)'s implementation.
 
 ## Why not simply raise the mesh — decided
 

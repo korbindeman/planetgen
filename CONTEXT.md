@@ -25,19 +25,34 @@ A **body** the **project** has chosen as the default for new **working planets**
 _Avoid_: Pin (the old project-wide lock)
 
 **Variant**:
-A saved candidate of a **project**: a seed, a **body**, gene draws, **pins**, **ranges**, and a parent. Artifacts belong to that variant. Only an explicit Save writes one. Two variants can share a seed and still be different planets.
+A saved candidate of a **project**: a seed, a **body**, gene draws, **pins**, **ranges**, and a parent. Artifacts belong to that variant. Only an explicit Save writes the planet snapshot. Same seed with knobs moved is a newer generation of this version; a new seed, an explore draw, or a name is a branch. Explore may write **ranges** without a save. Two variants can share a seed and still be different planets.
 _Avoid_: Saved seed, keep, favourite, like, working planet
 
+**Save**:
+Write the working planet. Shuffle, a new seed, or an explore tile is a
+different planet — that save **branches** (child of **head**, even with no
+name). Tilt, pins, and genes on this seed are the same planet — that save
+is a newer generation of the current version. A name labels a branch; it
+is not what makes one.
+_Avoid_: Update
+
 **Lineage**:
-The parent link between saved **variants**. Save from a variant adds a child. The catalog is this tree, not a list. The tree is the history of saves, not of rerolls.
+The parent link between saved **variants**. The catalog is this tree, not a
+list. See **Save**.
 _Avoid_: History (the tectonic sim), undo, variant list
+
+**Head**:
+The **variant** currently checked out. Shuffle, edits, and opened explore
+tiles stay on head as uncommitted work until **Save**. Head is not the
+pipeline **commit** unless that save was the first version on that line.
+_Avoid_: Current, selected (ambiguous with search)
 
 **Pin**:
 A **body** value a saved **variant** has locked. Children inherit it. Genes are not pinned — a tight **range** is how a branch stays near a gene. A pin does not rewrite siblings or the rest of the project.
 _Avoid_: Setting, override, default, adopted body, gene lock
 
 **Working planet**:
-The globe on screen. Same recipe shape as a **variant**, but it is not in the tree. Rerolls and edits die unless you Save.
+The globe on screen. Same recipe shape as a **variant**. Shuffle, edits, and opened explore tiles are uncommitted work on **head** until Save.
 _Avoid_: Unsaved seed, draft project, unsaved variant
 
 **Range**:
@@ -45,11 +60,11 @@ The interval a still-free parameter may be drawn from. Stored on a **variant**. 
 _Avoid_: Overlay, gene box, project character
 
 **Like**:
-A search-tile mark that steers the next generation of the current **search** session. It does not write the selected **variant**. It is not a save.
+A search-tile mark that reshapes the current **ranges** as you go and writes that box to the selected **variant**. It is not a save of the planet.
 _Avoid_: Favourite, upvote, save
 
 **Search**:
-A sheet of **working planets** drawn from the selected **variant**: its **ranges**, minus its **pins**, starting from its **body**. Likes reshape the session box only. Save writes a child with that tile's recipe and the session's current ranges. The parent does not move. Earth has no search.
+A sheet of **working planets** drawn from the selected **variant**: its **ranges**, minus its **pins**, starting from its **body**. Likes update those ranges on the variant immediately. Opening or saving a tile is a new planet — save branches. Tuning knobs on the current seed is a newer generation. Earth has no search.
 _Avoid_: Shuffle (that only changes the seed)
 
 **Refinement**:
@@ -82,13 +97,19 @@ _Avoid_: Build, export chain
 — No. That is the **project** still initializing. Each **variant** already has its own **body**.
 
 — I liked three tiles and kept two. Are those the same?
-— No. The likes reshape the **search** session only. The two you saved are children; the parent still has the box it was saved with.
+— No. The likes reshape the **ranges** on the current variant as you go. The two you saved are **branches** — each tile is a new planet.
 
 — One child looks barely narrowed and another is a sliver. Is that a bug?
 — No. **Refinement** is per variant. The tree is how you see the asymmetry.
 
 — I shuffled, tweaked tilt, shuffled again, and hit Save. What is in the tree?
-— One **variant**: the globe as it stood at Save. The rerolls never existed.
+— A **branch**: the globe as it stood at Save, a child of the version you shuffled from. Shuffle is a new planet. The in-between rerolls were uncommitted.
+
+— I changed tilt on this seed and hit Save, no new name. What happened?
+— Save wrote a newer generation of the current version. Same planet.
+
+— I opened an older version, liked a new seed, and named it. What happened?
+— Explore already branches. The name labels that child. **Head** moves there. The adopted pipeline **commit** stays.
 
 — I saved a child from a variant whose radius is pinned. What radius does it have?
 — The parent's. That **pin** is **lineage**, not a project rewrite.
