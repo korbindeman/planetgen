@@ -4,3 +4,5 @@ preview/**
 !preview/.gitkeep
 src/.td-overlays/
 .DS_Store
+__pycache__/
+*.py[cod]
