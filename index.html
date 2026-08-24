@@ -219,7 +219,7 @@
         inset: auto;
         margin: 0;
         padding: 6px;
-        width: 17rem;
+        width: 20rem;
         border: 0;
         border-radius: 12px;
         background: #fff;
@@ -325,7 +325,22 @@
         width: 4.4rem;
         height: 2.2rem;
         object-fit: cover;
+        outline: 1px solid rgba(0, 0, 0, 0.1);
+        outline-offset: -1px;
         background: rgba(0, 0, 0, 0.06);
+      }
+      .variant-meta {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .variant-text {
+        display: flex;
+        align-items: baseline;
+        gap: 0.45rem;
+        min-width: 0;
       }
       .variant-name {
         flex: 1;
@@ -338,6 +353,28 @@
         flex: 0 0 auto;
         font-variant-numeric: tabular-nums;
         opacity: 0.5;
+      }
+      .variant-refine {
+        display: block;
+        height: 3px;
+        border-radius: 2px;
+        background: rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+      }
+      .variant-refine-fill {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: rgba(0, 0, 0, 0.45);
+      }
+      .variant-edge {
+        padding: 2px 0.4rem 1px;
+        font-size: 0.72rem;
+        line-height: 1.2;
+        opacity: 0.45;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .variant-delete {
         flex: 0 0 28px;
@@ -872,7 +909,7 @@
     </figure>
     </div>
     <div id="variants-popover" popover role="dialog" aria-labelledby="variants-title">
-      <div id="variants-title" class="variants-title">Variants</div>
+      <div id="variants-title" class="variants-title">Lineage</div>
       <form id="variants-form">
         <input id="variant-name" type="text" maxlength="48" placeholder="Name (optional)" autocomplete="off" spellcheck="false" aria-label="Variant name">
         <button type="submit">Save</button>

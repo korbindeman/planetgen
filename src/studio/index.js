@@ -772,21 +772,34 @@ function renderVariantsList(session, items) {
         return;
     }
     const current = currentVariant(session, items);
-    for (const variant of items) {
-        const row = document.createElement('div');
+    for (const rowInfo of Variants.treeRows(items)) {
+        const variant = rowInfo.variant;
         const committed = session.catalog.committed === variant.id;
+        const score = Variants.refinement(variant);
+
+        if (rowInfo.notes.length) {
+            const edge = document.createElement('div');
+            edge.className = 'variant-edge';
+            edge.style.paddingLeft = `${10 + rowInfo.depth * 12}px`;
+            edge.textContent = rowInfo.notes.join(' · ');
+            list.append(edge);
+        }
+
+        const row = document.createElement('div');
         row.className = 'variant-row'
             + (current && current.id === variant.id ? ' is-current' : '')
             + (committed ? ' is-committed' : '');
+        row.style.paddingLeft = `${rowInfo.depth * 12}px`;
 
         const load = document.createElement('button');
         load.type = 'button';
         load.className = 'variant-item';
         load.dataset.action = 'open-variant';
         load.dataset.id = variant.id;
+        const refinePct = Math.round(score * 100);
         load.title = variant.name
-            ? `${variant.name} (seed ${variant.seed})`
-            : `Open variant seed ${variant.seed}`;
+            ? `${variant.name} (seed ${variant.seed}, ${refinePct}% refined)`
+            : `Open variant seed ${variant.seed} · ${refinePct}% refined`;
 
         if (variant.thumb) {
             const img = document.createElement('img');
@@ -796,16 +809,32 @@ function renderVariantsList(session, items) {
             load.append(img);
         }
 
+        const meta = document.createElement('span');
+        meta.className = 'variant-meta';
+
+        const text = document.createElement('span');
+        text.className = 'variant-text';
         const label = document.createElement('span');
         label.className = 'variant-name';
         label.textContent = variant.name || String(variant.seed);
-        load.append(label);
+        text.append(label);
         if (variant.name) {
             const num = document.createElement('span');
             num.className = 'variant-seed';
             num.textContent = String(variant.seed);
-            load.append(num);
+            text.append(num);
         }
+        meta.append(text);
+
+        const track = document.createElement('span');
+        track.className = 'variant-refine';
+        track.setAttribute('aria-hidden', 'true');
+        const fill = document.createElement('span');
+        fill.className = 'variant-refine-fill';
+        fill.style.width = `${Math.max(0, Math.min(100, refinePct))}%`;
+        track.append(fill);
+        meta.append(track);
+        load.append(meta);
 
         if (committed) {
             const mark = document.createElement('span');
@@ -864,7 +893,7 @@ function positionVariantsPopover() {
     if (!button || !popover) return;
     const rect = button.getBoundingClientRect();
     const gap = 8;
-    const width = Math.min(272, window.innerWidth - 16);
+    const width = Math.min(320, window.innerWidth - 16);
     let left = rect.right + gap;
     let top = rect.top;
     if (left + width > window.innerWidth - 8) {

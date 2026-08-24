@@ -268,6 +268,25 @@ for (const project of Projects.PROJECTS) {
     });
     check("refinement is tightness vs vouched",
         Variants.refinement(refined) > 0.5);
+    const ancestor = Variants.ofWorking({
+        project: "thalos", seed: 10, pins,
+        values: {plates: 17},
+    });
+    const descendent = Variants.ofWorking({
+        project: "thalos",
+        parent: ancestor.id,
+        seed: 11,
+        pins,
+        values: {plates: 12},
+        ranges: {continentFraction: [0.40, 0.44]},
+    });
+    const rows = Variants.treeRows([descendent, ancestor]);
+    check("tree rows walk parent then child",
+        rows.length === 2
+        && rows[0].variant.id === ancestor.id && rows[0].depth === 0
+        && rows[1].variant.id === descendent.id && rows[1].depth === 1);
+    check("the edge names what the child narrowed",
+        rows[1].notes.some((note) => note.includes("crust")));
 }
 
 /* 10. A crop is a folder. Whatever files it holds, the directory is what

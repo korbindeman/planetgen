@@ -268,6 +268,76 @@ function childrenOf(list, id) {
 }
 
 
+function shortParam(name) {
+    const names = {
+        radiusKm: 'radius',
+        gravityG: 'gravity',
+        rotationHours: 'day',
+        axialTiltDeg: 'tilt',
+        ageGyr: 'age',
+        continentFraction: 'crust',
+        plates: 'plates',
+        cratons: 'cratons',
+        steps: 'steps',
+        hotspots: 'hotspots',
+    };
+    return names[name] || name;
+}
+
+
+function rangeWidth(range) {
+    return range && range.length === 2 ? range[1] - range[0] : 0;
+}
+
+
+function edgeNotes(parent, child) {
+    const notes = [];
+    const seen = new Set();
+    const parentPins = (parent && parent.pins) || {};
+    const childPins = (child && child.pins) || {};
+    for (const name of Object.keys(childPins)) {
+        if (parentPins[name] === childPins[name]) continue;
+        notes.push(parentPins[name] == null ? `pinned ${shortParam(name)}` : `repinned ${shortParam(name)}`);
+        seen.add(name);
+    }
+    const parentRanges = (parent && parent.ranges) || {};
+    const childRanges = (child && child.ranges) || {};
+    for (const name of Object.keys(childRanges)) {
+        if (seen.has(name)) continue;
+        const next = childRanges[name];
+        const prev = parentRanges[name] || Params.vouchedRange(name);
+        if (!prev || rangeWidth(next) >= rangeWidth(prev) - 1e-9) continue;
+        notes.push(`narrowed ${shortParam(name)}`);
+        seen.add(name);
+        if (notes.length >= 3) break;
+    }
+    return notes;
+}
+
+
+function treeRows(list) {
+    const items = list || [];
+    const out = [];
+    const walk = (parentId, depth) => {
+        const kids = parentId == null
+            ? items.filter((item) => !item.parent)
+            : childrenOf(items, parentId);
+        for (const variant of kids) {
+            const parent = parentId ? findById(items, parentId) : null;
+            out.push({
+                variant,
+                depth,
+                parent,
+                notes: parent ? edgeNotes(parent, variant) : [],
+            });
+            walk(variant.id, depth + 1);
+        }
+    };
+    walk(null, 0);
+    return out;
+}
+
+
 function emptyCatalog(project) {
     return {project: project || '', committed: null, variants: []};
 }
@@ -398,6 +468,9 @@ module.exports = {
     valuesOf,
     inheritedPins,
     childrenOf,
+    shortParam,
+    edgeNotes,
+    treeRows,
     emptyCatalog,
     parseCatalog,
     serializeCatalog,
