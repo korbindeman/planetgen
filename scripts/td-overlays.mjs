@@ -88,7 +88,15 @@ async function readTileSidecar(dir) {
   if (face < 0 || face > 5 || level < 0 || level > 12) return null;
   const n = 1 << level;
   if (i < 0 || j < 0 || i >= n || j >= n) return null;
-  return {face, level, i, j};
+  return {
+    face,
+    level,
+    i,
+    j,
+    project: raw.project || null,
+    seed: raw.seed != null && raw.seed !== "" ? raw.seed : null,
+    variant: raw.variant || null,
+  };
 }
 
 async function readElevMeta(dir) {
@@ -144,7 +152,10 @@ async function readCrop(dir, folder, project, urlPrefix, listed, manifestSeed) {
   const heightmap = join(folderPath, "heightmap.tif");
   const hasHeightmap = await exists(heightmap);
   const hasPng = await exists(join(folderPath, "output.png"));
-  const tile = await readTileSidecar(folderPath) || Cube.parseTileName(name);
+  const sidecar = await readTileSidecar(folderPath);
+  const tile = sidecar
+    ? {face: sidecar.face, level: sidecar.level, i: sidecar.i, j: sidecar.j}
+    : Cube.parseTileName(name);
   const elevMeta = await readElevMeta(folderPath);
   if (!hasHeightmap && !hasPng && !elevMeta && !tile) return null;
 
@@ -156,16 +167,20 @@ async function readCrop(dir, folder, project, urlPrefix, listed, manifestSeed) {
   }
 
   const baked = !!elevMeta || hasPng;
+  const seed = sidecar && sidecar.seed != null
+    ? sidecar.seed
+    : (listed && listed.seed != null ? listed.seed : manifestSeed);
   return {
     name,
     dir: folder,
-    project,
+    project: (sidecar && sidecar.project) || project,
     tile,
     west: bounds.west,
     south: bounds.south,
     east: bounds.east,
     north: bounds.north,
-    seed: listed && listed.seed != null ? listed.seed : manifestSeed,
+    seed,
+    variant: sidecar && sidecar.variant || undefined,
     status: baked ? "done" : "conditioned",
     image: hasPng ? `${urlPrefix}${folder}/output.png` : null,
     elev: elevMeta ? `${urlPrefix}${folder}/output.elev` : null,
@@ -234,7 +249,7 @@ export async function listTdOverlays(root, opts = {}) {
 
   let crops = project ? found.filter((c) => c.project === project) : found;
   if (seed != null && seed !== "") {
-    crops = crops.filter((c) => sameSeed(c.seed, seed) || c.seed == null || c.seed === "");
+    crops = crops.filter((c) => sameSeed(c.seed, seed));
   }
   crops.sort((a, b) => a.name.localeCompare(b.name));
   if (variant) {
@@ -255,7 +270,7 @@ export async function pipelineFact(root, {project, seed, variant}) {
   const matching = variant
     ? listed.crops
     : (seed != null && seed !== ""
-      ? listed.crops.filter((c) => sameSeed(c.seed, seed) || c.seed == null || c.seed === "")
+      ? listed.crops.filter((c) => sameSeed(c.seed, seed))
       : listed.crops);
   const otherSeed = !variant && listed.crops.length > 0 && matching.length === 0;
 

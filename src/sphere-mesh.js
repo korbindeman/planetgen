@@ -9,7 +9,6 @@ const Delaunator = require('delaunator');
 const TriangleMesh = require('@redblobgames/dual-mesh');
 
 
-let _randomLat = [], _randomLon = [];
 function generateFibonacciSphere(N, jitter, randFloat, randomLat, randomLon) {
     let a_latlong = [];
 
@@ -122,8 +121,12 @@ function stereographicProjection(r_xyz) {
 
 
 function makeSphere(N, jitter, randFloat, jitterState) {
-    const randomLat = (jitterState && jitterState.lat) || _randomLat;
-    const randomLon = (jitterState && jitterState.lon) || _randomLon;
+    /* Jitter is a function of this call's randFloat, never of a previous
+     * sphere. A process-global fill-once table made the first seed in a
+     * session own every later mesh: the same variant changed after a
+     * search tile or another seed, then snapped back on refresh. */
+    const randomLat = (jitterState && jitterState.lat) || [];
+    const randomLon = (jitterState && jitterState.lon) || [];
     let latlong = generateFibonacciSphere(N, jitter, randFloat, randomLat, randomLon);
     let r_xyz = [];
     for (let r = 0; r < latlong.length/2; r++) {

@@ -23,6 +23,7 @@ const {vec4} = require('gl-matrix');
 const Look = require('./look');
 const TdTile = require('./td-tile');
 const Cube = require('./cubesphere');
+const Epoch = require('./td-epoch');
 
 const MAX_IMAGE = 4096;
 const GLOBE_STEPS = 10;
@@ -48,12 +49,14 @@ let loadState = 'idle';
 let apiUp = false;
 let jobs = [];
 let apiTries = 0;
-let context = {project: null, seed: null, variant: null};
-/* Latest request for `context`. generateMesh is sync and long, so a fetch
- * started for the previous project only returns after the new one is up;
- * that reply is identified by the context it asked for, and is dropped
- * if we have moved on. */
-let loadGen = 0;
+/*
+ * One epoch for every async path. A catalog fetch, a DEM, a colouring
+ * and a job poll all carry a snapshot of this, and are dropped when the
+ * world or the mesh has moved on. The previous loadGen token only
+ * guarded the catalog JSON; late elevation writes and same-named tiles
+ * from the last seed still landed on the globe.
+ */
+const epoch = Epoch.createEpoch();
 /*
  * The picker's whole state. A tile is (face, level, i, j) — there is no
  * pixel position and no half-committed box here, which is what stops the
@@ -95,53 +98,58 @@ function getCatalog() {
     return catalog;
 }
 
-function same(a, b) {
-    if (a == null || a === '' || b == null || b === '') return false;
-    return String(a).toLowerCase() === String(b).toLowerCase();
-}
-
-function sameContext(a, b) {
-    return (a.project || null) === (b.project || null)
-        && String(a.seed ?? '') === String(b.seed ?? '')
-        && String(a.variant ?? '') === String(b.variant ?? '');
-}
-
 function belongsTo(crop, ctx) {
-    if (ctx.project && crop.project && crop.project !== ctx.project) return false;
-    if (ctx.variant && crop.variant && crop.variant !== ctx.variant) return false;
-    if (ctx.variant && !crop.variant) return false;
-    if (!ctx.variant && crop.variant) return false;
-    const s = crop.seed != null && crop.seed !== '' ? crop.seed : null;
-    if (!ctx.variant && ctx.seed != null && ctx.seed !== '' && s != null && !same(s, ctx.seed)) return false;
-    return true;
+    return Epoch.belongsTo(crop, ctx || epoch.world());
 }
 
 function setContext(project, seed, variant) {
-    const next = {
-        project: project || null,
-        seed: seed != null ? seed : null,
-        variant: variant || null,
-    };
-    if (sameContext(next, context)) return;
-    context = next;
-    /* Drop the last project's tiles immediately. Leaving them up until
+    const {changed} = epoch.begin({project, seed, variant});
+    if (!changed) return;
+    const world = epoch.world();
+    jobs = [];
+    /* Drop the last world's tiles immediately. Leaving them up until
      * the next fetch lands is how one world's crops sat on another. */
-    const keep = catalog.crops.filter((c) => belongsTo(c, context));
+    const keep = catalog.crops.filter((c) => belongsTo(c, world));
     if (keep.length !== catalog.crops.length) {
-        catalog = {seed: context.seed, lon0: catalog.lon0, project: context.project, variant: context.variant, crops: keep};
+        catalog = {seed: world.seed, lon0: catalog.lon0, project: world.project, variant: world.variant, crops: keep};
         notify();
     }
     load();
 }
 
+function setPlanet(id) {
+    if (!epoch.setPlanet(id)) return;
+    let any = false;
+    for (const crop of catalog.crops) {
+        if (crop.imageEl) {
+            crop.imageEl = null;
+            crop.planetId = null;
+            any = true;
+        }
+    }
+    if (any) notify();
+}
+
+function snapshot() {
+    return epoch.snapshot();
+}
+
+function stillCurrent(asked) {
+    return epoch.stillCurrent(asked);
+}
+
+function stillSameWorld(asked) {
+    return epoch.stillSameWorld(asked);
+}
+
 function seedMatches(appSeed) {
     if (catalog.seed == null || catalog.seed === '') return true;
-    return same(catalog.seed, appSeed);
+    return Epoch.sameSeed(catalog.seed, appSeed);
 }
 
 function shownCrops() {
     if (!enabled) return [];
-    return catalog.crops.filter((c) => !hidden.has(c.name) && belongsTo(c, context));
+    return catalog.crops.filter((c) => !hidden.has(c.name) && belongsTo(c, epoch.world()));
 }
 
 function visibleCrops() {
@@ -168,60 +176,45 @@ function resolveImage(url) {
     return url;
 }
 
-function stillCurrent(asked, gen) {
-    return gen === loadGen && sameContext(asked, context);
-}
-
-function applyCatalog(data, asked, gen) {
-    if (!stillCurrent(asked, gen)) return Promise.resolve();
+function applyCatalog(data, asked) {
+    if (!epoch.stillCurrent(asked)) return Promise.resolve();
+    const world = asked.world;
     const incoming = data && Array.isArray(data.crops)
-        ? data.crops.map(normalizeCrop).filter((c) => belongsTo(c, asked))
+        ? data.crops.map(normalizeCrop).filter((c) => belongsTo(c, world))
         : [];
-    const prev = new Map(catalog.crops.map((c) => [c.name, c]));
-    for (const crop of incoming) {
-        const old = prev.get(crop.name);
-        if (!old) continue;
-        /* Keep the decoded elevation and its colouring across a reload.
-         * The crop is the folder; these are caches on it. A new DEM size
-         * means a new bake and the cache is stale. */
-        if (old.elevM && old.elevWidth === crop.elevWidth && old.elevHeight === crop.elevHeight) {
-            crop.elevM = old.elevM;
-        }
-        if (old.imageEl) crop.imageEl = old.imageEl;
-        if (old.loadError) crop.loadError = old.loadError;
-    }
+    Epoch.adoptCaches(incoming, catalog.crops, world, epoch.planetId());
     catalog = {
-        seed: data && data.seed != null ? data.seed : asked.seed,
+        seed: data && data.seed != null ? data.seed : world.seed,
         lon0: data && Number.isFinite(data.lon0) ? data.lon0 : 0,
-        project: asked.project,
-        variant: asked.variant || null,
+        project: world.project,
+        variant: world.variant || null,
         crops: incoming,
     };
     jobs = data && Array.isArray(data.jobs) ? data.jobs : [];
     loadState = catalog.crops.length || grid.picked.length ? 'ready' : 'empty';
     notify();
-    return Promise.all(catalog.crops.filter((c) => !c.imageEl && !c.elevM).map(loadCropData)).then(() => {
-        if (!stillCurrent(asked, gen)) return;
+    return Promise.all(catalog.crops.filter((c) => !c.imageEl && !c.elevM).map((c) => loadCropData(c, asked))).then(() => {
+        if (!epoch.stillSameWorld(asked)) return;
         notify();
     });
 }
 
-function loadFromCatalogFile(asked, gen) {
+function loadFromCatalogFile(asked) {
     try {
-        return applyCatalog(require('./.td-overlays/catalog.js'), asked, gen);
+        return applyCatalog(require('./.td-overlays/catalog.js'), asked);
     } catch {
-        return applyCatalog({seed: null, lon0: 0, project: null, variant: null, crops: []}, asked, gen);
+        return applyCatalog({seed: null, lon0: 0, project: null, variant: null, crops: []}, asked);
     }
 }
 
 function load() {
-    const asked = {project: context.project, seed: context.seed, variant: context.variant};
-    const gen = ++loadGen;
+    const asked = epoch.beginLoad();
+    const world = asked.world;
     loadState = 'loading';
     const q = new URLSearchParams();
-    if (asked.project) q.set('project', asked.project);
-    if (asked.seed != null && asked.seed !== '') q.set('seed', String(asked.seed));
-    if (asked.variant) q.set('variant', asked.variant);
+    if (world.project) q.set('project', world.project);
+    if (world.seed != null && world.seed !== '') q.set('seed', String(world.seed));
+    if (world.variant) q.set('variant', world.variant);
     const qs = q.toString();
     fetch(`${TD_API}/overlays.json${qs ? `?${qs}` : ''}`, {cache: 'no-store'})
         .then((res) => {
@@ -230,18 +223,18 @@ function load() {
             return res.json();
         })
         .then((data) => {
-            if (!stillCurrent(asked, gen)) return;
+            if (!epoch.stillCurrent(asked)) return;
             apiTries = 0;
-            return applyCatalog(data, asked, gen);
+            return applyCatalog(data, asked);
         })
         .catch(() => {
-            if (!stillCurrent(asked, gen)) return;
+            if (!epoch.stillCurrent(asked)) return;
             apiUp = false;
-            const fallback = loadFromCatalogFile(asked, gen);
+            const fallback = loadFromCatalogFile(asked);
             if (apiTries < 8) {
                 apiTries += 1;
                 setTimeout(() => {
-                    if (!stillCurrent(asked, gen) || apiUp) return;
+                    if (!epoch.stillCurrent(asked) || apiUp) return;
                     loadState = 'idle';
                     load();
                 }, 400);
@@ -275,6 +268,7 @@ function normalizeCrop(raw) {
         elevWidth: raw.elevWidth | 0,
         elevHeight: raw.elevHeight | 0,
         elevM: null,
+        planetId: null,
         loadError: null,
         status: raw.status || (raw.image && String(raw.image).includes('output.png') ? 'done' : null),
         seed: raw.seed,
@@ -302,43 +296,67 @@ function normalizeTile(raw) {
  * needs to. The PNG stays as the fallback for crops baked before the dump
  * existed.
  */
-function loadCropData(crop) {
-    if (crop.elev) return loadCropElev(crop);
-    if (crop.image) return loadCropImage(crop);
+function liveCrop(name) {
+    return catalog.crops.find((c) => c.name === name) || null;
+}
+
+function loadCropData(crop, asked) {
+    if (crop.elev) return loadCropElev(crop, asked);
+    if (crop.image) return loadCropImage(crop, asked);
     return Promise.resolve();
 }
 
-function loadCropElev(crop) {
+function loadCropElev(crop, asked) {
     const want = crop.elevWidth * crop.elevHeight * 4;
-    return fetch(crop.elev)
+    const name = crop.name;
+    const elev = crop.elev;
+    const width = crop.elevWidth;
+    const height = crop.elevHeight;
+    const image = crop.image;
+    return fetch(elev)
         .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(String(res.status)))))
         .then((buf) => {
+            if (!epoch.stillSameWorld(asked)) return;
+            const live = liveCrop(name);
+            if (!live || !Epoch.sameElev(live, {elev, elevWidth: width, elevHeight: height})) return;
             if (buf.byteLength < want) throw new Error(`elev dump is ${buf.byteLength} of ${want} bytes`);
-            crop.elevM = new Float32Array(buf, 0, crop.elevWidth * crop.elevHeight);
-            crop.loadError = null;
+            live.elevM = new Float32Array(buf, 0, width * height);
+            live.loadError = null;
         })
         .catch((err) => {
-            crop.loadError = String(err.message || err);
+            if (!epoch.stillSameWorld(asked)) return;
+            const live = liveCrop(name);
+            if (!live || !Epoch.sameElev(live, {elev, elevWidth: width, elevHeight: height})) return;
+            live.loadError = String(err.message || err);
             /* A tile whose elevation will not load still has a picture. */
-            return crop.image ? loadCropImage(crop) : undefined;
+            return image ? loadCropImage(live, asked) : undefined;
         });
 }
 
-function loadCropImage(crop) {
+function loadCropImage(crop, asked) {
+    const name = crop.name;
+    const src = crop.image;
     return new Promise((resolve) => {
         const img = new Image();
         img.decoding = 'async';
         img.onload = () => {
-            crop.imageEl = downsample(img, MAX_IMAGE);
-            crop.loadError = null;
+            if (epoch.stillSameWorld(asked)) {
+                const live = liveCrop(name);
+                if (live && live.image === src) {
+                    live.imageEl = downsample(img, MAX_IMAGE);
+                    live.loadError = null;
+                }
+            }
             resolve();
         };
         img.onerror = () => {
-            /* Say so in the panel rather than leaving a silent blank. */
-            crop.loadError = 'image failed to load';
+            if (epoch.stillSameWorld(asked)) {
+                const live = liveCrop(name);
+                if (live && live.image === src) live.loadError = 'image failed to load';
+            }
             resolve();
         };
-        img.src = crop.image;
+        img.src = src;
     });
 }
 
@@ -368,10 +386,12 @@ function repaintSurfaces() {
 /* imageEl is a paint cache. elevM is the DEM. Colouring must not write
  * the DEM — a throw here used to null elevM and the tile stayed blank. */
 function surfaceFor(crop) {
-    if (crop.imageEl) return crop.imageEl;
-    if (!crop.elevM || !surfacePainter) return null;
+    if (!belongsTo(crop, epoch.world())) return null;
+    if (crop.imageEl && crop.planetId === epoch.planetId()) return crop.imageEl;
+    if (!crop.elevM || !surfacePainter) return crop.imageEl || null;
     try {
         crop.imageEl = surfacePainter(crop);
+        crop.planetId = epoch.planetId();
     } catch (err) {
         crop.loadError = String(err.message || err);
     }
@@ -741,13 +761,7 @@ function paintTileCrop(ctx, crop, project, width, height, dashed) {
     const chrome = dashed || !img;
     const n = Math.max(2, Math.min(24, Math.round(px / 24)));
     if (img) {
-        const e = Cube.tileExtent(crop.tile);
-        const face = crop.tile.face;
-        const at = (s, t) => Cube.xyzToLonLat(Cube.faceDirection(
-            face,
-            e.a0 + (e.a1 - e.a0) * s,
-            e.b1 + (e.b0 - e.b1) * t,
-        ));
+        const at = (s, t) => Cube.tileLonLat(crop.tile, s, t);
         for (let iy = 0; iy < n; iy++) {
             const t0 = iy / n;
             const t1 = (iy + 1) / n;
@@ -957,7 +971,8 @@ function renderCropList(host, {onToggle, onFrame, onBake, onClearDraft, onLevel,
         host.append(note('No baked crops yet.'));
         return;
     }
-    const wrongProject = catalog.crops.some((c) => c.project && context.project && c.project !== context.project);
+    const world = epoch.world();
+    const wrongProject = catalog.crops.some((c) => c.project && world.project && c.project !== world.project);
     if (wrongProject) {
         host.append(note('These tiles belong to another project.'));
     } else if (catalog.seed && !seedMatches(seed)) {
@@ -1097,9 +1112,11 @@ function applyJobs(next) {
 }
 
 function pollJobs() {
+    const asked = epoch.snapshot();
+    const world = asked.world;
     const q = new URLSearchParams();
-    if (context.project) q.set('project', context.project);
-    if (context.variant) q.set('variant', context.variant);
+    if (world.project) q.set('project', world.project);
+    if (world.variant) q.set('variant', world.variant);
     const qs = q.toString();
     return fetch(`${TD_API}/jobs${qs ? `?${qs}` : ''}`, {cache: 'no-store'})
         .then((res) => {
@@ -1107,7 +1124,10 @@ function pollJobs() {
             apiUp = true;
             return res.json();
         })
-        .then((data) => applyJobs(data && data.jobs));
+        .then((data) => {
+            if (!epoch.stillSameWorld(asked)) return jobs;
+            return applyJobs(data && data.jobs);
+        });
 }
 
 /*
@@ -1223,7 +1243,7 @@ function clearPicked() {
  * "baked" rather than silently queueing the same ground twice. */
 function bakedTile(tile) {
     const name = Cube.tileName(tile);
-    return catalog.crops.find((c) => c.name === name) || null;
+    return catalog.crops.find((c) => c.name === name && belongsTo(c, epoch.world())) || null;
 }
 
 function getJobs() {
@@ -1239,6 +1259,10 @@ module.exports = {
     load,
     reload,
     setContext,
+    setPlanet,
+    snapshot,
+    stillCurrent,
+    stillSameWorld,
     paint,
     isEnabled,
     setEnabled,

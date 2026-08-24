@@ -353,6 +353,7 @@ async function refreshPipeline(session) {
 async function bakeProjectPreviews(session) {
     if (session.pipelineBakeBusy) return;
     await ensureVariant(session);
+    const asked = TdOverlay.snapshot();
     session.pipelineBakeBusy = true;
     renderPipeline(session);
     session.host.enableTdCrops();
@@ -370,6 +371,7 @@ async function bakeProjectPreviews(session) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
+        if (!TdOverlay.stillSameWorld(asked)) return;
         TdOverlay.reload();
         session.host.startTdJobPoll();
         await refreshPipeline(session);
@@ -441,9 +443,19 @@ function openProject(session, name) {
 }
 
 
+function resetSeedHistory(session, seed) {
+    applySeed(session, seed);
+    session.seedHistory = [session.seed];
+    session.seedHistoryIndex = 0;
+    syncSeedHistoryButtons(session);
+}
+
+
 async function loadProject(session, name) {
     if (session.searchSession) exitSearch(session);
+    if (session.variant) Boot.writeStoredVariant(session.project, session.variant.id);
     const project = Projects.byName(name);
+    const lastId = Boot.readStoredVariant(project.name);
     session.project = project.name;
     session.pins = Object.assign({}, project.body || {});
     session.workingValues = {};
@@ -451,7 +463,7 @@ async function loadProject(session, name) {
     session.workingParent = null;
     session.workingRanges = null;
     session.catalog = Variants.emptyCatalog(project.name);
-    session.pendingVariantId = null;
+    session.pendingVariantId = lastId;
     session.seedFromQuery = false;
     session.projectModified = false;
     Boot.writeStoredProject(session.project);
@@ -465,13 +477,9 @@ async function loadProject(session, name) {
         return;
     }
 
-    if (project.fixture && project.seed != null) {
-        const before = session.seed;
-        commitSeed(session, project.seed);
-        if (session.seed === before) session.host.generateMesh();
-    } else {
-        session.host.generateMesh();
-    }
+    const seed = project.fixture && project.seed != null ? project.seed : 1;
+    resetSeedHistory(session, seed);
+    session.host.generateMesh();
     syncContext(session);
     renderSearchChrome(session);
     syncVariantsUI(session);
@@ -677,20 +685,28 @@ async function hydrateCatalog(session) {
 
 
 function resumeCatalog(session) {
-    const id = session.pendingVariantId
-        || (session.seedFromQuery || Projects.isFixture(session.project) ? null : session.catalog.committed);
+    const id = Variants.resumeId({
+        pendingId: session.pendingVariantId,
+        lastId: Boot.readStoredVariant(session.project),
+        committed: session.catalog.committed,
+        variants: session.catalog.variants,
+        seedFromQuery: session.seedFromQuery,
+        fixture: Projects.isFixture(session.project),
+    });
     session.pendingVariantId = null;
     session.seedFromQuery = false;
     const found = id && Variants.findById(session.catalog.variants, id);
     if (!found) {
+        if (id && session.catalog.variants.length) Boot.writeStoredVariant(session.project, null);
         syncVariantsUI(session);
         renderProjectState(session);
         syncContext(session);
         return false;
     }
     loadVariantState(session, found);
-    applySeed(session, found.seed);
+    resetSeedHistory(session, found.seed);
     applyPins(session, false);
+    Boot.writeStoredVariant(session.project, found.id);
     syncContext(session);
     syncVariantsUI(session);
     return true;
@@ -751,11 +767,14 @@ function workingVariant(session, extra) {
 }
 
 
-function currentVariant(session, items) {
-    if (session.variant) {
-        const byId = Variants.findById(items, session.variant.id);
-        if (byId) return byId;
-    }
+function selectedVariant(session, items) {
+    return session.variant ? Variants.findById(items, session.variant.id) : null;
+}
+
+
+function matchingVariant(session, items) {
+    const selected = selectedVariant(session, items);
+    if (selected) return selected;
     return Variants.findByRecipe(items, workingVariant(session));
 }
 
@@ -771,7 +790,7 @@ function renderVariantsList(session, items) {
         list.append(empty);
         return;
     }
-    const current = currentVariant(session, items);
+    const current = selectedVariant(session, items);
     for (const rowInfo of Variants.treeRows(items)) {
         const variant = rowInfo.variant;
         const committed = session.catalog.committed === variant.id;
@@ -869,13 +888,14 @@ function renderVariantsList(session, items) {
 
 function syncVariantsUI(session) {
     const items = readVariants(session);
-    const current = currentVariant(session, items);
+    const selected = selectedVariant(session, items);
+    const matching = matchingVariant(session, items);
     const nameInput = document.getElementById('variant-name');
     if (nameInput && document.activeElement !== nameInput) {
-        nameInput.value = current && current.name ? current.name : '';
+        nameInput.value = selected && selected.name ? selected.name : '';
     }
     const saveBtn = document.querySelector('#variants-form button[type="submit"]');
-    if (saveBtn) saveBtn.textContent = current ? 'Update' : 'Save';
+    if (saveBtn) saveBtn.textContent = matching ? 'Update' : 'Save';
     const button = document.getElementById('variants-btn');
     if (button) {
         const blocked = Projects.isFixture(session.project);
@@ -1178,7 +1198,10 @@ async function saveWorkingVariant(session) {
     const next = Variants.upsert(readVariants(session), incoming);
     await setCatalogVariants(session, next);
     const saved = Variants.findByRecipe(next, incoming) || Variants.findById(next, incoming.id);
-    if (saved) session.variant = saved;
+    if (saved) {
+        session.variant = saved;
+        Boot.writeStoredVariant(session.project, saved.id);
+    }
     syncContext(session);
     syncVariantsUI(session);
     renderProjectState(session);
@@ -1192,6 +1215,7 @@ function openVariant(session, id) {
     document.getElementById('variants-popover')?.hidePopover?.();
     if (session.searchSession) exitSearch(session);
     loadVariantState(session, variant);
+    Boot.writeStoredVariant(session.project, variant.id);
     applyPins(session, false);
     if (session.seed === variant.seed) {
         session.host.generateMesh();
@@ -1229,8 +1253,11 @@ function deleteVariant(session, id) {
     setCatalogVariants(session, next);
     if (session.variant && session.variant.id === id) {
         session.variant = null;
+        Boot.writeStoredVariant(session.project, null);
         applyPins(session, true);
         syncContext(session);
+    } else if (Boot.readStoredVariant(session.project) === id) {
+        Boot.writeStoredVariant(session.project, session.variant && session.variant.id);
     }
     if (session.searchSession) {
         const extra = searchExtra(session);

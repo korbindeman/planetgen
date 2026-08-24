@@ -12,10 +12,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Pipeline = require(join(root, "packages/pipeline"));
 const Planet = require(join(root, "src", "planet.js"));
+const SphereMesh = require(join(root, "src", "sphere-mesh.js"));
 const World = require(join(root, "src", "world.js"));
 const Tectonics = require(join(root, "src", "tectonics.js"));
 const Bake = require(join(root, "packages/bake"));
 const Hydrology = require(join(root, "packages/hydrology"));
+const {makeRandFloat} = require("@redblobgames/prng");
 
 const failures = [];
 const check = (name, ok, detail = "") => {
@@ -76,6 +78,20 @@ const skipped = Planet.generatePlanet({
 check("detail is absent when the pass is off", skipped.detail == null);
 check("surface is then the sim",
     skipped.mesh === skipped.sim.mesh);
+
+/* A later seed must not keep the first seed's mesh jitter. The tables used
+ * to be process-global and fill-once, so opening one variant (or a search
+ * tile) made every later recipe a different planet until refresh. */
+{
+    const xyzHead = (r_xyz) => Array.from(r_xyz.slice(0, 12), (x) => x.toFixed(8)).join(",");
+    const isolatedA = SphereMesh.makeSphere(400, 0.75, makeRandFloat(11), {lat: [], lon: []});
+    const isolatedB = SphereMesh.makeSphere(400, 0.75, makeRandFloat(99), {lat: [], lon: []});
+    const defaultA = SphereMesh.makeSphere(400, 0.75, makeRandFloat(11));
+    check("mesh jitter follows the current seed, not the last sphere",
+        xyzHead(isolatedA.r_xyz) === xyzHead(defaultA.r_xyz)
+        && xyzHead(isolatedA.r_xyz) !== xyzHead(isolatedB.r_xyz),
+        `isolated=${xyzHead(isolatedA.r_xyz)} default=${xyzHead(defaultA.r_xyz)}`);
+}
 
 let bakeThrew = false;
 try { Bake.run(); } catch (e) { bakeThrew = /named slot/.test(e.message); }

@@ -29,6 +29,7 @@
         "check:projects": "bun ./scripts/check-projects.mjs",
         "check:search": "bun ./scripts/check-search.mjs",
         "check:tiles": "bun ./scripts/check-tiles.mjs",
+        "check:td": "bun ./scripts/check-td-overlay.mjs",
         "check:pipeline": "bun ./scripts/check-pipeline.mjs"
     }
 }

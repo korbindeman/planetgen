@@ -402,11 +402,11 @@ function generateMap() {
     overlayColorCache.clear();
     mapId++;
     equirectCache = null;
-    /* The tiles are coloured from this planet's climate, so a regenerate
-     * makes every existing colouring stale. */
-    TdOverlay.repaintSurfaces();
-    syncTdGridLevel();
+    /* World first, then the mesh id. Colouring is keyed to mapId, so a
+     * regenerate cannot keep the last planet's paint on these tiles. */
     TdOverlay.setContext(studio.project, studio.seed, studio.variant && studio.variant.id);
+    TdOverlay.setPlanet(mapId);
+    syncTdGridLevel();
     refreshTdCropList();
     studio.refreshPipeline();
     draw();
@@ -1816,10 +1816,12 @@ async function bakeTdDraft() {
     const tiles = TdOverlay.getPicked();
     if (!tiles.length) return;
     if (studio.ensureVariant) await studio.ensureVariant();
+    const asked = TdOverlay.snapshot();
     const bakeBtn = document.querySelector('#td-crop-list button');
     if (bakeBtn) bakeBtn.disabled = true;
     const failed = [];
     for (const tile of tiles) {
+        if (!TdOverlay.stillSameWorld(asked)) return;
         try {
             const res = await fetch(`${TdOverlay.TD_API}/jobs`, {
                 method: 'POST',
@@ -1832,6 +1834,7 @@ async function bakeTdDraft() {
             failed.push(`${Cubesphere.tileName(tile)}: ${err.message || err}`);
         }
     }
+    if (!TdOverlay.stillSameWorld(asked)) return;
     if (failed.length) window.alert(`Bake failed for ${failed.length} tile(s):\n${failed.join('\n')}`);
     else TdOverlay.clearPicked();
     TdOverlay.reload();

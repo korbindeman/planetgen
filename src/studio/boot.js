@@ -12,6 +12,7 @@ const EarthFixture = require('../earth-fixture');
 const Artifacts = require('../projects/artifacts');
 
 const ACTIVE_PROJECT_KEY = 'planetgen.activeProject';
+const ACTIVE_VARIANT_KEY = 'planetgen.activeVariant';
 
 
 function knownProject(name) {
@@ -31,6 +32,46 @@ function readStoredProject() {
 function writeStoredProject(name) {
     if (!knownProject(name)) return;
     try { localStorage.setItem(ACTIVE_PROJECT_KEY, name); } catch (_) { /* private mode / quota */ }
+}
+
+
+function storedVariantsOf(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out = {};
+    for (const [project, id] of Object.entries(raw)) {
+        if (knownProject(project) && Artifacts.isVariantId(id)) out[project] = id;
+    }
+    return out;
+}
+
+
+function nextStoredVariants(all, project, id) {
+    const out = Object.assign({}, storedVariantsOf(all));
+    if (knownProject(project) && Artifacts.isVariantId(id)) out[project] = id;
+    else if (knownProject(project)) delete out[project];
+    return out;
+}
+
+
+function readStoredVariants() {
+    try {
+        return storedVariantsOf(JSON.parse(localStorage.getItem(ACTIVE_VARIANT_KEY) || 'null'));
+    } catch (_) {
+        return {};
+    }
+}
+
+
+function readStoredVariant(project) {
+    return readStoredVariants()[project] || null;
+}
+
+
+function writeStoredVariant(project, id) {
+    if (!knownProject(project)) return;
+    try {
+        localStorage.setItem(ACTIVE_VARIANT_KEY, JSON.stringify(nextStoredVariants(readStoredVariants(), project, id)));
+    } catch (_) { /* private mode / quota */ }
 }
 
 
@@ -104,9 +145,14 @@ function syncAddressBar(project, seed, variant) {
 
 module.exports = {
     ACTIVE_PROJECT_KEY,
+    ACTIVE_VARIANT_KEY,
     knownProject,
     readStoredProject,
     writeStoredProject,
+    storedVariantsOf,
+    nextStoredVariants,
+    readStoredVariant,
+    writeStoredVariant,
     parseSeedParam,
     queryOf,
     resolveStartup,

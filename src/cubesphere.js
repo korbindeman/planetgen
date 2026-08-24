@@ -201,6 +201,21 @@ function tilePixel(tile, lonDeg, latDeg, width, height) {
     return tileProjector(tile, width, height)(lonDeg * DEG, latDeg * DEG);
 }
 
+/*
+ * The inverse of tilePixel: a raster sample (s, t) in [0, 1], row 0 at
+ * the north edge, back to lon/lat. The overlay and the exporter both have
+ * to go through this — a second copy is how a bake landed next to the
+ * cell it was picked from.
+ */
+function tileLonLat(tile, s, t) {
+    const e = tileExtent(tile);
+    return xyzToLonLat(faceDirection(
+        tile.face,
+        e.a0 + (e.a1 - e.a0) * s,
+        e.b1 + (e.b0 - e.b1) * t,
+    ));
+}
+
 /* Corners in raster order: NW, NE, SE, SW. */
 function tileCorners(tile) {
     const e = tileExtent(tile);
@@ -380,6 +395,7 @@ module.exports = {
     parseTileName,
     tileProjector,
     tilePixel,
+    tileLonLat,
     tileCorners,
     tileOutline,
     tileBBox,

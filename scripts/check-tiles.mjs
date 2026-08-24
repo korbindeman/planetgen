@@ -159,6 +159,28 @@ console.log("cubesphere tiles");
     check("tile corners map to raster corners, north-up", bad === 0, `${bad} skewed`);
 }
 
+/* 6b. The overlay sample (s, t) is the inverse of that raster. One
+ * function, so a bake cannot sit next to the cell it was picked from. */
+{
+    let bad = 0;
+    for (let k = 0; k < 2000; k++) {
+        const level = 1 + Math.floor(rnd() * 5);
+        const n = 1 << level;
+        const tile = {
+            face: Math.floor(rnd() * 6),
+            level,
+            i: Math.floor(rnd() * n),
+            j: Math.floor(rnd() * n),
+        };
+        const s = rnd();
+        const t = rnd();
+        const ll = Cube.tileLonLat(tile, s, t);
+        const px = Cube.tilePixel(tile, ll.lon, ll.lat, 256, 256);
+        if (!px || Math.abs(px.x - s * 256) > 1e-4 || Math.abs(px.y - t * 256) > 1e-4) bad++;
+    }
+    check("tileLonLat is the inverse of tilePixel", bad === 0, `${bad} misplaced`);
+}
+
 /* 7. The mapping stays continuous just past a tile edge. A mesh triangle
  * straddling the edge has to rasterize its share rather than fly off. */
 {

@@ -287,6 +287,49 @@ for (const project of Projects.PROJECTS) {
         && rows[1].variant.id === descendent.id && rows[1].depth === 1);
     check("the edge names what the child narrowed",
         rows[1].notes.some((note) => note.includes("crust")));
+    const other = Variants.ofWorking({
+        project: "thalos", seed: 12, pins, values: {plates: 10},
+    });
+    const pair = [variant, other];
+    check("a deep-linked variant wins over last and committed",
+        Variants.resumeId({
+            pendingId: other.id,
+            lastId: variant.id,
+            committed: variant.id,
+            variants: pair,
+        }) === other.id);
+    check("switching a project resumes the last selected variant",
+        Variants.resumeId({
+            lastId: other.id,
+            committed: variant.id,
+            variants: pair,
+        }) === other.id);
+    check("a project with no last selected opens the committed variant",
+        Variants.resumeId({committed: variant.id, variants: pair}) === variant.id);
+    check("an id that is not in the catalog is not a neighbour",
+        Variants.resumeId({
+            pendingId: "vmissing",
+            lastId: "vmissing",
+            committed: variant.id,
+            variants: pair,
+        }) === variant.id);
+    check("a seed query does not pick a variant",
+        Variants.resumeId({
+            pendingId: variant.id,
+            lastId: other.id,
+            committed: variant.id,
+            variants: pair,
+            seedFromQuery: true,
+        }) == null);
+    check("the fixture has no variant to resume",
+        Variants.resumeId({
+            lastId: variant.id,
+            committed: variant.id,
+            variants: pair,
+            fixture: true,
+        }) == null);
+    check("nothing is guessed when the catalog has no target",
+        Variants.resumeId({variants: pair}) == null);
 }
 
 /* 10. A crop is a folder. Whatever files it holds, the directory is what
@@ -376,6 +419,18 @@ for (const project of Projects.PROJECTS) {
     const seedOnly = Boot.resolveStartup({search: "?seed=42", stored: "thalos"});
     check("a seed query does not invent a variant",
         seedOnly.seed === 42 && seedOnly.variant == null && seedOnly.seedFromQuery === true);
+
+    const remembered = Boot.nextStoredVariants({thalos: "vabc123"}, "earth", null);
+    check("remembering one project's variant leaves the other alone",
+        remembered.thalos === "vabc123" && remembered.earth == null);
+    const switched = Boot.nextStoredVariants(remembered, "thalos", "vdef456");
+    check("switching back writes the last selected variant for that project",
+        switched.thalos === "vdef456" && switched.earth == null);
+    const junked = Boot.storedVariantsOf({thalos: "nope", kephos: "vabc123"});
+    check("a junk stored variant is dropped",
+        junked.thalos == null && junked.kephos == null);
+    check("a stored variant id is kept",
+        Boot.storedVariantsOf({thalos: "vabc123"}).thalos === "vabc123");
 }
 
 check("polarStraits is an exposed parameter",

@@ -425,6 +425,19 @@ function migrate(legacyKeeps, legacySeeds, project, adopted) {
 }
 
 
+/* Which saved variant a project should open.
+ * A deep link wins, then the last one this project had selected, then
+ * the committed instance. A seed in the query, or the fixture, means
+ * none — those are not a tree. A missing id is not replaced by the
+ * next row in the list. */
+function resumeId(input) {
+    if (input && (input.fixture || input.seedFromQuery)) return null;
+    const ids = new Set((input && input.variants || []).map((item) => item && item.id).filter(Boolean));
+    const pick = (id) => (id && ids.has(id) ? id : null);
+    return pick(input && input.pendingId) || pick(input && input.lastId) || pick(input && input.committed) || null;
+}
+
+
 /* Tightness vs vouched: 1 is a point, 0 is the full vouched box.
  * Unranged genes do not count. A variant with no ranges is 0. */
 function refinement(variant) {
@@ -476,5 +489,6 @@ module.exports = {
     serializeCatalog,
     commit,
     migrate,
+    resumeId,
     refinement,
 };
