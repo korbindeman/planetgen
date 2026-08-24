@@ -1,9 +1,11 @@
 /**
  * List a project's terrain-diffusion crops and serve their files.
  *
- * Writes live in preview/<name>/.
+ * A crop is a folder preview/<name>/crop-<id>/. The folder is the record;
+ * the files inside say how far it has got. Jobs, manifests and paint
+ * caches do not invent or replace that record.
  */
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join, normalize, relative, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -12,16 +14,17 @@ import { dirname } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(join(here, "..", "package.json"));
 const Projects = require(join(here, "..", "src", "projects"));
+const Cube = require(join(here, "..", "src", "cubesphere.js"));
 
 const PROJECT_PREFIX = "/preview/";
 
 
-export function projectBakeDir(root, project) {
-  return join(root, Projects.dir(project));
+export function projectBakeDir(root, project, variant) {
+  return join(root, Projects.bakeDir(project, variant || undefined));
 }
 
-export function projectUrlPrefix(project) {
-  return `${PROJECT_PREFIX}${Projects.byName(project).name}/`;
+export function projectUrlPrefix(project, variant) {
+  return `/${Projects.bakeDir(Projects.byName(project).name, variant || undefined)}/`;
 }
 
 function sameSeed(a, b) {
@@ -119,73 +122,75 @@ async function exists(path) {
   }
 }
 
-async function scanDir(root, dir, project, urlPrefix) {
+async function listCropFolders(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, {withFileTypes: true});
+  } catch {
+    return [];
+  }
+  return entries.filter((e) => e.isDirectory() && e.name.startsWith("crop-"));
+}
+
+/*
+ * One folder, one crop. Presence of the directory is what makes it exist;
+ * the files inside only say whether it is conditioned, baked, or a tile.
+ * A new artifact (another dump, a sidecar) cannot hide the folder, and a
+ * missing PNG cannot either — that is how a finished DEM used to vanish.
+ */
+async function readCrop(dir, folder, project, urlPrefix, listed, manifestSeed) {
+  const name = folder.replace(/^crop-/, "");
+  const folderPath = join(dir, folder);
+  const heightmap = join(folderPath, "heightmap.tif");
+  const hasHeightmap = await exists(heightmap);
+  const hasPng = await exists(join(folderPath, "output.png"));
+  const tile = await readTileSidecar(folderPath) || Cube.parseTileName(name);
+  const elevMeta = await readElevMeta(folderPath);
+  if (!hasHeightmap && !hasPng && !elevMeta && !tile) return null;
+
+  const bounds = (listed && Number.isFinite(listed.west) && listed)
+    || (tile && Cube.tileBBox(tile))
+    || (hasHeightmap ? await readTiffBounds(heightmap) : null);
+  if (!bounds || ![bounds.west, bounds.south, bounds.east, bounds.north].every(Number.isFinite)) {
+    return null;
+  }
+
+  const baked = !!elevMeta || hasPng;
+  return {
+    name,
+    dir: folder,
+    project,
+    tile,
+    west: bounds.west,
+    south: bounds.south,
+    east: bounds.east,
+    north: bounds.north,
+    seed: listed && listed.seed != null ? listed.seed : manifestSeed,
+    status: baked ? "done" : "conditioned",
+    image: hasPng ? `${urlPrefix}${folder}/output.png` : null,
+    elev: elevMeta ? `${urlPrefix}${folder}/output.elev` : null,
+    elevWidth: elevMeta ? elevMeta.width : 0,
+    elevHeight: elevMeta ? elevMeta.height : 0,
+    baked,
+    conditioned: hasHeightmap,
+  };
+}
+
+export async function cropHasBake(dir) {
+  return !!(await readElevMeta(dir)) || await exists(join(dir, "output.png"));
+}
+
+async function scanDir(dir, project, urlPrefix) {
   const manifest = await readManifest(dir);
   const byName = new Map((manifest.crops || []).map((c) => [c.name, c]));
   const crops = [];
-  const seen = new Set();
-  for (const pattern of ["crop-*/heightmap.tif", "crop-*/output.png"]) {
-    for await (const rel of new Bun.Glob(pattern).scan({cwd: dir})) {
-      const folder = rel.split("/")[0];
-      if (seen.has(folder)) continue;
-      seen.add(folder);
-      const name = folder.replace(/^crop-/, "");
-      const folderPath = join(dir, folder);
-      const heightmap = join(folderPath, "heightmap.tif");
-      const outputPng = join(folderPath, "output.png");
-      if (!(await exists(heightmap)) && !(await exists(outputPng))) continue;
-
-      const listed = byName.get(name);
-      const bounds = listed && Number.isFinite(listed.west)
-        ? listed
-        : await readTiffBounds(heightmap);
-      if (!bounds || ![bounds.west, bounds.south, bounds.east, bounds.north].every(Number.isFinite)) {
-        continue;
-      }
-
-      const tile = await readTileSidecar(folderPath);
-      /*
-       * The baked DEM in raw float metres, which is what the app draws from:
-       * it colours the tile with the globe's own look rather than pasting a
-       * PNG that was coloured once, at bake time, by whatever the settings
-       * were then.
-       */
-      const elevMeta = await readElevMeta(folderPath);
-      /*
-       * The elevation dump *is* the bake. A crop whose output.png never got
-       * written — the paint step died, or the run was interrupted — still has
-       * a real DEM, and used to sit in the list looking unbaked while its
-       * result lay on disk unread.
-       *
-       * These two are deliberately separate. `baked` says a result exists;
-       * `hasPng` says the fallback picture exists. Deriving the image url
-       * from `baked` would point it at a PNG that was never written.
-       */
-      const hasPng = await exists(outputPng);
-      const baked = !!elevMeta || hasPng;
-
-      crops.push({
-        name,
-        dir: folder,
-        project,
-        tile,
-        west: bounds.west,
-        south: bounds.south,
-        east: bounds.east,
-        north: bounds.north,
-        seed: listed && listed.seed != null ? listed.seed : manifest.seed,
-        /* "conditioned" means the GeoTIFFs the model reads exist but the
-         * bake has not run. It used to be called "sketch", which told you
-         * nothing about what to do next. */
-        status: baked ? "done" : "conditioned",
-        image: hasPng ? `${urlPrefix}${folder}/output.png` : null,
-        elev: elevMeta ? `${urlPrefix}${folder}/output.elev` : null,
-        elevWidth: elevMeta ? elevMeta.width : 0,
-        elevHeight: elevMeta ? elevMeta.height : 0,
-        baked,
-        conditioned: await exists(heightmap),
-      });
-    }
+  for (const entry of await listCropFolders(dir)) {
+    const crop = await readCrop(
+      dir, entry.name, project, urlPrefix,
+      byName.get(entry.name.replace(/^crop-/, "")),
+      manifest.seed,
+    );
+    if (crop) crops.push(crop);
   }
   return {
     seed: manifest.seed ?? null,
@@ -195,41 +200,16 @@ async function scanDir(root, dir, project, urlPrefix) {
   };
 }
 
-/*
- * The same crop can be listed twice if a scan overlaps. Take the better of
- * each *part* rather than the later folder, so a crop is never made worse
- * by whichever copy happened to be scanned first.
- */
-function mergeCrop(prev, next) {
-  if (!prev) return next;
-  const base = next.baked && !prev.baked ? next : prev;
-  const other = base === next ? prev : next;
-  const elevFrom = base.elev ? base : other;
-  return {
-    ...base,
-    image: base.image || other.image,
-    elev: elevFrom.elev,
-    elevWidth: elevFrom.elevWidth,
-    elevHeight: elevFrom.elevHeight,
-    tile: base.tile || other.tile,
-    baked: base.baked || other.baked,
-    conditioned: base.conditioned || other.conditioned,
-    status: base.baked || other.baked ? "done" : base.status,
-  };
-}
-
 export async function listTdOverlays(root, opts = {}) {
   const project = opts.project || null;
   const seed = opts.seed;
-  const byKey = new Map();
+  const variant = opts.variant && Projects.isVariantId(opts.variant) ? opts.variant : null;
+  const found = [];
 
   async function take(dir, proj, prefix) {
     if (!(await exists(dir))) return;
-    const listed = await scanDir(root, dir, proj, prefix);
-    for (const crop of listed.crops) {
-      const key = `${crop.project}/${crop.name}`;
-      byKey.set(key, mergeCrop(byKey.get(key), crop));
-    }
+    const listed = await scanDir(dir, proj, prefix);
+    found.push(...listed.crops);
     return listed;
   }
 
@@ -237,7 +217,11 @@ export async function listTdOverlays(root, opts = {}) {
   let lon0 = 0;
 
   if (project) {
-    const own = await take(projectBakeDir(root, project), project, projectUrlPrefix(project));
+    const own = await take(
+      projectBakeDir(root, project, variant),
+      project,
+      projectUrlPrefix(project, variant),
+    );
     if (own) {
       seedHint = own.seed;
       lon0 = own.lon0;
@@ -248,27 +232,32 @@ export async function listTdOverlays(root, opts = {}) {
     }
   }
 
-  let crops = [...byKey.values()];
-  if (project) crops = crops.filter((c) => c.project === project);
+  let crops = project ? found.filter((c) => c.project === project) : found;
   if (seed != null && seed !== "") {
     crops = crops.filter((c) => sameSeed(c.seed, seed) || c.seed == null || c.seed === "");
   }
   crops.sort((a, b) => a.name.localeCompare(b.name));
+  if (variant) {
+    for (const crop of crops) crop.variant = variant;
+  }
   return {
     seed: seedHint,
     lon0,
     project,
+    variant,
     crops,
   };
 }
 
-export async function pipelineFact(root, {project, seed}) {
+export async function pipelineFact(root, {project, seed, variant}) {
   const authored = Projects.byName(project).pipeline || {};
-  const all = await listTdOverlays(root, {project});
-  const matching = seed != null && seed !== ""
-    ? all.crops.filter((c) => sameSeed(c.seed, seed) || c.seed == null || c.seed === "")
-    : all.crops;
-  const otherSeed = all.crops.length > 0 && matching.length === 0;
+  const listed = await listTdOverlays(root, {project, variant});
+  const matching = variant
+    ? listed.crops
+    : (seed != null && seed !== ""
+      ? listed.crops.filter((c) => sameSeed(c.seed, seed) || c.seed == null || c.seed === "")
+      : listed.crops);
+  const otherSeed = !variant && listed.crops.length > 0 && matching.length === 0;
 
   const conditioned = matching.filter((c) => c.conditioned);
   const baked = matching.filter((c) => c.baked);
@@ -299,6 +288,7 @@ export async function pipelineFact(root, {project, seed}) {
   return {
     project,
     seed: seed ?? null,
+    variant: variant || null,
     stages: Projects.STAGES.map((s) => {
       if (s.id === "base") return stage("base", "on screen");
       if (s.id === "conditioning") return stage("conditioning", condFact);

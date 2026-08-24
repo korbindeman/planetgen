@@ -168,7 +168,7 @@ const TECTONICS = {
     },
 
     polar: {
-        polarStraits:       p('bool'),
+        polarStraits:       p('bool', null, true),
         polarCapLat:        p('deg'),
         polarCapLand:       p('frac'),
         polarStraitLat:     p('deg'),
@@ -339,9 +339,10 @@ const WORLD = {
     body: {
         radiusKm:      p('km',   [1000, 20000], true),
         gravityG:      p('1',    [0.1, 3], true),
-        /* Solved for exactly, so this is what you get rather than what you
-         * aim at. Null leaves sea level where the crust puts it. */
-        landFraction:  p('frac', [0.05, 0.95], true),
+        /* Not a parameter. Dry share is an output of crust and water.
+         * The solver still accepts a number if a test asks; default null
+         * leaves sea level where the crust puts it. */
+        landFraction:  p('frac'),
         rotationHours: p('h',    [4, 200], true),
         axialTiltDeg:  p('deg',  [0, 90], true),
         ageGyr:        p('Gyr',  [0.5, 10], true),
@@ -553,27 +554,86 @@ function checkRanges() {
 }
 
 
-/* A project is a named set of pins: every parameter it names is decided,
- * everything it omits is free. Validating one is the same question the
- * registry already answers for DEFAULTS — does this name a parameter that
- * exists, and is the value one the generator can actually use. */
+/* Catalogue body. landFraction is not among these. Water is not a
+ * registered parameter yet — seaLevelThicknessKm is still the dial. */
+const BODY_NAMES = [
+    'radiusKm', 'gravityG', 'rotationHours', 'axialTiltDeg', 'ageGyr',
+];
+
+
+function isBody(name) {
+    return BODY_NAMES.includes(name);
+}
+
+
+function bodyNames() {
+    return BODY_NAMES.slice();
+}
+
+
+function pickBody(values) {
+    const out = {};
+    for (const name of BODY_NAMES) {
+        const value = values && values[name];
+        if (typeof value === 'number' && Number.isFinite(value)) out[name] = value;
+    }
+    return out;
+}
+
+
+function checkValue(label, name, value) {
+    const meta = all()[name];
+    if (!meta) return `${label}: "${name}" is not a registered parameter`;
+    if (meta.default != null && typeof value !== typeof meta.default) {
+        return `${label}.${name}: ${typeof value} where the default is ${typeof meta.default}`;
+    }
+    if (meta.unit === 'frac' && typeof value === 'number' && (value < 0 || value > 1)) {
+        return `${label}.${name}: fraction ${value} leaves 0..1`;
+    }
+    return null;
+}
+
+
+/* A project file holds a body. A fixture may also hold authored knobs
+ * and a seed token. Caller overlays (studio, a variant recipe) are
+ * checked with checkValues, not this. */
 function checkProject(project) {
     const problems = [];
-    const registry = all();
     if (!project || typeof project !== 'object') return ['project is not an object'];
     if (!project.name) problems.push('project has no name');
-    for (const [name, value] of Object.entries(project.values || {})) {
-        const meta = registry[name];
-        if (!meta) {
-            problems.push(`${project.name}: "${name}" is not a registered parameter`);
-            continue;
+    const label = project.name || 'project';
+    if (project.fixture) {
+        if (project.seed == null || project.seed === '') {
+            problems.push(`${label}: fixture has no seed token`);
         }
-        if (meta.default != null && typeof value !== typeof meta.default) {
-            problems.push(`${project.name}.${name}: ${typeof value} where the default is ${typeof meta.default}`);
+    } else {
+        if (project.seed != null) problems.push(`${label}: a project must not hold a seed`);
+        if (project.values && Object.keys(project.values).length) {
+            problems.push(`${label}: a project must not hold a values bag`);
         }
-        if (meta.unit === 'frac' && typeof value === 'number' && (value < 0 || value > 1)) {
-            problems.push(`${project.name}.${name}: fraction ${value} leaves 0..1`);
+    }
+    for (const [name, value] of Object.entries(project.body || {})) {
+        if (!isBody(name)) problems.push(`${label}.${name}: is not a body parameter`);
+        const problem = checkValue(label, name, value);
+        if (problem) problems.push(problem);
+    }
+    if (project.fixture) {
+        for (const [name, value] of Object.entries(project.values || {})) {
+            const problem = checkValue(label, name, value);
+            if (problem) problems.push(problem);
         }
+    }
+    return problems;
+}
+
+
+function checkValues(label, values) {
+    const problems = [];
+    if (values == null) return problems;
+    if (typeof values !== 'object' || Array.isArray(values)) return [`${label}: values is not an object`];
+    for (const [name, value] of Object.entries(values)) {
+        const problem = checkValue(label, name, value);
+        if (problem) problems.push(problem);
     }
     return problems;
 }
@@ -595,10 +655,16 @@ module.exports = {
     getOverlay,
     setOverlay,
     checkOverlay,
+    BODY_NAMES,
+    isBody,
+    bodyNames,
+    pickBody,
     freeable,
     exposed,
     needsNormalisation,
     checkKeys,
     checkRanges,
+    checkValue,
     checkProject,
+    checkValues,
 };

@@ -28,15 +28,19 @@ function run(input = {}, cache = {}) {
     const planet = createPlanet(config);
 
     stages.tectonics(planet, cache);
-    stages.climate(planet, planet.sim.mesh, planet.sim.map);
-    stages.detail(planet, cache);
-    stages.erosion(planet);
-    stages.seaLevel(planet);
-    if (config.climateOn === 'surface') {
-        const vis = planet.detail || planet.sim;
-        stages.climate(planet, vis.mesh, vis.map);
+    if (!config.baseOnly) {
+        stages.climate(planet, planet.sim.mesh, planet.sim.map);
+        stages.detail(planet, cache);
+        stages.erosion(planet);
     }
-    stages.geometry(planet);
+    stages.seaLevel(planet);
+    if (!config.baseOnly) {
+        if (config.climateOn === 'surface') {
+            const vis = planet.detail || planet.sim;
+            stages.climate(planet, vis.mesh, vis.map);
+        }
+        stages.geometry(planet);
+    }
 
     return toLegacy(planet);
 }

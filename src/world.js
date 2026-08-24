@@ -47,10 +47,9 @@ const DEFAULTS = {
      * why Olympus Mons is 22 km tall at 0.38 g. */
     gravityG: 1,
 
-    /* Share of the surface above sea level, as a target to solve for rather
-     * than a number to hope for. Null means do not solve: sea level stays
-     * where `seaLevelThicknessKm` puts it and land comes out where it comes
-     * out, which is what the model did before this existed. */
+    /* Not a parameter. The solver still accepts a number if a test asks.
+     * Null means do not solve: sea level stays where `seaLevelThicknessKm`
+     * puts it and land comes out where it comes out. */
     landFraction: null,
 
     /* Length of the day. Sets how wide the Hadley cells are, and so where

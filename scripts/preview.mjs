@@ -29,6 +29,7 @@ import { createRequire } from "node:module";
 import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveRun } from "./project-run.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
@@ -100,10 +101,12 @@ const OVERLAY_VIEWS = { plates: PLATES, crust: CRUST, climate: CLIMATE };
 
 const { views, lon0, seed, project, overlay, connectOceans, noTectonics, noPolarStraits } = parseArgs(process.argv.slice(2));
 const VIEWS = OVERLAY_VIEWS[overlay] ?? GEOGRAPHY;
+const run = await resolveRun(root, Projects, project, seed);
 
 const planet = Planet.generatePlanet({
-  seed,
-  project,
+  seed: run.seed,
+  project: run.project,
+  values: run.values,
   simulateTectonics: !noTectonics,
   polarStraits: !noPolarStraits,
   connectOceans,

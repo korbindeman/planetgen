@@ -6,52 +6,21 @@
  * Adapting mapgen4 code for a sphere. Quick & dirty, for procjam2018
  */
 
-function seedFromUrl() {
-    try {
-        const q = new URLSearchParams(location.search).get('seed');
-        if (q == null || q === '') return null;
-        if (String(q).trim().toLowerCase() === 'earth') return 'earth';
-        const n = Number(q);
-        return Number.isFinite(n) ? (n | 0) : null;
-    } catch (_) {
-        return null;
-    }
-}
-
-function projectFromUrl() {
-    try {
-        const q = new URLSearchParams(location.search).get('project');
-        if (q == null || q === '') return null;
-        const name = String(q).trim().toLowerCase();
-        return name === 'earth' || name === 'thalos' ? name : null;
-    } catch (_) {
-        return null;
-    }
-}
-
 const colormap = require('./colormap');
 const {vec3, vec4, mat4, quat} = require('gl-matrix');
 const Tectonics = require('./tectonics');
-const EarthFixture = require('./earth-fixture');
 const Detail = require('./detail');
-const Projects = require('./projects');
-const Params = require('./params');
-const Search = require('./search');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 const Planet = require('./planet');
 const Look = require('./look');
 const TdOverlay = require('./td-overlay');
 const TdTile = require('./td-tile');
 const Cubesphere = require('./cubesphere');
+const Studio = require('./studio');
 const {clamp01} = Tectonics;
 
-const urlSeed = seedFromUrl();
-const urlProject = projectFromUrl();
-let activeProject = EarthFixture.isEarthSeed(urlSeed) ? 'earth' : (urlProject || Projects.DEFAULT);
-let pins = Object.assign({}, Projects.byName(activeProject).values);
-let seed = urlSeed != null
-    ? (EarthFixture.isEarthSeed(urlSeed) ? EarthFixture.TOKEN : urlSeed)
-    : Projects.byName(activeProject).seed;
+const startup = Studio.resolveStartup();
+const studio = Studio.createSession(startup);
 
 const regl = require('regl')({
     canvas: "#output",
@@ -71,7 +40,6 @@ const SURFACE_GLSL = Look.SURFACE_GLSL;
 
 /* UI parameters */
 let N = 10000;
-let P = 20;
 let jitter = 0.75;
 let rotation = -1;
 let dragRotation = mat4.create();
@@ -79,16 +47,13 @@ let zoom = 1;
 let northHeadingAngle = 0;
 let viewAnimId = 0;
 let drawMode = 'quads';
-let viewMode = 'globe';
+let viewMode = 'equirect';
 let draw_plateVectors = false;
 let draw_plateBoundaries = false;
 let merge_ocean_plates = false;
 let connect_oceans = false;
-let polar_straits = true;
 let simulate_tectonics = true;
-let sim_steps = Tectonics.DEFAULTS.steps;
 let detail_pass = true;
-let detailN = Detail.DEFAULTS.n;
 let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate'
 let previewYaw = 0;
 
@@ -110,46 +75,26 @@ let equirectZoom = 1;
 
 window.__PLANET_READY__ = false;
 
-window.setN = newN => { N = newN; generateMesh(); };
-window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
-/* Plate count is a registered parameter now, so the Planet panel renders it
-   and this is only the seam `embed.html` still drives it through. */
-window.setP = newP => setParam('plates', newP);
-window.setRotation = newRotation => { rotation = newRotation; draw(); };
-window.setDrawMode = newMode => {
-    if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(newMode) === -1) return;
-    drawMode = newMode;
-    syncModeButtons();
-    draw();
-};
-window.setViewMode = newMode => { applyViewMode(newMode); syncModeButtons(); };
-window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
-window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
-window.setMergeOceanPlates = flag => { merge_ocean_plates = !!flag; generateMap(); };
-window.setConnectOceans = flag => { connect_oceans = !!flag; generateMap(); };
-window.setPolarStraits = flag => { polar_straits = !!flag; markProjectModified(); generateMap(); };
-window.setSimulateTectonics = flag => { simulate_tectonics = !!flag; generateMap(); };
-window.setSimSteps = steps => {
-    sim_steps = Math.max(0, steps | 0);
-    const label = document.getElementById('sim-steps-label');
-    if (label) label.textContent = `${sim_steps * lastResolved.options.tectonics.stepMyr} Myr`;
-    markProjectModified();
-    generateMap();
-};
-window.setDetailPass = flag => { detail_pass = !!flag; generateMap(); };
-window.setDetailN = n => { detailN = Math.max(0, n | 0); generateMap(); };
-window.getSeed = () => seed;
-window.setTdCrops = flag => {
+function setTdCrops(flag) {
     TdOverlay.setEnabled(flag);
     const list = document.getElementById('td-crop-list');
     if (list) list.hidden = !flag;
     const toggle = document.getElementById('td-crops-toggle');
     if (toggle) toggle.checked = !!flag;
     draw();
-};
+}
 
 function enableTdCrops() {
-    if (!TdOverlay.isEnabled()) window.setTdCrops(true);
+    if (!TdOverlay.isEnabled()) setTdCrops(true);
+}
+
+function setProcess(key, value) {
+    if (key === 'simulateTectonics') simulate_tectonics = !!value;
+    else if (key === 'detailPass') detail_pass = !!value;
+    else if (key === 'mergeOceanPlates') merge_ocean_plates = !!value;
+    else if (key === 'connectOceans') connect_oceans = !!value;
+    else return;
+    generateMap();
 }
 
 const renderPoints = regl({
@@ -387,563 +332,6 @@ void main() {
  * Geometry
  */
 
-function parseSeed(raw) {
-    const text = String(raw).trim();
-    if (EarthFixture.isEarthSeed(text)) return EarthFixture.TOKEN;
-    const n = Number(text);
-    if (!Number.isFinite(n)) return null;
-    return n | 0;
-}
-
-function applySeed(next) {
-    if (EarthFixture.isEarthSeed(next)) {
-        seed = EarthFixture.TOKEN;
-    } else {
-        seed = (next | 0);
-        if (seed === 0) seed = 1;
-    }
-    const input = document.getElementById('seed-input');
-    if (input) input.value = String(seed);
-    syncSavedSeedsUI();
-}
-
-const SEED_HISTORY_MAX = 50;
-let seedHistory = [seed];
-let seedHistoryIndex = 0;
-
-function syncSeedHistoryButtons() {
-    const undo = document.getElementById('seed-undo');
-    const redo = document.getElementById('seed-redo');
-    if (undo) undo.disabled = seedHistoryIndex <= 0;
-    if (redo) redo.disabled = seedHistoryIndex >= seedHistory.length - 1;
-}
-
-function commitSeed(next) {
-    applySeed(next);
-    if (seedHistory[seedHistoryIndex] === seed) {
-        syncSeedHistoryButtons();
-        return;
-    }
-    seedHistory = seedHistory.slice(0, seedHistoryIndex + 1);
-    seedHistory.push(seed);
-    if (seedHistory.length > SEED_HISTORY_MAX) {
-        seedHistory = seedHistory.slice(seedHistory.length - SEED_HISTORY_MAX);
-    }
-    seedHistoryIndex = seedHistory.length - 1;
-    generateMesh();
-    syncSeedHistoryButtons();
-}
-
-window.setSeed = next => {
-    const parsed = parseSeed(next);
-    if (parsed == null) {
-        const input = document.getElementById('seed-input');
-        if (input) input.value = String(seed);
-        return;
-    }
-    if (EarthFixture.isEarthSeed(parsed) && activeProject !== 'earth') {
-        window.loadProject('earth');
-        return;
-    }
-    commitSeed(parsed);
-};
-/* Override a tectonic option and rebuild, so a parameter can be judged from a
-   capture without editing the file. Preview scripts use this; the UI does not. */
-window.setTectonicOption = (key, value) => {
-    if (!(key in Tectonics.DEFAULTS)) throw new Error(`unknown tectonic option: ${key}`);
-    pins[key] = value;
-    markProjectModified();
-    applyPins(true);
-};
-window.setDetailOption = (key, value) => {
-    if (!(key in Detail.DEFAULTS)) throw new Error(`unknown detail option: ${key}`);
-    pins[key] = value;
-    if (key === 'n') detailN = value | 0;
-    markProjectModified();
-    applyPins(true);
-};
-/* Projects and parameters.
- *
- * A project is a named set of pins: it decides the parameters it names and
- * leaves the rest free. The panel is that object made visible — `pins`
- * *is* a project's `values`, so loading one copies it and editing one adds
- * to it. Controls are generated from `params.js` rather than written out
- * here, so a newly registered parameter appears on its own and there is no
- * second list to keep in step.
- *
- * Applying always resolves the whole set from the pristine defaults, so a
- * parameter that stops being pinned goes back to its default instead of
- * keeping the last value it happened to have.
- */
-let projectModified = false;
-
-const MODULE_ORDER = ['world', 'tectonics', 'climate', 'detail'];
-const GROUP_LABEL = {body: 'Body', history: 'History', continents: 'Continents',
-                     volcanism: 'Volcanism', mesh: 'Detail mesh'};
-
-function paramOrder() {
-    const registry = Params.all();
-    return Params.exposed().slice().sort((a, b) => {
-        const ma = MODULE_ORDER.indexOf(registry[a].module);
-        const mb = MODULE_ORDER.indexOf(registry[b].module);
-        return ma - mb || a.localeCompare(b);
-    });
-}
-
-function paramValue(name) {
-    return name in pins ? pins[name] : Projects.PRISTINE[Params.all()[name].module][name];
-}
-
-function formatValue(meta, value) {
-    if (value == null) return 'free';
-    if (typeof value === 'boolean') return value ? 'on' : 'off';
-    if (meta.unit === 'count' || meta.unit === 'step' || meta.unit === 'km' || meta.unit === 'm') {
-        return String(Math.round(value));
-    }
-    if (meta.unit === 'frac' || meta.unit === '1') return value.toFixed(3);
-    return String(Math.round(value * 10) / 10);
-}
-
-/* `simSteps`, `polarStraits` and `detailN` are passed to the generator from
-   the app's own state (see generateMap). They follow the resolved project,
-   not the module DEFAULTS. */
-function syncProjectShadowedState() {
-    const tectonics = lastResolved.options.tectonics;
-    const detail = lastResolved.options.detail;
-    sim_steps = tectonics.steps;
-    polar_straits = tectonics.polarStraits !== false;
-    detailN = detail.n;
-    P = tectonics.plates;
-
-    const steps = document.getElementById('sim-steps');
-    if (steps) steps.value = String(sim_steps);
-    const label = document.getElementById('sim-steps-label');
-    if (label) label.textContent = `${sim_steps * tectonics.stepMyr} Myr`;
-    const polar = document.getElementById('polar-straits');
-    if (polar) polar.checked = polar_straits;
-}
-
-function renderParams() {
-    const host = document.getElementById('param-list');
-    if (!host) return;
-    host.textContent = '';
-    const registry = Params.all();
-    let lastGroup = null;
-
-    for (const name of paramOrder()) {
-        const meta = registry[name];
-        const pinned = name in pins;
-        const value = paramValue(name);
-
-        if (meta.group !== lastGroup) {
-            lastGroup = meta.group;
-            const heading = document.createElement('div');
-            heading.className = 'param-group';
-            heading.textContent = GROUP_LABEL[meta.group] || meta.group;
-            host.append(heading);
-        }
-
-        const row = document.createElement('div');
-        row.className = pinned ? 'param' : 'param free';
-
-        const head = document.createElement('div');
-        head.className = 'param-head';
-
-        const pin = document.createElement('button');
-        pin.type = 'button';
-        pin.className = 'param-pin';
-        pin.textContent = pinned ? '◉' : '○';
-        pin.setAttribute('aria-pressed', String(pinned));
-        pin.title = pinned ? `${name} is pinned by this project — click to free it`
-                           : `${name} is free — click to pin it at its current value`;
-        pin.onclick = () => toggleParamPin(name);
-
-        const label = document.createElement('span');
-        label.className = 'param-name';
-        label.textContent = name;
-
-        const readout = document.createElement('span');
-        readout.className = 'param-value';
-        readout.textContent = formatValue(meta, value);
-
-        head.append(pin, label, readout);
-        row.append(head);
-
-        if (meta.range) {
-            const [lo, hi] = meta.range;
-            const slider = document.createElement('input');
-            slider.type = 'range';
-            slider.min = String(lo);
-            slider.max = String(hi);
-            slider.step = (meta.unit === 'count' || meta.unit === 'step') ? '1' : String((hi - lo) / 200);
-            /* A free parameter still has to show something, so an unset one
-               sits at the middle of its range rather than at zero. */
-            slider.value = String(value == null ? (lo + hi) / 2 : value);
-            slider.oninput = () => { readout.textContent = formatValue(meta, slider.valueAsNumber); };
-            slider.onchange = () => setParam(name, slider.valueAsNumber);
-            row.append(slider);
-        }
-
-        host.append(row);
-    }
-}
-
-function renderProjectState() {
-    const state = document.getElementById('project-state');
-    if (!state) return;
-    const count = Object.keys(pins).length;
-    state.textContent = projectModified ? `${count} pinned, edited` : `${count} pinned`;
-}
-
-let pipelineFact = null;
-let pipelineBakeBusy = false;
-
-function renderPipeline() {
-    const host = document.getElementById('project-pipeline');
-    if (!host) return;
-    const authored = Projects.byName(activeProject);
-    const notes = authored.pipeline || {};
-    const factById = new Map((pipelineFact && pipelineFact.stages || []).map((s) => [s.id, s]));
-    host.textContent = '';
-    host.hidden = false;
-
-    const heading = document.createElement('div');
-    heading.className = 'param-group';
-    heading.textContent = 'Pipeline';
-    host.append(heading);
-
-    for (const stage of Projects.STAGES) {
-        const live = factById.get(stage.id);
-        const intent = (live && live.intent) || notes[stage.id] || '';
-        const fact = live ? live.fact : '';
-        const empty = !intent && !fact;
-        const later = intent === 'later';
-        const row = document.createElement('div');
-        row.className = 'pipeline-row'
-            + (empty ? ' is-empty' : '')
-            + (later ? ' is-later' : '')
-            + (fact === 'stale' ? ' is-stale' : '');
-        if (stage.title) row.title = stage.title;
-
-        const label = document.createElement('span');
-        label.className = 'stage';
-        label.textContent = stage.label;
-
-        const right = document.createElement('span');
-        right.className = 'status';
-        const shown = live ? (fact || '—') : (empty ? '—' : intent);
-        right.textContent = shown;
-        if (intent && intent !== shown) right.title = intent;
-
-        const tail = document.createElement('span');
-        tail.className = 'pipeline-tail';
-        tail.append(right);
-
-        if (stage.id === 'regional' && live && live.canBake && pipelineFact) {
-            const bake = document.createElement('button');
-            bake.type = 'button';
-            bake.className = 'pipeline-action';
-            bake.textContent = pipelineBakeBusy ? 'Baking…' : 'Bake previews';
-            bake.disabled = pipelineBakeBusy;
-            bake.onclick = () => bakeProjectPreviews();
-            tail.append(bake);
-        }
-
-        row.append(label, tail);
-        host.append(row);
-    }
-}
-
-async function refreshPipeline() {
-    TdOverlay.setContext(activeProject, seed);
-    try {
-        const q = new URLSearchParams({project: activeProject, seed: String(seed)});
-        const res = await fetch(`${TdOverlay.TD_API}/pipeline?${q}`);
-        if (res.ok) pipelineFact = await res.json();
-    } catch {
-        /* authored notes only */
-    }
-    renderPipeline();
-}
-
-async function bakeProjectPreviews() {
-    if (pipelineBakeBusy) return;
-    pipelineBakeBusy = true;
-    renderPipeline();
-    enableTdCrops();
-    try {
-        const res = await fetch(`${TdOverlay.TD_API}/preview-bakes`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                project: activeProject,
-                seed,
-                values: pins,
-                connectOceans: connect_oceans,
-            }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        TdOverlay.reload();
-        startTdJobPoll();
-        await refreshPipeline();
-    } catch (err) {
-        window.alert(`Bake previews failed: ${err.message || err}`);
-    } finally {
-        pipelineBakeBusy = false;
-        renderPipeline();
-    }
-}
-
-let lastResolved = Projects.resolve({name: activeProject, values: pins});
-
-/* Resolve the whole constraint set. The models read it as a frozen
-   snapshot passed into generatePlanet — not by mutating DEFAULTS. */
-function applyPins(rebuild) {
-    lastResolved = Projects.resolve({name: activeProject, values: pins});
-    syncProjectShadowedState();
-    renderParams();
-    renderProjectState();
-    renderPipeline();
-    if (rebuild) generateMesh();
-}
-
-/* Setting a value is what deciding one looks like, so it pins. */
-function setParam(name, value) {
-    pins[name] = value;
-    projectModified = true;
-    applyPins(true);
-}
-
-function toggleParamPin(name) {
-    if (name in pins) delete pins[name];
-    else pins[name] = paramValue(name);
-    projectModified = true;
-    applyPins(true);
-}
-
-/* Any change to a registered parameter after a load means the planet on
-   screen is no longer the project, so say so rather than keep claiming it. */
-function markProjectModified() {
-    if (projectModified) return;
-    projectModified = true;
-    renderProjectState();
-}
-
-window.loadProject = name => {
-    if (searchSession) exitSearch();
-    const project = Projects.byName(name);
-    activeProject = project.name;
-    pins = Object.assign({}, project.values);
-    projectModified = false;
-
-    const select = document.getElementById('project-select');
-    if (select) select.value = activeProject;
-
-    applyPins(false);
-
-    /* A project with no seed is a change of pins, not a change of planet.
-       commitSeed returns early without rebuilding when the seed is already
-       what it asks for, so reloading a project onto its own seed has to
-       rebuild here or the pins would change and the planet would not. */
-    const before = seed;
-    if (project.seed != null) commitSeed(project.seed);
-    if (project.seed == null || seed === before) generateMesh();
-    renderSearchChrome();
-};
-
-/* Nothing used to show which view or draw mode was active. */
-function syncModeButtons() {
-    for (const b of document.querySelectorAll('#view-mode button')) {
-        b.setAttribute('aria-pressed', String(b.dataset.view === viewMode));
-    }
-    for (const b of document.querySelectorAll('#draw-mode button')) {
-        b.setAttribute('aria-pressed', String(b.dataset.draw === drawMode));
-    }
-}
-
-function populateProjectUI() {
-    const select = document.getElementById('project-select');
-    if (select) {
-        for (const project of Projects.PROJECTS) {
-            const option = document.createElement('option');
-            option.value = project.name;
-            option.textContent = project.label;
-            select.append(option);
-        }
-        select.value = activeProject;
-    }
-    applyPins(false);
-    syncModeButtons();
-    renderSearchChrome();
-}
-
-window.shuffleSeed = () => {
-    let next;
-    do { next = (Math.random() * 0x7fffffff) | 0; } while (next === seed);
-    commitSeed(next);
-};
-window.undoSeed = () => {
-    if (seedHistoryIndex <= 0) return;
-    seedHistoryIndex--;
-    applySeed(seedHistory[seedHistoryIndex]);
-    generateMesh();
-    syncSeedHistoryButtons();
-};
-window.redoSeed = () => {
-    if (seedHistoryIndex >= seedHistory.length - 1) return;
-    seedHistoryIndex++;
-    applySeed(seedHistory[seedHistoryIndex]);
-    generateMesh();
-    syncSeedHistoryButtons();
-};
-
-const SAVED_SEEDS_KEY = 'planetgen.savedSeeds';
-const SAVED_SEED_NAME_MAX = 48;
-
-function readSavedSeeds() {
-    try {
-        const raw = localStorage.getItem(SAVED_SEEDS_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        const seen = new Set();
-        const items = [];
-        for (const item of parsed) {
-            const parsedSeed = parseSeed(item && item.seed);
-            if (parsedSeed == null) continue;
-            const nextSeed = parsedSeed === 0 ? 1 : parsedSeed;
-            if (seen.has(nextSeed)) continue;
-            seen.add(nextSeed);
-            const name = item && typeof item.name === 'string'
-                ? item.name.trim().slice(0, SAVED_SEED_NAME_MAX)
-                : '';
-            items.push({seed: nextSeed, name});
-        }
-        return items;
-    } catch (_) {
-        return [];
-    }
-}
-
-function writeSavedSeeds(items) {
-    try {
-        localStorage.setItem(SAVED_SEEDS_KEY, JSON.stringify(items));
-    } catch (_) {
-        /* private mode / quota */
-    }
-}
-
-function renderSavedSeedsList(items) {
-    const list = document.getElementById('saved-seeds-list');
-    if (!list) return;
-    list.replaceChildren();
-    if (!items.length) {
-        const empty = document.createElement('div');
-        empty.className = 'saved-seeds-empty';
-        empty.textContent = 'No saved seeds';
-        list.append(empty);
-        return;
-    }
-    for (const item of items) {
-        const row = document.createElement('div');
-        row.className = 'saved-seed-row' + (item.seed === seed ? ' is-current' : '');
-
-        const load = document.createElement('button');
-        load.type = 'button';
-        load.className = 'saved-seed-item';
-        load.title = item.name ? `${item.name} (${item.seed})` : String(item.seed);
-        load.addEventListener('click', () => window.setSeed(item.seed));
-
-        const label = document.createElement('span');
-        label.className = 'saved-seed-name';
-        label.textContent = item.name || String(item.seed);
-
-        load.append(label);
-        if (item.name) {
-            const num = document.createElement('span');
-            num.className = 'saved-seed-num';
-            num.textContent = String(item.seed);
-            load.append(num);
-        }
-
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'saved-seed-delete';
-        del.setAttribute('aria-label', `Remove ${item.name || item.seed}`);
-        del.textContent = '×';
-        del.addEventListener('click', () => {
-            writeSavedSeeds(readSavedSeeds().filter(entry => entry.seed !== item.seed));
-            syncSavedSeedsUI();
-        });
-
-        row.append(load, del);
-        list.append(row);
-    }
-}
-
-function syncSavedSeedsUI() {
-    const items = readSavedSeeds();
-    const current = items.find(item => item.seed === seed);
-    const nameInput = document.getElementById('saved-seed-name');
-    if (nameInput && document.activeElement !== nameInput) {
-        nameInput.value = current ? current.name : '';
-    }
-    const saveBtn = document.querySelector('#saved-seeds-form button[type="submit"]');
-    if (saveBtn) saveBtn.textContent = current ? 'Update' : 'Save';
-    renderSavedSeedsList(items);
-}
-
-function positionSavedSeedsPopover() {
-    const button = document.getElementById('saved-seeds-btn');
-    const popover = document.getElementById('saved-seeds-popover');
-    if (!button || !popover) return;
-    const rect = button.getBoundingClientRect();
-    const gap = 8;
-    const width = Math.min(272, window.innerWidth - 16);
-    let left = rect.right + gap;
-    let top = rect.top;
-    if (left + width > window.innerWidth - 8) {
-        left = Math.max(8, window.innerWidth - width - 8);
-        top = rect.bottom + gap;
-    }
-    const maxTop = window.innerHeight - 16;
-    popover.style.width = `${width}px`;
-    popover.style.left = `${left}px`;
-    popover.style.top = `${Math.min(top, maxTop)}px`;
-    popover.style.transformOrigin = `${Math.max(0, rect.left - left)}px ${Math.max(0, rect.top - top)}px`;
-}
-
-function setupSavedSeeds() {
-    const form = document.getElementById('saved-seeds-form');
-    const popover = document.getElementById('saved-seeds-popover');
-    if (form) {
-        form.addEventListener('submit', event => {
-            event.preventDefault();
-            const nameInput = document.getElementById('saved-seed-name');
-            const name = nameInput ? nameInput.value.trim().slice(0, SAVED_SEED_NAME_MAX) : '';
-            const rest = readSavedSeeds().filter(item => item.seed !== seed);
-            writeSavedSeeds([{seed, name}, ...rest]);
-            syncSavedSeedsUI();
-        });
-    }
-    if (popover) {
-        popover.addEventListener('toggle', event => {
-            const open = event.newState === 'open';
-            document.getElementById('saved-seeds-btn')?.setAttribute('aria-expanded', open ? 'true' : 'false');
-            if (!open) return;
-            syncSavedSeedsUI();
-            positionSavedSeedsPopover();
-            const nameInput = document.getElementById('saved-seed-name');
-            if (nameInput) nameInput.focus();
-        });
-        window.addEventListener('resize', () => {
-            if (popover.matches(':popover-open')) positionSavedSeedsPopover();
-        });
-    }
-    syncSavedSeedsUI();
-}
-
 function generateVoronoiGeometry(mesh, {r_xyz, t_xyz}, r_color_fn) {
     const {numSides} = mesh;
     let xyz = new Float32Array(3 * 3 * numSides),
@@ -985,23 +373,26 @@ var planetCache = {};
 function generateMesh() {
     planetCache.sim = null;
     generateMap();
+    studio.setPlanetReady(true);
 }
 
 function generateMap() {
+    const tectonics = studio.lastResolved.options.tectonics;
+    const detail = studio.lastResolved.options.detail;
     const result = Planet.generatePlanet({
-        seed,
+        seed: studio.seed,
         n: N,
-        p: P,
+        p: tectonics.plates,
         jitter,
         simulateTectonics: simulate_tectonics,
-        simSteps: sim_steps,
-        polarStraits: polar_straits,
+        simSteps: tectonics.steps,
+        polarStraits: tectonics.polarStraits !== false,
         mergeOceanPlates: merge_ocean_plates,
         connectOceans: connect_oceans,
         detailPass: detail_pass,
-        detailN,
-        project: activeProject,
-        values: pins,
+        detailN: detail.n,
+        project: studio.project,
+        values: studio.generateValues ? studio.generateValues() : studio.pins,
     }, planetCache);
     simMesh = result.simMesh;
     simMap = result.simMap;
@@ -1015,9 +406,9 @@ function generateMap() {
      * makes every existing colouring stale. */
     TdOverlay.repaintSurfaces();
     syncTdGridLevel();
-    TdOverlay.setContext(activeProject, seed);
+    TdOverlay.setContext(studio.project, studio.seed, studio.variant && studio.variant.id);
     refreshTdCropList();
-    refreshPipeline();
+    studio.refreshPipeline();
     draw();
 }
 
@@ -1210,9 +601,6 @@ function resetView() {
         zoom = startZoom + (1 - startZoom) * eased;
     });
 }
-
-window.reorientNorth = reorientNorth;
-window.resetView = resetView;
 
 const PI = Math.PI;
 const TWO_PI = 2 * PI;
@@ -1542,8 +930,8 @@ function finishDraw() {
             equirectPanX,
             equirectPanY,
             equirectZoom,
-            seed,
-            project: activeProject,
+            seed: studio.seed,
+            project: studio.project,
             zoom: viewMode === 'equirect' ? equirectZoom : zoom,
         });
     }
@@ -2001,9 +1389,9 @@ function exportTerrainDiffusion(opts = {}) {
     });
 
     return {
-        seed,
+        seed: studio.seed,
         n: N,
-        plates: P,
+        plates: studio.lastResolved.options.tectonics.plates,
         width,
         height,
         lon0: lon0Deg,
@@ -2383,8 +1771,9 @@ function exportTdTile(tile) {
         cropW: cells,
         cropH: cells,
         scaleKm: TdTile.SCALE_KM,
-        seed,
-        project: activeProject,
+        seed: studio.seed,
+        project: studio.project,
+        variant: studio.variant && studio.variant.id || undefined,
         layers: encodeTdLayers(layers),
     };
 }
@@ -2415,7 +1804,7 @@ function tdTileCells() {
 }
 
 function tdRadiusKm() {
-    return paramValue('radiusKm');
+    return studio.lastResolved.options.world.radiusKm;
 }
 
 /*
@@ -2426,6 +1815,7 @@ function tdRadiusKm() {
 async function bakeTdDraft() {
     const tiles = TdOverlay.getPicked();
     if (!tiles.length) return;
+    if (studio.ensureVariant) await studio.ensureVariant();
     const bakeBtn = document.querySelector('#td-crop-list button');
     if (bakeBtn) bakeBtn.disabled = true;
     const failed = [];
@@ -2446,7 +1836,7 @@ async function bakeTdDraft() {
     else TdOverlay.clearPicked();
     TdOverlay.reload();
     startTdJobPoll();
-    refreshPipeline();
+    studio.refreshPipeline();
     draw();
 }
 
@@ -2480,7 +1870,7 @@ function startTdJobPoll() {
                 });
                 if (finished) {
                     TdOverlay.reload();
-                    refreshPipeline();
+                    studio.refreshPipeline();
                 }
                 /* Stop only after a jobs fetch says the queue is idle. Checking
                  * the list before that fetch returned used to kill the poll
@@ -2490,7 +1880,7 @@ function startTdJobPoll() {
                     clearInterval(tdPollTimer);
                     tdPollTimer = 0;
                     TdOverlay.reload();
-                    refreshPipeline();
+                    studio.refreshPipeline();
                 }
             })
             .catch(() => {
@@ -2855,7 +2245,7 @@ function frameTdCrop(crop) {
     if (viewMode !== 'equirect') {
         viewMode = 'equirect';
         syncViewModeDom();
-        syncModeButtons();
+        studio.syncModeButtons();
     }
     const startX = equirectPanX;
     const startY = equirectPanY;
@@ -2875,7 +2265,7 @@ function frameTdCrop(crop) {
 
 function refreshTdCropList() {
     TdOverlay.renderCropList(document.getElementById('td-crop-list'), {
-        seed,
+        seed: studio.seed,
         radiusKm: tdRadiusKm(),
         scaleKm: TdTile.SCALE_KM,
         minCells: TdTile.MIN_CELLS,
@@ -2986,17 +2376,14 @@ function setupTdOverlay() {
         refreshTdCropList();
         if (mesh) draw();
     });
-    TdOverlay.setContext(activeProject, seed);
+    TdOverlay.setContext(studio.project, studio.seed, studio.variant && studio.variant.id);
     TdOverlay.load();
-    refreshPipeline();
+    studio.refreshPipeline();
 }
 
-const SEARCH_STORE = 'planetgen.params-ranges';
-const SEARCH_TILE_W = 512;
-const SEARCH_TILE_H = 256;
-
-let searchSession = null;
-let searchRun = 0;
+const SEARCH_TILE_W = 320;
+const SEARCH_TILE_H = 160;
+const SEARCH_N = 4000;
 
 function paintSearchEquirect(planet, width, height) {
     const layers = Planet.rasterizeEquirect(planet.mesh, planet.map, width, height, 0);
@@ -3005,7 +2392,7 @@ function paintSearchEquirect(planet, width, height) {
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     const img = ctx.createImageData(width, height);
-    const {elev, moist, temp} = layers;
+    const {elev} = layers;
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const i = y * width + x;
@@ -3014,11 +2401,11 @@ function paintSearchEquirect(planet, width, height) {
             const eD = elev[Math.min(height - 1, y + 1) * width + x];
             const eU = elev[Math.max(0, y - 1) * width + x];
             const light = Look.hillshade((eR - eL) * 0.5, -(eD - eU) * 0.5);
-            const alb = Look.surfaceAlbedo(elev[i], moist[i], temp[i]);
+            const rgb = Look.elevRgb(Tectonics.elevationToMeters(elev[i]));
             const p = i * 4;
-            img.data[p] = Math.round(clamp01(alb[0] * light) * 255);
-            img.data[p + 1] = Math.round(clamp01(alb[1] * light) * 255);
-            img.data[p + 2] = Math.round(clamp01(alb[2] * light) * 255);
+            img.data[p] = Math.round(clamp01(rgb[0] / 255 * light) * 255);
+            img.data[p + 1] = Math.round(clamp01(rgb[1] / 255 * light) * 255);
+            img.data[p + 2] = Math.round(clamp01(rgb[2] / 255 * light) * 255);
             img.data[p + 3] = 255;
         }
     }
@@ -3026,258 +2413,96 @@ function paintSearchEquirect(planet, width, height) {
     return canvas;
 }
 
-function renderSearchIndividual(ind) {
+function renderSearchTile(ind) {
+    const tectonics = studio.lastResolved.options.tectonics;
     const planet = Planet.generatePlanet({
         seed: ind.seed,
-        n: 10000,
+        n: SEARCH_N,
         jitter: 0.75,
         simulateTectonics: simulate_tectonics,
-        polarStraits: polar_straits,
+        polarStraits: tectonics.polarStraits !== false,
         mergeOceanPlates: merge_ocean_plates,
         connectOceans: connect_oceans,
-        detailPass: false,
-        project: activeProject,
-        values: Object.assign({}, pins, ind.values),
+        baseOnly: true,
+        project: studio.project,
+        values: Object.assign({}, studio.pins, ind.values),
         quiet: true,
     }, {});
     return paintSearchEquirect(planet, SEARCH_TILE_W, SEARCH_TILE_H);
 }
 
-function renderSearchChrome() {
-    const start = document.getElementById('search-start');
-    const controls = document.getElementById('search-controls');
-    const sheet = document.getElementById('search-sheet');
-    const genes = Search.genesFor(pins);
-    const blocked = activeProject === 'earth' || genes.length === 0;
-    if (start) {
-        start.hidden = !!searchSession;
-        start.disabled = blocked || !!searchSession;
-        start.title = activeProject === 'earth'
-            ? 'Earth is the fixture — search does not run there'
-            : 'Sample freeable ranges and pick the planets you like';
-    }
-    if (controls) controls.hidden = !searchSession;
-    if (sheet) sheet.hidden = !searchSession;
-    if (!searchSession) return;
+Studio.mount(studio, {
+    generateMesh,
+    generateMap,
+    draw,
+    getViewMode: () => viewMode,
+    getDrawMode: () => drawMode,
+    setViewMode: applyViewMode,
+    setDrawMode(mode) {
+        if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(mode) === -1) return;
+        drawMode = mode;
+        draw();
+    },
+    setDrawPlateVectors(flag) { draw_plateVectors = flag; draw(); },
+    setDrawPlateBoundaries(flag) { draw_plateBoundaries = flag; draw(); },
+    setN(n) { N = n; generateMesh(); },
+    setJitter(value) { jitter = value; generateMesh(); },
+    setRotation(value) { rotation = value; draw(); },
+    getProcess: () => ({
+        simulateTectonics: simulate_tectonics,
+        detailPass: detail_pass,
+        mergeOceanPlates: merge_ocean_plates,
+        connectOceans: connect_oceans,
+    }),
+    setProcess,
+    setTdCrops,
+    enableTdCrops,
+    startTdJobPoll,
+    renderSearchTile,
+});
 
-    const s = searchSession;
-    const next = document.getElementById('search-next');
-    const back = document.getElementById('search-back');
-    const done = document.getElementById('search-done');
-    if (next) next.disabled = s.busy;
-    if (back) back.disabled = s.busy || !s.history.length;
-    if (done) done.disabled = s.busy;
-    const status = document.getElementById('search-status');
-    if (status) {
-        const n = s.population.length;
-        const ready = s.canvases.filter(Boolean).length;
-        status.textContent = s.busy
-            ? `Generation ${s.generation + 1} · ${ready} / ${n}`
-            : `Generation ${s.generation + 1} · ${s.liked.size} liked`;
-    }
-    const host = document.getElementById('search-ranges');
-    if (host) {
-        host.textContent = '';
-        for (const name of s.genes) {
-            const row = document.createElement('div');
-            row.className = 'search-range';
-            row.textContent = `${name}  ${Search.formatRange(name, s.ranges[name])}`;
-            host.append(row);
-        }
-    }
-}
-
-function mountSearchTiles() {
-    const grid = document.getElementById('search-grid');
-    if (!grid || !searchSession) return;
-    grid.textContent = '';
-    searchSession.population.forEach((ind, i) => {
-        const tile = document.createElement('button');
-        tile.type = 'button';
-        tile.className = 'search-tile' + (searchSession.canvases[i] ? '' : ' is-pending');
-        tile.dataset.index = String(i);
-        tile.setAttribute('aria-pressed', String(searchSession.liked.has(i)));
-        if (searchSession.liked.has(i)) tile.classList.add('is-liked');
-        tile.onclick = () => toggleSearchLike(i);
-        if (searchSession.canvases[i]) tile.append(searchSession.canvases[i]);
-        grid.append(tile);
-    });
-}
-
-async function fillSearchSheet() {
-    const session = searchSession;
-    if (!session) return;
-    const run = ++searchRun;
-    session.busy = true;
-    session.canvases = session.canvases || [];
-    mountSearchTiles();
-    renderSearchChrome();
-    for (let i = 0; i < session.population.length; i++) {
-        if (run !== searchRun || searchSession !== session) return;
-        if (!session.canvases[i]) {
-            session.canvases[i] = renderSearchIndividual(session.population[i]);
-        }
-        if (run !== searchRun || searchSession !== session) return;
-        const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
-        if (tile && !tile.contains(session.canvases[i])) {
-            tile.classList.remove('is-pending');
-            tile.append(session.canvases[i]);
-        }
-        renderSearchChrome();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    if (run !== searchRun || searchSession !== session) return;
-    session.busy = false;
-    renderSearchChrome();
-}
-
-function toggleSearchLike(i) {
-    if (!searchSession) return;
-    if (searchSession.liked.has(i)) searchSession.liked.delete(i);
-    else searchSession.liked.add(i);
-    const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
-    if (tile) {
-        tile.classList.toggle('is-liked', searchSession.liked.has(i));
-        tile.setAttribute('aria-pressed', String(searchSession.liked.has(i)));
-    }
-    renderSearchChrome();
-}
-
-function exitSearch() {
-    searchRun++;
-    searchSession = null;
-    document.body.classList.remove('search-mode');
-    const grid = document.getElementById('search-grid');
-    if (grid) grid.textContent = '';
-    renderSearchChrome();
-}
-
-async function persistSearchRanges(ranges) {
-    Params.setOverlay(ranges);
-    try { localStorage.setItem(SEARCH_STORE, JSON.stringify(ranges)); } catch (_) { /* ignore */ }
-    try {
-        await fetch(`${TdOverlay.TD_API}/params-ranges`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(ranges),
-        });
-    } catch (_) { /* localStorage still has it */ }
-}
-
-async function hydrateSearchRanges() {
-    let stored = {};
-    try { stored = JSON.parse(localStorage.getItem(SEARCH_STORE) || '{}'); } catch (_) { stored = {}; }
-    let file = {};
-    try {
-        const res = await fetch(`${TdOverlay.TD_API}/params-ranges`);
-        if (res.ok) file = await res.json();
-    } catch (_) { /* server optional */ }
-    const next = file && Object.keys(file).length ? file : stored;
-    if (next && Object.keys(next).length) {
-        try { Params.setOverlay(next); } catch (_) { /* stale store */ }
-    }
-}
-
-window.enterSearch = () => {
-    if (searchSession || activeProject === 'earth') return;
-    const genes = Search.genesFor(pins);
-    if (!genes.length) return;
-    const gen = Search.initialPopulation({values: pins, rng: Date.now()});
-    searchSession = {
-        genes: gen.genes,
-        ranges: gen.ranges,
-        vouched: gen.vouched,
-        population: gen.population,
-        liked: new Set(),
-        history: [],
-        generation: 0,
-        canvases: [],
-        busy: false,
-    };
-    document.body.classList.add('search-mode');
-    renderSearchChrome();
-    fillSearchSheet();
+/* Embed + capture adapter. The sidebar does not go through these. */
+window.setN = newN => { N = newN; generateMesh(); };
+window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
+window.setP = newP => studio.setParam('plates', newP);
+window.setRotation = newRotation => { rotation = newRotation; draw(); };
+window.setDrawMode = newMode => {
+    if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(newMode) === -1) return;
+    drawMode = newMode;
+    studio.syncModeButtons();
+    draw();
 };
-
-window.nextSearch = () => {
-    const s = searchSession;
-    if (!s || s.busy) return;
-    s.history.push({
-        ranges: s.ranges,
-        population: s.population,
-        liked: new Set(s.liked),
-        generation: s.generation,
-        canvases: s.canvases,
-    });
-    const next = Search.nextGeneration({
-        genes: s.genes,
-        ranges: s.ranges,
-        vouched: s.vouched,
-        population: s.population,
-        liked: [...s.liked],
-        rng: Date.now() + s.generation + 1,
-    });
-    s.ranges = next.ranges;
-    s.population = next.population;
-    s.liked = new Set();
-    s.generation += 1;
-    s.canvases = [];
-    fillSearchSheet();
+window.setViewMode = newMode => { applyViewMode(newMode); studio.syncModeButtons(); };
+window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
+window.setDrawPlateBoundaries = flag => { draw_plateBoundaries = flag; draw(); };
+window.setTectonicOption = (key, value) => {
+    if (!(key in Tectonics.DEFAULTS)) throw new Error(`unknown tectonic option: ${key}`);
+    studio.setParam(key, value);
 };
-
-window.backSearch = () => {
-    const s = searchSession;
-    if (!s || s.busy || !s.history.length) return;
-    searchRun++;
-    const prev = s.history.pop();
-    s.ranges = prev.ranges;
-    s.population = prev.population;
-    s.liked = prev.liked;
-    s.generation = prev.generation;
-    s.canvases = prev.canvases || [];
-    s.busy = false;
-    mountSearchTiles();
-    renderSearchChrome();
-};
-
-window.doneSearch = async () => {
-    const s = searchSession;
-    if (!s || s.busy) return;
-    const ranges = Search.rangesFromLikes({
-        genes: s.genes,
-        vouched: s.vouched,
-        population: s.population,
-        liked: [...s.liked],
-        ranges: s.ranges,
-    });
-    await persistSearchRanges(ranges);
-    exitSearch();
+window.setDetailOption = (key, value) => {
+    if (!(key in Detail.DEFAULTS)) throw new Error(`unknown detail option: ${key}`);
+    studio.setParam(key, value);
 };
 
 setupDragRotation();
 document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
 document.querySelector('.view-reset')?.addEventListener('click', resetView);
-document.querySelector('.view-mode-toggle')?.addEventListener('click', () => {
-    applyViewMode(viewMode === 'globe' ? 'equirect' : 'globe');
-});
 restoreViewState();
-setupSavedSeeds();
-applySeed(seed);
-syncSeedHistoryButtons();
-hydrateSearchRanges();
-populateProjectUI();
-generateMesh();
-setupTdOverlay();
-document.addEventListener('keydown', event => {
-    if (!(event.metaKey || event.ctrlKey)) return;
-    if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
-    const key = event.key.toLowerCase();
-    if (key === 'z') {
-        event.preventDefault();
-        if (event.shiftKey) window.redoSeed();
-        else window.undoSeed();
-    } else if (key === 'y' && !event.shiftKey) {
-        event.preventDefault();
-        window.redoSeed();
+syncViewModeDom();
+studio.syncModeButtons();
+const hasPicker = !!document.getElementById('project-page');
+function startWorkspace() {
+    if (!hasPicker || startup.skipPicker) {
+        if (hasPicker) {
+            Studio.writeStoredProject(studio.project);
+            Studio.syncAddressBar(studio.project, studio.seed, studio.variant && studio.variant.id);
+            Studio.showWorkspace(studio);
+        }
+        generateMesh();
+    } else {
+        Studio.showProjectPage(studio);
     }
-});
+    setupTdOverlay();
+}
+if (studio.ready) studio.ready.then(startWorkspace);
+else startWorkspace();

@@ -4,22 +4,25 @@
  *
  *   bun run check:projects
  *
- * The interesting case is not that Earth's pins apply — it is that Thalos,
- * which does not pin cratons, comes back with the default after Earth has
- * been loaded. A project names what is decided; everything it omits has to
- * return to its default, or switching projects yields a planet that belongs
- * to neither and cannot be reproduced from either file.
+ * The interesting case is not that Earth's fixture knobs apply — it is that
+ * Thalos, which authors only a body, comes back with the default cratons
+ * after Earth has been loaded. Switching must not leave a planet that
+ * belongs to neither file.
  *
  * Browser-free, so this runs alongside `stats` and `check:earth`.
  */
 import { createRequire } from "node:module";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { listTdOverlays } from "./td-overlays.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Projects = require(join(root, "src", "projects"));
 const Params = require(join(root, "src", "params.js"));
+const Boot = require(join(root, "src", "studio", "boot.js"));
 
 const failures = [];
 const check = (name, ok, detail = "") => {
@@ -30,6 +33,9 @@ const check = (name, ok, detail = "") => {
 console.log("projects");
 
 check("default project is thalos", Projects.DEFAULT === "thalos");
+for (const project of Projects.PROJECTS) {
+    check(`${project.name} has a label`, typeof project.label === "string" && project.label.length > 0);
+}
 
 /* 1. Every project resolves and validates. */
 for (const project of Projects.PROJECTS) {
@@ -37,35 +43,40 @@ for (const project of Projects.PROJECTS) {
     try { resolved = Projects.resolve(project.name); } catch (e) { error = e; }
     check(`${project.name} resolves`, !!resolved, error && error.message);
     if (resolved) {
-        console.log(`        ${resolved.pins.length} pin(s), seed ${JSON.stringify(resolved.seed)}`);
+        console.log(`        ${resolved.applied.length} applied, seed ${JSON.stringify(resolved.seed)}`);
     }
 }
 
-/* 2. Earth's pins actually land, in the right module. */
+/* 2. Earth's fixture knobs actually land, in the right module. */
 const earth = Projects.resolve("earth");
-check("earth pins continentFraction into tectonics",
+check("earth is the fixture", Projects.isFixture("earth") && earth.fixture && earth.seed === "earth");
+check("earth authors continentFraction into tectonics",
     earth.options.tectonics.continentFraction === 0.41,
     `got ${earth.options.tectonics.continentFraction}`);
-check("earth pins cratons into tectonics",
+check("earth authors cratons into tectonics",
     earth.options.tectonics.cratons === 9,
     `got ${earth.options.tectonics.cratons}`);
 check("earth keeps its fixture params out of the module options",
     !("paintPasses" in earth.options.tectonics)
     && !("paintPasses" in earth.options.detail)
     && !("paintPasses" in earth.options.climate));
-check("earth pins fixture paintPasses into fixture",
+check("earth authors fixture paintPasses into fixture",
     earth.options.fixture.paintPasses === 6,
     `got ${earth.options.fixture && earth.options.fixture.paintPasses}`);
 
 /* 3. The one that matters: an unpinned parameter comes back. */
 const pristineCratons = Projects.PRISTINE.tectonics.cratons;
 const thalos = Projects.resolve("thalos");
+check("thalos is not a fixture and holds no seed",
+    !Projects.isFixture("thalos") && Projects.byName("thalos").seed == null);
 check("thalos does not inherit earth's cratons",
     thalos.options.tectonics.cratons === pristineCratons,
     `got ${thalos.options.tectonics.cratons}, want the default ${pristineCratons}`);
 check("thalos does not inherit earth's continentFraction",
     thalos.options.tectonics.continentFraction === Projects.PRISTINE.tectonics.continentFraction,
     `got ${thalos.options.tectonics.continentFraction}`);
+check("thalos applies its adopted body",
+    thalos.options.world.radiusKm === 3186 && thalos.options.world.rotationHours === 21.3);
 
 /* 4. Resolving must not write through to the snapshot or the live defaults. */
 const before = Projects.PRISTINE.tectonics.cratons;
@@ -84,16 +95,15 @@ for (const name of Params.exposed()) {
         snapshot === undefined ? `no snapshot for module ${meta.module}` : "missing key");
 }
 
-/* 6. The panel's own gesture: pin a value, then free it, and the value has
-      to come back to the default rather than stick. */
+/* 6. A caller overlay replaces the authored bag. A missing key is free. */
 {
-    const pins = {cratons: 9};
-    const pinned = Projects.resolve({name: "scratch", values: pins}).options.tectonics.cratons;
-    delete pins.cratons;
-    const freed = Projects.resolve({name: "scratch", values: pins}).options.tectonics.cratons;
-    check("freeing a pinned parameter restores its default",
+    const overlay = {cratons: 9, radiusKm: 3186};
+    const pinned = Projects.resolve({name: "thalos", values: overlay}).options.tectonics.cratons;
+    delete overlay.cratons;
+    const freed = Projects.resolve({name: "thalos", values: overlay}).options.tectonics.cratons;
+    check("dropping a key from the overlay restores its default",
         pinned === 9 && freed === Projects.PRISTINE.tectonics.cratons,
-        `pinned ${pinned}, freed ${freed}`);
+        `applied ${pinned}, freed ${freed}`);
 }
 
 /* 7. Derivations must survive a project being applied, and applying one
@@ -112,7 +122,8 @@ for (const name of Params.exposed()) {
     const derived = config.derived;
 
     check("no project defaults to thalos",
-        implicit.project === "thalos" && implicit.seed === 1003,
+        implicit.project === "thalos" && implicit.seed === 1
+        && implicit.options.world.radiusKm === 3186,
         `project ${implicit.project}, seed ${implicit.seed}`);
     check("earth seed selects the earth project",
         Pipeline.freezeConfig({seed: "earth"}).project === "earth"
@@ -159,6 +170,197 @@ for (const project of Projects.PROJECTS) {
     check("sameSeed treats earth tokens as equal",
         Projects.sameSeed("earth", "Earth") && !Projects.sameSeed("earth", 1003));
 }
+
+/* 9b. A variant is seed, body, genes, pins, ranges, parent. */
+{
+    const Variants = Projects.Variants;
+    const pins = Object.assign({}, Projects.authored("thalos"));
+    const sampled = {plates: 17, continentFraction: 0.44, radiusKm: pins.radiusKm};
+    const variant = Variants.ofWorking({
+        project: "thalos",
+        seed: 4242,
+        pins,
+        values: sampled,
+        name: "ridge",
+    });
+    check("variant keeps body off its gene bag",
+        variant && !("radiusKm" in variant.values)
+        && variant.body.radiusKm === pins.radiusKm
+        && variant.values.plates === 17
+        && variant.values.continentFraction === 0.44);
+    check("variant pins are body-only",
+        variant.pins.radiusKm === pins.radiusKm && !("plates" in variant.pins));
+    check("variant keeps the seed and project",
+        variant.seed === 4242 && variant.project === "thalos" && variant.name === "ridge");
+    const child = Variants.ofWorking({
+        project: "thalos",
+        parent: variant.id,
+        seed: 99,
+        pins: variant.pins,
+        values: {plates: 12},
+    });
+    const tree = [variant, child];
+    check("a child inherits the parent's body pin",
+        Variants.inheritedPins(tree, child).radiusKm === pins.radiusKm
+        && child.parent === variant.id);
+    const catalog = Variants.parseCatalog({
+        project: "thalos",
+        committed: variant.id,
+        variants: [variant, {seed: 8, values: {plates: 11}, project: "thalos"}],
+    }, "thalos");
+    check("catalog keeps a committed id that is in the list",
+        catalog.committed === variant.id && catalog.variants.length === 2);
+    const committed = Variants.commit(catalog, catalog.variants[1].id);
+    check("commit switches the instance without writing the project file",
+        committed.committed === catalog.variants[1].id
+        && !Projects.byName("thalos").values);
+    const serialized = Variants.serializeCatalog({
+        project: "thalos",
+        variants: [Object.assign({}, variant, {thumb: "data:image/jpeg;base64,xx"})],
+    }).variants[0];
+    check("serializeCatalog drops thumbs and keeps the tree fields",
+        !("thumb" in serialized)
+        && serialized.body.radiusKm === pins.radiusKm
+        && serialized.pins.radiusKm === pins.radiusKm);
+    const legacy = Projects.parseCatalog({
+        project: "thalos",
+        variants: [{id: "vold1", seed: 77, values: {plates: 14}}],
+    }, "thalos");
+    check("an old catalog row picks up the adopted body",
+        legacy.variants[0].body.radiusKm === pins.radiusKm
+        && legacy.variants[0].pins.radiusKm === pins.radiusKm
+        && legacy.variants[0].values.plates === 14);
+    check("parseCatalog keeps a file thumb",
+        Variants.parseCatalog({
+            project: "thalos",
+            variants: [{id: variant.id, seed: 4242, values: {plates: 17}, thumb: "/preview/thalos/v/vabc/thumb.jpg"}],
+        }, "thalos").variants[0].thumb === "/preview/thalos/v/vabc/thumb.jpg");
+    check("bakeDir scopes a variant under v/<id>",
+        Projects.bakeDir("thalos", variant.id) === `preview/thalos/v/${variant.id}`
+        && Projects.bakeDir("earth") === "preview/earth");
+    check("isVariantId accepts only v-prefixed ids",
+        Projects.isVariantId(variant.id) && !Projects.isVariantId("abc"));
+    const seedOnly = Variants.ofWorking({
+        project: "thalos", seed: 1003, pins, values: {},
+    });
+    check("a seed-only save is a variant with an empty values bag",
+        seedOnly && Object.keys(seedOnly.values).length === 0
+        && seedOnly.body.radiusKm === pins.radiusKm);
+    const migrated = Variants.migrate(
+        [{seed: 7, values: {plates: 12}, project: "thalos"}],
+        [{seed: 1003, name: "start"}],
+        "thalos",
+        pins,
+    );
+    check("legacy keeps and saved seeds migrate into variants",
+        migrated.length === 2
+        && migrated.some((v) => v.seed === 7 && v.values.plates === 12 && v.body.radiusKm === pins.radiusKm)
+        && migrated.some((v) => v.seed === 1003 && v.name === "start"));
+    check("toggle is by recipe, not by like index",
+        Variants.toggleRecipe([], variant).length === 1
+        && Variants.toggleRecipe([variant], variant).length === 0);
+    check("refinement is 0 when ranges are empty",
+        Variants.refinement(variant) === 0);
+    const refined = Variants.ofWorking({
+        project: "thalos", seed: 55, pins,
+        values: {plates: 17},
+        ranges: {continentFraction: [0.40, 0.44]},
+    });
+    check("refinement is tightness vs vouched",
+        Variants.refinement(refined) > 0.5);
+}
+
+/* 10. A crop is a folder. Whatever files it holds, the directory is what
+ * the catalog lists — so a DEM without a PNG, or a tile sidecar without a
+ * GeoTIFF, still appears. */
+{
+    const root = join(tmpdir(), `planetgen-td-overlays-${process.pid}`);
+    const folder = join(root, "preview", "earth", "crop-f3l4x1y2");
+    await mkdir(folder, {recursive: true});
+    await writeFile(join(folder, "output.elev"), new Uint8Array(16));
+    await writeFile(join(folder, "output.elev.json"), JSON.stringify({width: 2, height: 2}));
+    await writeFile(join(folder, "tile.json"), JSON.stringify({face: 3, level: 4, i: 1, j: 2}));
+    try {
+        const listed = await listTdOverlays(root, {project: "earth"});
+        const crop = listed.crops.find((c) => c.name === "f3l4x1y2");
+        check("a crop folder is listed from what it contains",
+            !!(crop && crop.baked && crop.elev && crop.tile && crop.elevWidth === 2),
+            crop ? JSON.stringify({baked: crop.baked, elev: crop.elev, tile: crop.tile}) : "missing");
+        check("the catalog is the folders, not a job merge",
+            listed.crops.length === 1 && listed.crops[0].name === "f3l4x1y2");
+    } finally {
+        await rm(root, {recursive: true, force: true});
+    }
+}
+
+/* 10b. A variant's crops live under v/<id>/ and do not leak into the
+ * project-root listing. */
+{
+    const root = join(tmpdir(), `planetgen-td-variant-${process.pid}`);
+    const variantId = "vabc123";
+    const rootFolder = join(root, "preview", "thalos", "crop-root");
+    const variantFolder = join(root, "preview", "thalos", "v", variantId, "crop-hid");
+    await mkdir(rootFolder, {recursive: true});
+    await mkdir(variantFolder, {recursive: true});
+    await writeFile(join(rootFolder, "output.elev"), new Uint8Array(16));
+    await writeFile(join(rootFolder, "output.elev.json"), JSON.stringify({width: 2, height: 2}));
+    await writeFile(join(rootFolder, "tile.json"), JSON.stringify({face: 3, level: 4, i: 1, j: 2}));
+    await writeFile(join(variantFolder, "output.elev"), new Uint8Array(16));
+    await writeFile(join(variantFolder, "output.elev.json"), JSON.stringify({width: 2, height: 2}));
+    await writeFile(join(variantFolder, "tile.json"), JSON.stringify({face: 0, level: 4, i: 0, j: 0}));
+    try {
+        const atRoot = await listTdOverlays(root, {project: "thalos"});
+        const atVariant = await listTdOverlays(root, {project: "thalos", variant: variantId});
+        check("listing without a variant does not walk v/",
+            atRoot.crops.length === 1 && atRoot.crops[0].name === "root" && !atRoot.variant);
+        check("listing a variant sees only that folder",
+            atVariant.crops.length === 1 && atVariant.crops[0].name === "hid"
+            && atVariant.crops[0].variant === variantId);
+    } finally {
+        await rm(root, {recursive: true, force: true});
+    }
+}
+
+/* 11. Startup has one implementation. The first-paint script only
+ * toggles the picker from the same keys. */
+{
+    const fresh = Boot.resolveStartup({search: "", stored: null});
+    check("no query and no store opens the picker",
+        fresh.skipPicker === false && fresh.project === "thalos");
+
+    const resumed = Boot.resolveStartup({search: "", stored: "earth"});
+    check("a stored project skips the picker",
+        resumed.skipPicker === true && resumed.project === "earth");
+
+    const linked = Boot.resolveStartup({search: "?project=earth", stored: "thalos"});
+    check("?project= wins over the stored project",
+        linked.skipPicker === true && linked.project === "earth");
+
+    const deep = Boot.resolveStartup({search: "?seed=42", stored: "thalos"});
+    check("a seed in the query is a deep link",
+        deep.skipPicker === true && deep.project === "thalos" && deep.seed === 42);
+
+    const unknown = Boot.resolveStartup({search: "?project=kephos", stored: null});
+    check("an unknown project in the URL is ignored",
+        unknown.skipPicker === false && unknown.project === "thalos");
+
+    const withVariant = Boot.resolveStartup({search: "?project=thalos&variant=vabc123", stored: "earth"});
+    check("?variant= is a deep link",
+        withVariant.skipPicker === true
+        && withVariant.project === "thalos"
+        && withVariant.variant === "vabc123");
+
+    const junkVariant = Boot.resolveStartup({search: "?variant=nope", stored: "thalos"});
+    check("a junk variant in the URL is ignored",
+        junkVariant.variant == null && junkVariant.skipPicker === true);
+
+    const seedOnly = Boot.resolveStartup({search: "?seed=42", stored: "thalos"});
+    check("a seed query does not invent a variant",
+        seedOnly.seed === 42 && seedOnly.variant == null && seedOnly.seedFromQuery === true);
+}
+
+check("polarStraits is an exposed parameter",
+    Params.exposed().includes("polarStraits"));
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall passed");
 process.exit(failures.length ? 1 : 0);

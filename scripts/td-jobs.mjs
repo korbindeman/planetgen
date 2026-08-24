@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { b64ToF32, CHANNELS, hillshadePng, writeTdFolder } from "./td-geotiff.mjs";
-import { listTdOverlays, pipelineFact, projectBakeDir } from "./td-overlays.mjs";
+import { cropHasBake, listTdOverlays, pipelineFact, projectBakeDir } from "./td-overlays.mjs";
 import { exportProjectCrops } from "./export-project.mjs";
 import { paintCropTerrain } from "./paint-td-terrain.mjs";
 
@@ -25,13 +25,24 @@ export function tdCheckout() {
   return process.env.TD_ROOT || join(homedir(), "dev", "terrain-diffusion");
 }
 
-function jobKey(project, name) {
-  return `${project}/${name}`;
+function jobKey(project, name, variant) {
+  return variant ? `${project}/${variant}/${name}` : `${project}/${name}`;
 }
 
-export function listJobs(project) {
+function readVariant(project, raw) {
+  if (project === "earth") return null;
+  const variant = raw && Projects.isVariantId(raw) ? raw : null;
+  if (!variant) throw new Error("variant required");
+  return variant;
+}
+
+export function listJobs(project, variant) {
   return [...jobs.values()]
-    .filter((j) => !project || j.project === project)
+    .filter((j) => {
+      if (project && j.project !== project) return false;
+      if (variant && j.variant !== variant) return false;
+      return true;
+    })
     .map(publicJob);
 }
 
@@ -55,6 +66,7 @@ function publicJob(job) {
     cropH: job.cropH,
     scaleKm: job.scaleKm,
     seed: job.seed,
+    variant: job.variant || null,
     tile: job.tile || null,
     progress: job.progress ?? null,
     logTail: job.log.slice(-12),
@@ -81,27 +93,23 @@ function slug(name) {
   return (s || "tile").slice(0, 40);
 }
 
-async function uniqueName(root, project, wanted) {
-  const dir = projectBakeDir(root, project);
+async function uniqueName(root, project, wanted, variant) {
+  const dir = projectBakeDir(root, project, variant);
   let name = wanted;
   let n = 2;
   for (;;) {
-    const key = jobKey(project, name);
+    const key = jobKey(project, name, variant);
     const folder = join(dir, `crop-${name}`);
-    const taken = jobs.has(key) || await Bun.file(join(folder, "heightmap.tif")).exists()
-      || await Bun.file(join(folder, "output.png")).exists();
+    const taken = jobs.has(key) || await Bun.file(folder).exists();
     if (!taken) return name;
     name = `${wanted}-${n++}`;
   }
 }
 
-function cropUrl(job, file) {
-  return `/preview/${job.project}/crop-${job.name}/${file}`;
-}
-
 export async function submitJob(root, body) {
   const project = body.project || Projects.DEFAULT;
   Projects.byName(project);
+  const variant = readVariant(project, body.variant);
   /*
    * Say no rather than quietly resizing. Clamping here meant a caller asking
    * for 27 cells got its request silently changed to 24 and then rejected for
@@ -127,9 +135,9 @@ export async function submitJob(root, body) {
    * that is the whole point of having a grid. Free-named crops keep the old
    * uniquify-on-collision behaviour.
    */
-  const name = tile ? tileName(tile) : await uniqueName(root, project, slug(body.name));
+  const name = tile ? tileName(tile) : await uniqueName(root, project, slug(body.name), variant);
   if (tile) {
-    const running = jobs.get(jobKey(project, name));
+    const running = jobs.get(jobKey(project, name, variant));
     if (running && running.status !== "done" && running.status !== "error") return publicJob(running);
   }
   const bounds = {
@@ -143,11 +151,12 @@ export async function submitJob(root, body) {
   }
   if (bounds.north <= bounds.south) throw new Error("north must be greater than south");
 
-  const dir = join(projectBakeDir(root, project), `crop-${name}`);
+  const dir = join(projectBakeDir(root, project, variant), `crop-${name}`);
   const job = {
-    id: jobKey(project, name),
+    id: jobKey(project, name, variant),
     name,
     project,
+    variant,
     status: "exporting",
     error: null,
     log: [],
@@ -177,6 +186,7 @@ export async function submitJob(root, body) {
       name,
       project,
       seed: body.seed ?? null,
+      variant,
       scaleKm: Number(body.scaleKm) || 23,
       cells: cropW,
       nominalBounds: bounds,
@@ -188,13 +198,13 @@ export async function submitJob(root, body) {
   return publicJob(job);
 }
 
-export async function queueExistingCrop(root, {project, name, seed, west, south, east, north, cropW, cropH}) {
-  const id = jobKey(project, name);
+export async function queueExistingCrop(root, {project, name, seed, variant, west, south, east, north, cropW, cropH}) {
+  const id = jobKey(project, name, variant);
   const existing = jobs.get(id);
   if (existing && existing.status !== "done" && existing.status !== "error") {
     return publicJob(existing);
   }
-  const dir = join(projectBakeDir(root, project), `crop-${name}`);
+  const dir = join(projectBakeDir(root, project, variant), `crop-${name}`);
   if (!(await Bun.file(join(dir, "heightmap.tif")).exists())) {
     throw new Error(`no conditioning for ${project}/${name}`);
   }
@@ -202,6 +212,7 @@ export async function queueExistingCrop(root, {project, name, seed, west, south,
     id,
     name,
     project,
+    variant: variant || null,
     status: "queued",
     error: null,
     log: [`queued existing crop ${name}`],
@@ -222,20 +233,22 @@ export async function queueExistingCrop(root, {project, name, seed, west, south,
 export async function previewBakes(root, body) {
   const project = body.project || Projects.DEFAULT;
   Projects.byName(project);
+  const variant = readVariant(project, body.variant);
   const exported = await exportProjectCrops(root, {
     project,
     seed: body.seed,
     values: body.values,
+    variant,
     connectOceans: !!body.connectOceans,
   });
   const queued = [];
   for (const crop of exported.crops) {
-    const out = join(exported.outDir, crop.dir, "output.png");
-    if (await Bun.file(out).exists()) continue;
+    if (await cropHasBake(join(exported.outDir, crop.dir))) continue;
     queued.push(await queueExistingCrop(root, {
       project,
       name: crop.name,
       seed: exported.manifest.seed,
+      variant,
       west: crop.west,
       south: crop.south,
       east: crop.east,
@@ -385,42 +398,21 @@ function spawnLogged(cmd, args, {cwd, env, job}) {
   });
 }
 
-export async function overlaysWithJobs(root, {project, seed} = {}) {
-  const listed = await listTdOverlays(root, {project, seed});
-  const byName = new Map(listed.crops.map((c) => [c.name, c]));
-  for (const job of jobs.values()) {
-    if (project && job.project !== project) continue;
-    if (seed != null && seed !== "" && job.seed != null && !Projects.sameSeed(job.seed, seed)) continue;
-    const baked = job.status === "done";
-    byName.set(job.name, {
-      name: job.name,
-      dir: `crop-${job.name}`,
-      project: job.project,
-      west: job.west,
-      south: job.south,
-      east: job.east,
-      north: job.north,
-      image: baked ? cropUrl(job, "output.png") : null,
-      status: job.status,
-      seed: job.seed,
-      baked,
-      conditioned: true,
-    });
-  }
-  const crops = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+export async function overlaysWithJobs(root, {project, seed, variant} = {}) {
+  const listed = await listTdOverlays(root, {project, seed, variant});
+  /* Jobs are progress, not crops. The folder on disk is the crop; writing
+   * a job over it is how a finished DEM disappeared while the process
+   * still remembered the bake. */
   return {
-    seed: seed ?? listed.seed,
-    lon0: listed.lon0,
-    project: project || listed.project,
+    ...listed,
     api: true,
-    crops,
-    jobs: listJobs(project),
+    jobs: listJobs(project, variant),
   };
 }
 
-export async function pipelineStatus(root, {project, seed} = {}) {
-  const fact = await pipelineFact(root, {project, seed});
-  const running = listJobs(project).filter((j) => j.status !== "done" && j.status !== "error");
+export async function pipelineStatus(root, {project, seed, variant} = {}) {
+  const fact = await pipelineFact(root, {project, seed, variant});
+  const running = listJobs(project, variant).filter((j) => j.status !== "done" && j.status !== "error");
   const regional = fact.stages.find((s) => s.id === "regional");
   if (regional && running.length) {
     regional.fact = running[0].status === "baking"
@@ -430,6 +422,6 @@ export async function pipelineStatus(root, {project, seed} = {}) {
   }
   return {
     ...fact,
-    jobs: listJobs(project),
+    jobs: listJobs(project, variant),
   };
 }

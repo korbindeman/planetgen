@@ -142,23 +142,19 @@ after the run (`solveSeaLevel`), so it is what you get rather than what you aim
 at; null leaves sea level where the crust puts it.
 
 Work is done in a **project**. There are two: Thalos (the default, the world
-being discovered) and Earth (the present-day reference fixture). Pins live
-in `src/projects/`, loaded from the **Project** dropdown at the top of the
-app's controls, where every exposed parameter is a row with a pin toggle:
-pinned means this project decides it, free means it sits at its default.
-Those rows are generated from `params.js`, so registering and exposing a
-parameter is all it takes to put it on screen. A project is a named set of
-pins: every parameter it names is decided and everything it omits is free, so
-loading one *assigns* whole option sets rather than merging them — otherwise a
-parameter the new project does not pin keeps the last project's value and the
-planet belongs to neither. Captures, crops and preview bakes live in
-`preview/<name>/`; the Project panel shows each pipeline stage as
-authored intent plus what is actually on disk. `src/projects/thalos.js` is deliberately
-near-empty; Thalos gains a pin each time something is decided. Headless
+being discovered) and Earth (the present-day reference fixture). A project
+file holds the adopted **body**. Earth is the **fixture**: authored knobs and
+a seed token, no tree. A **variant** is a saved candidate (seed, body, genes,
+body pins, ranges, parent). Search starts from the selected variant; likes
+are session-only; Save writes a child. Captures, crops and preview bakes
+belong to a variant and live in `preview/<name>/v/<id>/` (Earth and a project
+with no variant still use `preview/<name>/`). Loading one *assigns* the
+authored bag rather than merging it — otherwise a knob the new file does not
+name keeps the last value and the planet belongs to neither. Headless
 scripts follow the same default: `bun run preview` is Thalos,
 `--earth` / `--project=earth` is Earth. `params.js` is the registry of all 176
-parameters with their units and ranges; it validates projects and throws if a
-parameter is added without being registered.
+parameters with their units and ranges; it validates project files and throws
+if a parameter is added without being registered.
 
 After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, read `bun run preview crust` — ridges, trenches, age — not a stats dump. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian. Crop in rather than guessing from a thumbnail.
 

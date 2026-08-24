@@ -1,24 +1,17 @@
 /*
- * Loading a project.
+ * Loading a project or the Earth fixture.
  *
- * Work in this repo happens in a project: Earth or Thalos. Thalos is the
- * default. A project is a named set of pins: every parameter it names is
- * decided, and everything it omits is free. Resolving one therefore has
- * to do two things, and the second is the one that is easy to get wrong —
+ * A project is a tree of variants plus an optional adopted body. Earth is
+ * the fixture: authored knobs and a seed token, no tree. Resolving one
+ * starts from the pristine defaults and lays the authored bag over them.
+ * A caller overlay (studio, a variant recipe) replaces that bag entirely
+ * so a freed body value is not put back.
  *
- *   1. apply the project's pins, and
- *   2. return every other parameter to its default.
+ * Without the pristine reset, loading Earth and then Thalos leaves
+ * Earth's nine cratons behind. So this snapshots the defaults at load —
+ * before any resolve can touch them — and every resolve starts there.
  *
- * Without (2), loading Earth and then Thalos leaves Earth's nine cratons
- * behind, because Thalos never mentions `cratons` and nothing puts it back.
- * The result is a planet that belongs to neither project and cannot be
- * reproduced from either file. So this snapshots the pristine defaults when
- * it loads — before any project or `setTectonicOption` can touch them — and
- * every resolve starts from that snapshot rather than from whatever the last
- * one left behind.
- *
- * Browser-free, like the model it configures, so project loading can be
- * tested without a browser: `bun run check:projects`.
+ * Browser-free, so `bun run check:projects` can hold this without a browser.
  */
 'use strict';
 
@@ -30,6 +23,7 @@ const EarthFixture = require('../earth-fixture');
 const Params = require('../params');
 const STAGES = require('./pipeline');
 const Artifacts = require('./artifacts');
+const Variants = require('./variants');
 
 /* Taken at module load, so it is the values as authored in each module.
  * Nothing mutates DEFAULTS before a user asks for it. */
@@ -44,8 +38,8 @@ const PRISTINE = {
 /* Listed rather than globbed: the browser bundler resolves requires
  * statically, so a project only reaches the app if it is named here. */
 const PROJECTS = [
-    Object.assign({label: 'Thalos'}, require('./thalos')),
-    Object.assign({label: 'Earth'}, require('./earth')),
+    require('./thalos'),
+    require('./earth'),
 ];
 
 const DEFAULT = 'thalos';
@@ -58,13 +52,40 @@ function byName(name) {
 }
 
 
-/* Full option sets for each module: pristine defaults with the project's
- * pins laid over them. Assigning these wholesale is what makes unpinning
- * work, so callers should not merge them into the current values. */
-function resolve(nameOrProject) {
+function isFixture(nameOrProject) {
     const project = typeof nameOrProject === 'string' ? byName(nameOrProject) : nameOrProject;
+    return !!(project && project.fixture);
+}
 
-    const problems = Params.checkProject(project).concat(checkPipeline(project));
+
+/* The bag a file authors: adopted body for a project, body plus knobs
+ * for the fixture. */
+function authored(nameOrProject) {
+    const project = typeof nameOrProject === 'string' ? byName(nameOrProject) : nameOrProject;
+    return Object.assign({}, project.body || {}, project.fixture ? (project.values || {}) : {});
+}
+
+
+function namedOf(nameOrProject) {
+    if (typeof nameOrProject === 'string') return byName(nameOrProject);
+    if (nameOrProject && nameOrProject.name) return byName(nameOrProject.name);
+    throw new Error('unknown project');
+}
+
+
+/* Full option sets for each module: pristine defaults with the authored
+ * bag or a caller overlay laid over them. Assigning these wholesale is
+ * what makes a freed body value actually free, so callers should not
+ * merge them into the current values. */
+function resolve(nameOrProject) {
+    const named = namedOf(nameOrProject);
+    const overlay = (nameOrProject && typeof nameOrProject === 'object' && nameOrProject.values != null)
+        ? nameOrProject.values
+        : null;
+
+    const problems = Params.checkProject(named)
+        .concat(checkPipeline(named))
+        .concat(overlay ? Params.checkValues(named.name, overlay) : []);
     if (problems.length) throw new Error('invalid project:\n  ' + problems.join('\n  '));
 
     const registry = Params.all();
@@ -75,16 +96,26 @@ function resolve(nameOrProject) {
         detail: Object.assign({}, PRISTINE.detail),
         fixture: Object.assign({}, PRISTINE.fixture),
     };
-    const pins = [];
+    const values = overlay != null ? overlay : authored(named);
+    const applied = [];
 
-    for (const [name, value] of Object.entries(project.values || {})) {
+    for (const [name, value] of Object.entries(values)) {
         const meta = registry[name];
-        pins.push({name, value, module: meta.module, unit: meta.unit});
+        if (!meta) continue;
+        applied.push({name, value, module: meta.module, unit: meta.unit});
         if (options[meta.module]) options[meta.module][name] = value;
     }
 
-    pins.sort((a, b) => a.name.localeCompare(b.name));
-    return {project, seed: project.seed, options, pins};
+    applied.sort((a, b) => a.name.localeCompare(b.name));
+    return {
+        project: named,
+        seed: named.fixture ? named.seed : null,
+        options,
+        body: Params.pickBody(Object.assign({}, options.world)),
+        applied,
+        pins: applied,
+        fixture: !!named.fixture,
+    };
 }
 
 
@@ -107,9 +138,26 @@ function checkPipeline(project) {
 }
 
 
+function recipeOf(variant, adopted) {
+    return Object.assign({}, adopted || {}, (variant && variant.body) || {}, (variant && variant.values) || {}, (variant && variant.pins) || {});
+}
+
+
+function parseCatalog(raw, name) {
+    const project = name && PROJECTS.find(p => p.name === name);
+    return Variants.parseCatalog(raw, name, project && project.body);
+}
+
+
 module.exports = {
     PROJECTS, DEFAULT, PRISTINE, STAGES, byName, resolve, checkPipeline,
+    isFixture, authored, recipeOf, parseCatalog,
     dir: Artifacts.dir,
     bakeDir: Artifacts.bakeDir,
+    variantDir: Artifacts.variantDir,
+    catalogPath: Artifacts.catalogPath,
+    thumbPath: Artifacts.thumbPath,
+    isVariantId: Artifacts.isVariantId,
     sameSeed: Artifacts.sameSeed,
+    Variants,
 };

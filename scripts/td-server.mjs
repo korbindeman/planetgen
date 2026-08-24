@@ -10,17 +10,21 @@ import { serveTdFile } from "./td-overlays.mjs";
 import {
   getJob, listJobs, overlaysWithJobs, pipelineStatus, previewBakes, submitJob,
 } from "./td-jobs.mjs";
+import {
+  attachThumbs, decodeDataUrl, readCatalog, writeCatalog, writeThumb,
+} from "./td-catalog.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Params = require(join(root, "src", "params.js"));
+const Projects = require(join(root, "src", "projects"));
 const rangesPath = join(root, "src", "params-ranges.json");
 const port = Number(process.env.TD_PORT) || 3748;
 
 function cors(res) {
   const headers = new Headers(res.headers);
   headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type");
   headers.set("Cache-Control", "no-store");
   return new Response(res.body, {status: res.status, headers});
@@ -34,6 +38,7 @@ function query(url) {
   return {
     project: url.searchParams.get("project") || undefined,
     seed: url.searchParams.get("seed") || undefined,
+    variant: url.searchParams.get("variant") || undefined,
   };
 }
 
@@ -64,6 +69,32 @@ const server = Bun.serve({
       await Bun.write(rangesPath, JSON.stringify(body, null, 2) + "\n");
       return json({ok: true});
     }
+    if (url.pathname === "/variants" && req.method === "GET") {
+      const q = query(url);
+      if (!q.project) return json({error: "project required"}, 400);
+      try { Projects.byName(q.project); } catch { return json({error: "unknown project"}, 400); }
+      const catalog = await attachThumbs(root, await readCatalog(root, q.project));
+      return json(catalog);
+    }
+    if (url.pathname === "/variants" && req.method === "PUT") {
+      let body;
+      try { body = await req.json(); }
+      catch { return json({error: "invalid json"}, 400); }
+      try { Projects.byName(body.project); } catch { return json({error: "unknown project"}, 400); }
+      const catalog = await writeCatalog(root, body);
+      return json(await attachThumbs(root, catalog));
+    }
+    if (url.pathname === "/variants/thumb" && req.method === "PUT") {
+      let body;
+      try { body = await req.json(); }
+      catch { return json({error: "invalid json"}, 400); }
+      try { Projects.byName(body.project); } catch { return json({error: "unknown project"}, 400); }
+      if (!Projects.isVariantId(body.id)) return json({error: "bad variant"}, 400);
+      const bytes = decodeDataUrl(body.data);
+      if (!bytes) return json({error: "thumb must be a jpeg or png data URL"}, 400);
+      const thumb = await writeThumb(root, body.project, body.id, bytes);
+      return json({ok: true, thumb});
+    }
     if (url.pathname === "/pipeline" && req.method === "GET") {
       const q = query(url);
       if (!q.project) return json({error: "project required"}, 400);
@@ -73,7 +104,8 @@ const server = Bun.serve({
       return json(await overlaysWithJobs(root, query(url)));
     }
     if (url.pathname === "/jobs" && req.method === "GET") {
-      return json({jobs: listJobs(query(url).project)});
+      const q = query(url);
+      return json({jobs: listJobs(q.project, q.variant)});
     }
     if (url.pathname === "/jobs" && req.method === "POST") {
       try {

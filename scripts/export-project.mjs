@@ -2,7 +2,8 @@
  * Write a project's regional conditioning crops.
  *
  * Shared by `bun run export:td` and the bake server. Crops land in
- * preview/<name>/, 16×12 at 23 km unless the caller says otherwise.
+ * preview/<name>/, or preview/<name>/v/<id>/ when a variant is passed.
+ * 16×12 at 23 km unless the caller says otherwise.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -10,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeTdFolder } from "./td-geotiff.mjs";
 import { projectBakeDir } from "./td-overlays.mjs";
+import { resolveRun } from "./project-run.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(join(here, "..", "package.json"));
@@ -245,8 +247,15 @@ function namedPick(box, width, height, lon0) {
 
 export async function exportProjectCrops(root, opts = {}) {
   const projectName = opts.project || Projects.DEFAULT;
-  const project = Projects.byName(projectName);
-  const seed = opts.seed != null ? opts.seed : project.seed;
+  const run = await resolveRun(
+    root,
+    Projects,
+    projectName,
+    opts.seed,
+    opts.variant && Projects.isVariantId(opts.variant) ? opts.variant : null,
+  );
+  const variant = run.variant;
+  const seed = run.seed;
   const lon0 = opts.lon0 || 0;
   const scaleKm = opts.scaleKm || 23;
   const cropW = opts.cropW || PREVIEW_CROP_W;
@@ -260,7 +269,7 @@ export async function exportProjectCrops(root, opts = {}) {
   const planet = Planet.generatePlanet({
     seed,
     project: projectName,
-    values: opts.values,
+    values: opts.values != null ? opts.values : run.values,
     connectOceans: !!opts.connectOceans,
   });
 
@@ -309,7 +318,7 @@ export async function exportProjectCrops(root, opts = {}) {
     };
   });
 
-  const outDir = projectBakeDir(root, projectName);
+  const outDir = projectBakeDir(root, projectName, variant);
   await mkdir(outDir, {recursive: true});
 
   if (writeWorld) {
@@ -326,6 +335,7 @@ export async function exportProjectCrops(root, opts = {}) {
 
   const manifest = {
     project: projectName,
+    variant,
     seed: planet.seed,
     n: planet.n,
     plates: planet.p,

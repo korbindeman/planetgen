@@ -14,11 +14,9 @@ const Climate = require('../climate');
 const Detail = require('../detail');
 const EarthFixture = require('../earth-fixture');
 const Projects = require('../projects');
+const Params = require('../params');
 
-const BODY_KEYS = [
-    'radiusKm', 'gravityG', 'landFraction',
-    'rotationHours', 'axialTiltDeg', 'ageGyr',
-];
+const BODY_KEYS = Params.bodyNames();
 
 
 function freezeBag(bag) {
@@ -38,16 +36,12 @@ function pickProject(input) {
 
 function resolveProject(input) {
     const named = pickProject(input);
-    /* `values` is the complete pin set when the caller has one (the app's
-     * panel, a sheet that already copied the project). Do not merge the
-     * project's pins back over it — that would re-pin anything the user
-     * just freed. No values means use the project as authored. */
-    const values = input.values
-        || (input.project && typeof input.project === 'object' && input.project.values)
-        || named.values;
+    /* `values` is the complete overlay when the caller has one (the app,
+     * a variant recipe). Do not merge the authored bag back over it — that
+     * would re-apply a freed body value. No values means use the file. */
+    const values = input.values != null ? input.values : Projects.authored(named);
     return Projects.resolve({
         name: named.name,
-        seed: named.seed,
         values,
     });
 }
@@ -77,7 +71,7 @@ function freezeConfig(input = {}) {
         ? (EarthFixture.isEarthSeed(input.seed) ? EarthFixture.TOKEN : (input.seed | 0) || 1)
         : (resolved.seed != null
             ? (EarthFixture.isEarthSeed(resolved.seed) ? EarthFixture.TOKEN : resolved.seed)
-            : Projects.byName(Projects.DEFAULT).seed);
+            : 1);
     const n = input.n == null ? 10000 : (input.n | 0);
     const jitter = input.jitter == null ? 0.75 : input.jitter;
 
@@ -96,8 +90,11 @@ function freezeConfig(input = {}) {
         n,
         jitter,
         simulateTectonics: input.simulateTectonics !== false,
-        detailPass: input.detailPass !== false,
-        erosion: input.erosion !== false,
+        /* Tectonics + sea level only: no climate, detail, erosion, or
+         * geometry. Search tiles use this — continent layout is enough. */
+        baseOnly: !!input.baseOnly,
+        detailPass: input.baseOnly ? false : input.detailPass !== false,
+        erosion: input.baseOnly ? false : input.erosion !== false,
         climateOn: input.climateOn === 'surface' ? 'surface' : 'sim',
         mergeOceanPlates: !!input.mergeOceanPlates,
         connectOceans: !!input.connectOceans,

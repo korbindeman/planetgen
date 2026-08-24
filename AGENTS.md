@@ -2,7 +2,7 @@
 
 This repo generates a coarse planetary **base**: tectonic plates, a heightmap, and climate. Later stages add detail. Do not try to make a finished Earth in here.
 
-Work is done in a **project**. Thalos is the default (development). Earth is the present-day reference fixture (`--earth` / `--project=earth`). Pins live in `src/projects/`.
+Work is done in a **project**. Thalos is the default (development). Earth is the fixture (`--earth` / `--project=earth`), not a tree. A project file holds the adopted body. A **variant** is a saved candidate — seed, body, genes, pins, ranges, parent — not a saved seed. Artifacts live under `preview/<name>/v/<id>/`.
 
 ## Earth-like
 

@@ -37,7 +37,7 @@ const args = Object.fromEntries(
    panel agree. */
 const project = args.project || ('earth' in args ? 'earth' : Projects.DEFAULT);
 const previewDir = join(root, Projects.dir(project));
-const pins = Object.assign({}, Projects.byName(project).values);
+const pins = Object.assign({}, Projects.authored(project));
 for (const name of Object.keys(Params.all())) {
   if (args[name] !== undefined) pins[name] = Number(args[name]);
 }

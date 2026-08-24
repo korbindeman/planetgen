@@ -5,6 +5,7 @@
  *
  * This is execution status, not the plan. The plan lives in
  * docs/full-planet-pipeline.md (decided / recommended / open).
+ * Cheap stages run per variant; expensive stages wait for commit.
  */
 'use strict';
 

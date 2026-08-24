@@ -3,8 +3,9 @@
  *
  * A generation is a sheet of planets. Each tile is a fresh seed plus a
  * draw from the current freeable ranges. Liked tiles reshape those
- * ranges; the next sheet is drawn from the new box. Seed is never a
- * gene. Pins and DEFAULTS are not touched.
+ * ranges; the next sheet is drawn from the new box. Saving a tile is
+ * a variant — that lives in the project catalog, not here. Seed is
+ * never a gene. Pins and DEFAULTS are not touched.
  *
  * Browser-free, so `bun run check:search` can hold the loop to its
  * invariants without opening the app.
@@ -38,9 +39,15 @@ function genesFor(values) {
 }
 
 
-function currentRanges(genes) {
+function currentRanges(genes, given) {
     const out = {};
-    for (const name of genes) out[name] = Params.rangeOf(name);
+    for (const name of genes) {
+        const vouched = Params.vouchedRange(name);
+        const asked = given && given[name];
+        out[name] = asked && vouched
+            ? clipRange(asked, vouched)
+            : Params.rangeOf(name);
+    }
     return out;
 }
 
@@ -214,9 +221,9 @@ function likeStats(genes, likedValues, vouched) {
 }
 
 
-function initialPopulation({values, count = SHEET_SIZE, rng} = {}) {
+function initialPopulation({values, ranges: given, count = SHEET_SIZE, rng} = {}) {
     const genes = genesFor(values);
-    const ranges = currentRanges(genes);
+    const ranges = currentRanges(genes, given);
     const rand = typeof rng === 'function' ? rng : rngFrom(rng == null ? 1 : rng);
     return {
         genes,

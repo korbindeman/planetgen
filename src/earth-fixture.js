@@ -18,9 +18,8 @@ const PROJECT = require('./projects/earth');
 const TOKEN = 'earth';
 const MESH_SEED = 1843;
 
-/* Earth's pins live in `projects/earth.js`, so Earth is a project like
- * Thalos rather than a hardcoded block only this file knows about. */
-const EARTH_OPTS = PROJECT.values;
+/* Earth's body and authored knobs live in `projects/earth.js`. */
+const EARTH_OPTS = Object.assign({}, PROJECT.body, PROJECT.values);
 
 /* Parameters the fixture has and the simulation does not: the one-shot
  * kinematic paint has no loop to accumulate over. Registered in

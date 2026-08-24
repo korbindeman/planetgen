@@ -4,6 +4,37 @@ Planetgen makes the coarse base. This note records the plan for everything after
 
 Status labels: **decided** (settled), **recommended** (researched, needs a trial before committing), **open** (known problem, no chosen answer).
 
+## Authoring — decided
+
+The bake pipeline below runs on **one** planet. Getting to that planet is a
+different pipeline, and it is the studio's job:
+
+```
+adopted body                    optional project default
+    → search from a variant     working planets; likes steer the session box
+    → save variant              child: seed, body, genes, pins, session ranges
+    → hand-author (later)       sculpt that variant
+    → preview bakes             regional 90 m, per variant
+    → commit one variant        this instance is the project's planet
+    → expensive stages          cubesphere, 90 m planet, hydrology, export
+```
+
+A project is a tree of variants plus an optional adopted body. A variant
+stores its own body. Pins are body-only and inherited down the lineage.
+Commit chooses the instance — it does not pin every remaining gene.
+
+Preview bakes and later hand-edits attach to a variant. Keying them to the
+project or to the seed alone is what makes tiles follow you onto the next
+candidate and go stale. The expensive stages wait for commit so that work
+is not repeated for every roll.
+
+On disk that is `preview/<project>/variants.json` for the catalog and
+`preview/<project>/v/<id>/` for that variant's folder. Listing without a
+variant id does not walk `v/`. Earth stays at `preview/earth/`.
+
+Earth is the fixture: one locked planet, no search, no variants. Its
+tectonics are known so shaping can be tested on that base.
+
 ## Shape of the pipeline
 
 ```

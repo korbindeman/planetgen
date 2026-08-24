@@ -5,21 +5,30 @@ alwaysApply: true
 
 # Projects
 
-Work in this repo happens in a **project**. There are two: **Thalos** (default)
-and **Earth**. The generator itself is shared; a project is the named world
-you are working on — its pins, seed, and fixture.
+Work in this repo happens in a **project**. Thalos is the default. Earth is
+the **fixture**, not a tree.
 
 - Thalos is the world being discovered. Development, `bun run preview`,
   `bun run sheet`, and `bun run export:td` run against it unless Earth is
-  asked for.
+  asked for. The project file holds the adopted **body** (and pipeline
+  notes). It does not hold a seed or a gene bag.
 - Earth is the present-day reference fixture. Use `--earth` or
-  `--project=earth`, or `bun run check:earth`.
-- Pins live in `src/projects/`. Loading a project assigns the whole set; it
-  does not merge with the last one. Thalos gains a pin when something is
-  decided.
-- A project also owns its artifacts: `preview/<name>/`. Captures, crops
-  and 90 m preview bakes belong to that project and seed. Loading another
-  project must not show the last one's tiles. The preview folder holds
-  only project directories.
+  `--project=earth`, or `bun run check:earth`. No search, no variants. Its
+  file authors body plus fixture knobs and the `'earth'` token so shaping
+  can be tested on a known tectonic base.
+- The app starts on a project page. Opening a project persists it
+  (`planetgen.activeProject`); a restart resumes that project. Switching
+  means going back to the project page — there is no in-workspace dropdown.
+- A **variant** is a saved candidate: seed, body, gene draws, body **pins**,
+  **ranges**, and a parent. Only an explicit Save writes one. Search starts
+  from the selected variant. Likes are session-only; Save writes a child
+  with the session box. Pins are body-only. Earth has no variants.
+- Artifacts belong to a variant: `preview/<project>/v/<id>/`, catalog at
+  `preview/<project>/variants.json`. Earth and a project with no variant
+  still use `preview/<project>/`. Listing without a variant id does not
+  walk `v/`. Loading another project or variant must not show the last
+  one's tiles.
+- CLI with no seed uses the committed variant if there is one, else a
+  working planet from the adopted body.
 - Do not treat the generator's Earth-calibrated DEFAULTS as a third project.
-  Those are the unmarked baseline the pins sit on.
+  Those are the unmarked baseline the body sits on.

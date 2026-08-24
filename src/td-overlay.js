@@ -11,6 +11,11 @@
  * Where a tile goes comes from its (face, level, i, j) on the cubesphere
  * grid, not from a lon/lat box. The box in the GeoTIFF is nominal.
  *
+ * The catalog is the folders on disk for the current project. A reply
+ * that left for a different project is dropped, not filtered after the
+ * fact. Jobs are progress next to that list, never a second set of crops.
+ * Colouring is a cache on the DEM, not a replacement for it.
+ *
  * The catalog comes from the bake server, or from
  * src/.td-overlays/catalog.js when it is down.
  */
@@ -43,7 +48,12 @@ let loadState = 'idle';
 let apiUp = false;
 let jobs = [];
 let apiTries = 0;
-let context = {project: null, seed: null};
+let context = {project: null, seed: null, variant: null};
+/* Latest request for `context`. generateMesh is sync and long, so a fetch
+ * started for the previous project only returns after the new one is up;
+ * that reply is identified by the context it asked for, and is dropped
+ * if we have moved on. */
+let loadGen = 0;
 /*
  * The picker's whole state. A tile is (face, level, i, j) — there is no
  * pixel position and no half-committed box here, which is what stops the
@@ -85,19 +95,43 @@ function getCatalog() {
     return catalog;
 }
 
-function setContext(project, seed) {
-    const next = {project: project || null, seed: seed != null ? seed : null};
-    const changed = next.project !== context.project || String(next.seed) !== String(context.seed);
-    context = next;
-    if (changed && (loadState === 'ready' || loadState === 'empty')) {
-        loadState = 'idle';
-        load();
-    }
-}
-
 function same(a, b) {
     if (a == null || a === '' || b == null || b === '') return false;
     return String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+function sameContext(a, b) {
+    return (a.project || null) === (b.project || null)
+        && String(a.seed ?? '') === String(b.seed ?? '')
+        && String(a.variant ?? '') === String(b.variant ?? '');
+}
+
+function belongsTo(crop, ctx) {
+    if (ctx.project && crop.project && crop.project !== ctx.project) return false;
+    if (ctx.variant && crop.variant && crop.variant !== ctx.variant) return false;
+    if (ctx.variant && !crop.variant) return false;
+    if (!ctx.variant && crop.variant) return false;
+    const s = crop.seed != null && crop.seed !== '' ? crop.seed : null;
+    if (!ctx.variant && ctx.seed != null && ctx.seed !== '' && s != null && !same(s, ctx.seed)) return false;
+    return true;
+}
+
+function setContext(project, seed, variant) {
+    const next = {
+        project: project || null,
+        seed: seed != null ? seed : null,
+        variant: variant || null,
+    };
+    if (sameContext(next, context)) return;
+    context = next;
+    /* Drop the last project's tiles immediately. Leaving them up until
+     * the next fetch lands is how one world's crops sat on another. */
+    const keep = catalog.crops.filter((c) => belongsTo(c, context));
+    if (keep.length !== catalog.crops.length) {
+        catalog = {seed: context.seed, lon0: catalog.lon0, project: context.project, variant: context.variant, crops: keep};
+        notify();
+    }
+    load();
 }
 
 function seedMatches(appSeed) {
@@ -105,29 +139,13 @@ function seedMatches(appSeed) {
     return same(catalog.seed, appSeed);
 }
 
-function cropSeedOk(crop, appSeed) {
-    const s = crop.seed != null && crop.seed !== '' ? crop.seed : catalog.seed;
-    if (s == null || s === '') return true;
-    if (crop.status && crop.status !== 'done' && crop.status !== 'conditioned') return true;
-    return same(s, appSeed);
-}
-
-function cropProjectOk(crop, project) {
-    if (!crop.project || !project) return true;
-    return crop.project === project;
-}
-
-function shownCrops(appSeed, project) {
+function shownCrops() {
     if (!enabled) return [];
-    return catalog.crops.filter((c) => (
-        !hidden.has(c.name)
-        && cropProjectOk(c, project)
-        && cropSeedOk(c, appSeed)
-    ));
+    return catalog.crops.filter((c) => !hidden.has(c.name) && belongsTo(c, context));
 }
 
-function visibleCrops(appSeed, project) {
-    return shownCrops(appSeed, project).filter((c) => (
+function visibleCrops() {
+    return shownCrops().filter((c) => (
         (c.status === 'done' || !c.status) && (c.imageEl || c.elevM)
     ));
 }
@@ -137,8 +155,8 @@ function visibleCrops(appSeed, project) {
  * all, so a tile you had exported and not yet baked was indistinguishable
  * from one that did not exist. They get an outline instead.
  */
-function pendingCrops(appSeed, project) {
-    return shownCrops(appSeed, project).filter((c) => (
+function pendingCrops() {
+    return shownCrops().filter((c) => (
         c.status && c.status !== 'done' && !c.imageEl && !c.elevM
     ));
 }
@@ -150,47 +168,60 @@ function resolveImage(url) {
     return url;
 }
 
-function applyCatalog(data) {
-    const prev = new Map(catalog.crops.map((c) => [`${c.name}|${c.image}`, c]));
-    catalog = {
-        seed: data && data.seed != null ? data.seed : null,
-        lon0: data && Number.isFinite(data.lon0) ? data.lon0 : 0,
-        project: data && data.project != null ? data.project : null,
-        crops: data && Array.isArray(data.crops)
-            ? data.crops.map(normalizeCrop).filter((c) => !context.project || !c.project || c.project === context.project)
-            : [],
-    };
-    for (const crop of catalog.crops) {
-        const old = prev.get(`${crop.name}|${crop.image}`);
+function stillCurrent(asked, gen) {
+    return gen === loadGen && sameContext(asked, context);
+}
+
+function applyCatalog(data, asked, gen) {
+    if (!stillCurrent(asked, gen)) return Promise.resolve();
+    const incoming = data && Array.isArray(data.crops)
+        ? data.crops.map(normalizeCrop).filter((c) => belongsTo(c, asked))
+        : [];
+    const prev = new Map(catalog.crops.map((c) => [c.name, c]));
+    for (const crop of incoming) {
+        const old = prev.get(crop.name);
         if (!old) continue;
         /* Keep the decoded elevation and its colouring across a reload.
-         * Job progress is polled on its own; this path only runs when the
-         * catalog itself changes, and re-downloading megabytes each time
-         * would make the map stutter. */
-        if (old.elevM) crop.elevM = old.elevM;
+         * The crop is the folder; these are caches on it. A new DEM size
+         * means a new bake and the cache is stale. */
+        if (old.elevM && old.elevWidth === crop.elevWidth && old.elevHeight === crop.elevHeight) {
+            crop.elevM = old.elevM;
+        }
         if (old.imageEl) crop.imageEl = old.imageEl;
         if (old.loadError) crop.loadError = old.loadError;
     }
+    catalog = {
+        seed: data && data.seed != null ? data.seed : asked.seed,
+        lon0: data && Number.isFinite(data.lon0) ? data.lon0 : 0,
+        project: asked.project,
+        variant: asked.variant || null,
+        crops: incoming,
+    };
     jobs = data && Array.isArray(data.jobs) ? data.jobs : [];
     loadState = catalog.crops.length || grid.picked.length ? 'ready' : 'empty';
     notify();
-    return Promise.all(catalog.crops.filter((c) => !c.imageEl && !c.elevM).map(loadCropData)).then(() => notify());
+    return Promise.all(catalog.crops.filter((c) => !c.imageEl && !c.elevM).map(loadCropData)).then(() => {
+        if (!stillCurrent(asked, gen)) return;
+        notify();
+    });
 }
 
-function loadFromCatalogFile() {
+function loadFromCatalogFile(asked, gen) {
     try {
-        return applyCatalog(require('./.td-overlays/catalog.js'));
+        return applyCatalog(require('./.td-overlays/catalog.js'), asked, gen);
     } catch {
-        return applyCatalog({seed: null, lon0: 0, project: null, crops: []});
+        return applyCatalog({seed: null, lon0: 0, project: null, variant: null, crops: []}, asked, gen);
     }
 }
 
 function load() {
-    if (loadState === 'loading') return loadState;
+    const asked = {project: context.project, seed: context.seed, variant: context.variant};
+    const gen = ++loadGen;
     loadState = 'loading';
     const q = new URLSearchParams();
-    if (context.project) q.set('project', context.project);
-    if (context.seed != null && context.seed !== '') q.set('seed', String(context.seed));
+    if (asked.project) q.set('project', asked.project);
+    if (asked.seed != null && asked.seed !== '') q.set('seed', String(asked.seed));
+    if (asked.variant) q.set('variant', asked.variant);
     const qs = q.toString();
     fetch(`${TD_API}/overlays.json${qs ? `?${qs}` : ''}`, {cache: 'no-store'})
         .then((res) => {
@@ -198,17 +229,21 @@ function load() {
             apiUp = true;
             return res.json();
         })
-        .then((data) => applyCatalog(data))
+        .then((data) => {
+            if (!stillCurrent(asked, gen)) return;
+            apiTries = 0;
+            return applyCatalog(data, asked, gen);
+        })
         .catch(() => {
+            if (!stillCurrent(asked, gen)) return;
             apiUp = false;
-            const fallback = loadFromCatalogFile();
+            const fallback = loadFromCatalogFile(asked, gen);
             if (apiTries < 8) {
                 apiTries += 1;
                 setTimeout(() => {
-                    if (!apiUp) {
-                        loadState = 'idle';
-                        load();
-                    }
+                    if (!stillCurrent(asked, gen) || apiUp) return;
+                    loadState = 'idle';
+                    load();
                 }, 400);
             }
             return fallback;
@@ -217,8 +252,6 @@ function load() {
 }
 
 function reload() {
-    if (loadState === 'loading') return loadState;
-    loadState = 'idle';
     return load();
 }
 
@@ -332,6 +365,8 @@ function repaintSurfaces() {
     if (any) notify();
 }
 
+/* imageEl is a paint cache. elevM is the DEM. Colouring must not write
+ * the DEM — a throw here used to null elevM and the tile stayed blank. */
 function surfaceFor(crop) {
     if (crop.imageEl) return crop.imageEl;
     if (!crop.elevM || !surfacePainter) return null;
@@ -339,7 +374,6 @@ function surfaceFor(crop) {
         crop.imageEl = surfacePainter(crop);
     } catch (err) {
         crop.loadError = String(err.message || err);
-        crop.elevM = null;
     }
     return crop.imageEl;
 }
@@ -433,8 +467,8 @@ function paint(view) {
         el.style.display = 'none';
         return;
     }
-    const crops = visibleCrops(view.seed, view.project);
-    const pending = pendingCrops(view.seed, view.project);
+    const crops = visibleCrops();
+    const pending = pendingCrops();
     const chrome = grid.show || grid.picked.length > 0;
     if (!crops.length && !pending.length && !chrome) {
         if (el.width !== 1 || el.height !== 1) {
@@ -1065,6 +1099,7 @@ function applyJobs(next) {
 function pollJobs() {
     const q = new URLSearchParams();
     if (context.project) q.set('project', context.project);
+    if (context.variant) q.set('variant', context.variant);
     const qs = q.toString();
     return fetch(`${TD_API}/jobs${qs ? `?${qs}` : ''}`, {cache: 'no-store'})
         .then((res) => {
