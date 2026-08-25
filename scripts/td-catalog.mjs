@@ -33,6 +33,41 @@ export function thumbUrl(project, id) {
 }
 
 
+export function shapeFile(root, project, id) {
+    if (Projects.isFixture(project) || id === "earth") {
+        return join(root, Projects.dir(project), "shape.json");
+    }
+    return join(root, Projects.shapePath(project, id));
+}
+
+
+export async function hasShape(root, project, id) {
+    if (!id) return false;
+    try {
+        return await Bun.file(shapeFile(root, project, id)).exists();
+    } catch {
+        return false;
+    }
+}
+
+
+export async function writeShape(root, project, id, payload) {
+    const path = shapeFile(root, project, id);
+    await mkdir(dirname(path), {recursive: true});
+    await Bun.write(path, JSON.stringify(payload) + "\n");
+    return true;
+}
+
+
+export async function readShape(root, project, id) {
+    try {
+        return await Bun.file(shapeFile(root, project, id)).json();
+    } catch {
+        return null;
+    }
+}
+
+
 export async function readCatalog(root, project) {
     try {
         const raw = await Bun.file(catalogFile(root, project)).json();

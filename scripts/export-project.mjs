@@ -271,6 +271,7 @@ export async function exportProjectCrops(root, opts = {}) {
     project: projectName,
     values: opts.values != null ? opts.values : run.values,
     connectOceans: !!opts.connectOceans,
+    detailPass: true,
   });
 
   const lon0Rad = lon0 * PI / 180;

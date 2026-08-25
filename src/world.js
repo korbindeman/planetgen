@@ -86,6 +86,15 @@ function cellSpacingKm(numRegions, opts) {
 }
 
 
+/* Inverse: how many mesh regions give this mean spacing. Shape uses it so
+ * the sketch grain stays 23 km (or whatever the terrain model wants) on
+ * any radius. */
+function regionsForSpacingKm(spacingKm, opts) {
+    if (!(spacingKm > 0) || !(opts && opts.radiusKm > 0)) return 1;
+    return Math.max(1, Math.round(Math.PI * (2 * opts.radiusKm / spacingKm) ** 2));
+}
+
+
 /* Convert a rate written per mesh cell into the same rate per cell on this
  * planet's mesh, so it stays constant per km travelled rather than per step
  * of the solver. Used by the climate model's rainout and recycling. */
@@ -222,6 +231,7 @@ module.exports = {
     derive,
     radiusScale,
     cellSpacingKm,
+    regionsForSpacingKm,
     perCellRate,
     reliefScale,
     hadleyScale,

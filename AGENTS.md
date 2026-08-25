@@ -2,7 +2,7 @@
 
 This repo generates a coarse planetary **base**: tectonic plates, a heightmap, and climate. Later stages add detail. Do not try to make a finished Earth in here.
 
-Work is done in a **project**. Thalos is the default (development). Earth is the fixture (`--earth` / `--project=earth`), not a tree. A project file holds the adopted body. A **variant** is a saved candidate — seed, body, genes, pins, ranges, parent — not a saved seed. Artifacts live under `preview/<name>/v/<id>/`.
+Work is done in a **project**. Thalos is the default (development). Earth is the fixture (`--earth` / `--project=earth`), not a tree. A project file holds the adopted body. A **variant** is a saved snapshot — layout seed, shape seed, body, genes, pins, ranges, parent — not a saved seed. Every Save is a child of head. Artifacts live under `preview/<name>/v/<id>/`. How the studio works: `docs/studio.md`.
 
 ## Earth-like
 
@@ -59,7 +59,7 @@ the census Earth keeps is kept here too. See `.cursor/rules/plates-elevation.mdc
 ## Downstream
 
 1. **Hydrology** — real river networks, discharge, lakes and canyons. The detail pass does a first-stage shaping (priority-flood, stream power, glacial fjords) so slopes and coasts have drainage texture; the fine network is cut after diffusion.
-2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. The app kicks regional 90 m preview tiles and drapes them on the globe. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster. What the model expects: [`docs/preparing-for-diffusion.md`](docs/preparing-for-diffusion.md).
+2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of the sketch. Preview tiles are a Discover tool (pick on the cubesphere grid, bake, drape). CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster. What the model expects: [`docs/preparing-for-diffusion.md`](docs/preparing-for-diffusion.md). How the studio works: [`docs/studio.md`](docs/studio.md).
 
 Keep the base honest enough that those stages have something real to work with: continents carried by plates, mountain belts at collisions, ocean floor that deepens away from its ridge, and coasts that come from elevation interpolation rather than plate outlines. The detail pass roughs in valleys and fjords; leave the real river network to the later pass.
 
@@ -73,7 +73,8 @@ The original 1843 distance-field blend is still available for comparison: the **
 - Elevation (land relief, ocean bathymetry)
 - Climate (temperature, moisture, biomes) as fields on the sphere
 - A globe view that shows those fields clearly
-- Regional terrain-diffusion preview bakes, overlaid on the project, and pipeline status
+- Regional terrain-diffusion preview tiles, overlaid on the project (a Discover tool, not a Progress stage)
+- Pipeline status: Layout, Shape, Climate, Terrain, Hydrology, Export
 
 ## Out of scope
 

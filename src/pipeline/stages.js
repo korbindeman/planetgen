@@ -75,7 +75,7 @@ function detail(planet, cache) {
     const built = Planet.ensureDetailMesh(detailN, config.jitter, cache);
     const map = Detail.applyDetailPass(
         sim.mesh, sim.map, built.mesh, built.r_xyz,
-        EarthFixture.numericSeed(config.seed),
+        EarthFixture.numericSeed(config.shapeSeed || config.seed),
         modelOptions(config, 'detail', modelOptions(config, 'tectonics', {
             polarStraits: false,
         })));
@@ -93,7 +93,7 @@ function erosion(planet) {
         planet.detail.mesh,
         planet.detail.map.r_xyz,
         planet.detail.map,
-        EarthFixture.numericSeed(planet.config.seed),
+        EarthFixture.numericSeed(planet.config.shapeSeed || planet.config.seed),
         modelOptions(planet.config, 'detail', modelOptions(planet.config, 'tectonics')));
 }
 
@@ -127,6 +127,31 @@ function geometry(planet) {
 }
 
 
+function applyShapeFields(planet, fields, cache) {
+    if (!planet || !planet.sim || !fields || !fields.r_elevation) return false;
+    const meshN = fields.n || fields.cells || fields.r_elevation.length;
+    const built = Planet.ensureDetailMesh(meshN, planet.config.jitter, cache);
+    if (built.mesh.numRegions !== fields.r_elevation.length) return false;
+    const simMap = planet.sim.map;
+    const map = Object.assign({}, simMap, {
+        r_xyz: built.r_xyz,
+        t_xyz: built.t_xyz,
+        r_elevation: fields.r_elevation,
+        r_meters: fields.r_meters || null,
+        r_moisture: fields.r_moisture || simMap.r_moisture,
+        r_temperature: fields.r_temperature || simMap.r_temperature,
+        r_crust_type: fields.r_crust_type || simMap.r_crust_type,
+        r_plate: fields.r_plate || simMap.r_plate,
+        t_elevation: new Float32Array(built.mesh.numTriangles),
+        t_moisture: new Float32Array(built.mesh.numTriangles),
+        t_temperature: new Float32Array(built.mesh.numTriangles),
+    });
+    planet.detail = {mesh: built.mesh, map};
+    geometry(planet);
+    return true;
+}
+
+
 module.exports = {
     tectonics,
     climate,
@@ -134,4 +159,5 @@ module.exports = {
     erosion,
     seaLevel,
     geometry,
+    applyShapeFields,
 };

@@ -15,5 +15,8 @@ module.exports = {
     toLegacy: document.toLegacy,
     stages,
     run: runner.run,
+    runShape: runner.runShape,
+    takeLayout: runner.takeLayout,
+    layoutKey: runner.layoutKey,
     STAGE_ORDER: runner.STAGE_ORDER,
 };

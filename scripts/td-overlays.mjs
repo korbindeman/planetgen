@@ -10,6 +10,7 @@ import { join, normalize, relative, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { hasShape } from "./td-catalog.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(join(here, "..", "package.json"));
@@ -274,8 +275,9 @@ export async function pipelineFact(root, {project, seed, variant}) {
       : listed.crops);
   const otherSeed = !variant && listed.crops.length > 0 && matching.length === 0;
 
-  const conditioned = matching.filter((c) => c.conditioned);
-  const baked = matching.filter((c) => c.baked);
+  const shaped = variant
+    ? await hasShape(root, project, variant)
+    : (Projects.isFixture(project) && await hasShape(root, project, "earth"));
 
   function stage(id, fact, extra) {
     const intent = authored[id];
@@ -293,24 +295,17 @@ export async function pipelineFact(root, {project, seed, variant}) {
   }
 
   const stale = otherSeed ? "stale" : "";
-  const condFact = conditioned.length
-    ? `${conditioned.length} crop${conditioned.length === 1 ? "" : "s"}`
-    : stale;
-  const regionalFact = baked.length || conditioned.length
-    ? `${baked.length} of ${Math.max(conditioned.length, baked.length)}`
-    : stale;
 
   return {
     project,
     seed: seed ?? null,
     variant: variant || null,
     stages: Projects.STAGES.map((s) => {
-      if (s.id === "base") return stage("base", "on screen");
-      if (s.id === "conditioning") return stage("conditioning", condFact);
-      if (s.id === "regional") {
-        return stage("regional", regionalFact, {
-          canBake: !otherSeed && (conditioned.length === 0 || baked.length < conditioned.length),
-          unfinished: Math.max(0, conditioned.length - baked.length),
+      if (s.id === "layout") return stage("layout", "on screen");
+      if (s.id === "shape") {
+        return stage("shape", shaped ? "sketched" : stale, {
+          canShape: !!variant || Projects.isFixture(project),
+          shaped,
         });
       }
       return stage(s.id, "");

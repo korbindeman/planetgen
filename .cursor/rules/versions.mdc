@@ -1,32 +1,37 @@
 ---
-description: Save vs branch — a new planet forks; the same seed is a newer generation.
+description: Save always writes a child. Same planet vs different planet is layout seed, not reused ids.
 alwaysApply: true
 ---
 
 # Versions
 
-The catalog is a tree of snapshots, like git without deltas. Uncommitted
-work stays on **head** until Save. The UI word is **Save**, never Update.
+The catalog is a tree of snapshots. Uncommitted work stays on **head**
+until Save. The UI word is **Save**, never Update. How the studio works:
+[docs/studio.md](docs/studio.md). Language: `CONTEXT.md`.
 
 ## The rule
 
-- **Shuffle, a new seed, or an explore tile** is a different planet.
-  Saving it **branches**: a child of HEAD, even with no name.
-- **Tilt, pins, genes on this seed** is the same planet. Saving it writes
-  a newer generation of the current version.
-- **A name** labels a branch when you want one. It is not what makes a
-  branch. A nameless shuffle-save is still a branch.
+Every **Save** writes a **new node**, child of HEAD.
 
-Do not fold a new seed or explore draw into the current version. Do not
-fork a new node for a knob move on the same seed. Explore likes may write
-**ranges** to HEAD as they go; that is not a save of the planet.
+- **Shuffle of the layout seed, or an explore tile** is a **different
+  planet**. Save is still a child. Commit/Adopt does not follow.
+- **Layout genes, shape seed, shape genes, sculpting, body, a name** on
+  this layout seed is the **same planet**. Save is still a child. Adopted
+  follows that line when the save is on it.
+- **A name** labels the node. It is not what makes a child.
+
+Do not reuse a variant id for a later Save. Do not treat a node's Shape
+sketch as stale — a child is a different snapshot and starts unshaped.
+Explore likes may write **ranges** to HEAD as they go; that is not a save
+of the planet.
 
 ## Language
 
-**Save** — write the working planet. Same seed → this version, newer
-generation. New planet → branch.
-_Avoid_: Update
+**Save** — write the working planet as a new node, child of head.
+_Avoid_: Update, commit
 
-**Branch** — a child version. Automatic on shuffle / new seed / explore
-tile; optional name is a label.
+**Same planet** — same layout seed. Shape iteration stays here.
+_Avoid_: Generation, in-place update
+
+**Different planet** — new layout seed, or an explore tile.
 _Avoid_: Fork, copy, save as (unless naming)

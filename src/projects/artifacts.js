@@ -62,6 +62,11 @@ function thumbPath(project, id) {
 }
 
 
+function shapePath(project, id) {
+    return `${variantDir(project, id)}/shape.json`;
+}
+
+
 function sameSeed(a, b) {
     if (a == null || a === '' || b == null || b === '') return false;
     return String(a).toLowerCase() === String(b).toLowerCase();
@@ -77,5 +82,6 @@ module.exports = {
     bakeDir,
     catalogPath,
     thumbPath,
+    shapePath,
     sameSeed,
 };

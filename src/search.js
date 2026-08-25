@@ -4,8 +4,9 @@
  * A generation is a sheet of planets. Each tile is a fresh seed plus a
  * draw from the current freeable ranges. Liked tiles reshape those
  * ranges as they go (the studio writes that box to the current
- * variant). Opening or saving a planet from the sheet is a new version
- * — a branch off the current one. Seed is never a gene. Pins and
+ * variant). Opening or saving a planet from the sheet is a different
+ * planet — a child of the current one. Layout only: shape genes are not
+ * drawn, and there is no Shape sheet. Seed is never a gene. Pins and
  * DEFAULTS are not touched.
  *
  * Browser-free, so `bun run check:search` can hold the loop to its
@@ -36,7 +37,10 @@ function rngFrom(seed) {
 
 function genesFor(values) {
     const pinned = new Set(Object.keys(values || {}));
-    return Params.freeable().filter((name) => !pinned.has(name));
+    return Params.freeable().filter((name) => {
+        if (pinned.has(name)) return false;
+        return Params.phase(name) !== 'shape';
+    });
 }
 
 

@@ -462,14 +462,6 @@ export async function overlaysWithJobs(root, {project, seed, variant} = {}) {
 
 export async function pipelineStatus(root, {project, seed, variant} = {}) {
   const fact = await pipelineFact(root, {project, seed, variant});
-  const running = listJobs(project, variant).filter((j) => j.status !== "done" && j.status !== "error");
-  const regional = fact.stages.find((s) => s.id === "regional");
-  if (regional && running.length) {
-    regional.fact = running[0].status === "baking"
-      ? `baking ${running[0].name}`
-      : `${running[0].status} ${running[0].name}`;
-    regional.canBake = false;
-  }
   return {
     ...fact,
     jobs: listJobs(project, variant),

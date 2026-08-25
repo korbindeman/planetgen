@@ -50,7 +50,7 @@ collisions. Plates rotate about Euler poles in a no-net-rotation frame; the crus
 ## Downstream
 
 1. **Hydrology** — real river networks, discharge, lakes and canyons. The detail pass does a first-stage shaping (priority-flood, stream power, glacial fjords) so slopes and coasts have drainage texture; the fine network is cut after diffusion.
-2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of this heightmap. The app kicks regional 90 m preview tiles (**Bake previews** on the project) and drapes them on the globe. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster.
+2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of the sketch. Preview tiles are a Discover **tool**: pick them on the cubesphere grid, bake, drape. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster. How Discover and Finish fit together: [`docs/studio.md`](docs/studio.md).
 
    Tiles are picked on the **cubesphere grid** (`src/cubesphere.js`), the same
    grid the planet-scale bake will use: six equal-angle faces, a quadtree per
@@ -90,7 +90,8 @@ The original 1843 distance-field blend is still available for comparison: the **
 - Elevation (land relief, ocean bathymetry)
 - Climate (temperature, moisture, biomes) as fields on the sphere
 - A globe view that shows those fields clearly
-- Regional terrain-diffusion preview bakes, overlaid on the project, and pipeline status
+- Regional terrain-diffusion preview tiles, overlaid on the project (a Discover tool, not a Progress stage)
+- Pipeline status: Layout, Shape, Climate, Terrain, Hydrology, Export
 
 ## Out of scope
 
@@ -144,17 +145,19 @@ at; null leaves sea level where the crust puts it.
 Work is done in a **project**. There are two: Thalos (the default, the world
 being discovered) and Earth (the present-day reference fixture). A project
 file holds the adopted **body**. Earth is the **fixture**: authored knobs and
-a seed token, no tree. A **variant** is a saved candidate (seed, body, genes,
-body pins, ranges, parent). Search starts from the selected variant; likes
-are session-only; Save writes a child. Captures, crops and preview bakes
-belong to a variant and live in `preview/<name>/v/<id>/` (Earth and a project
-with no variant still use `preview/<name>/`). Loading one *assigns* the
-authored bag rather than merging it — otherwise a knob the new file does not
-name keeps the last value and the planet belongs to neither. Headless
-scripts follow the same default: `bun run preview` is Thalos,
-`--earth` / `--project=earth` is Earth. `params.js` is the registry of all 176
-parameters with their units and ranges; it validates project files and throws
-if a parameter is added without being registered.
+a seed token, no tree. A **variant** is a saved snapshot (layout seed, shape
+seed, body, genes, body pins, ranges, parent). Every Save writes a child of
+head. Search is layout only; Shape is an explicit cached pass. **Commit**
+(Adopt) picks the instance Finish runs on. How this works: `docs/studio.md`.
+Captures, crops and preview tiles belong to a variant and live in
+`preview/<name>/v/<id>/` (Earth and a project with no variant still use
+`preview/<name>/`). Loading one *assigns* the authored bag rather than
+merging it — otherwise a knob the new file does not name keeps the last
+value and the planet belongs to neither. Headless scripts follow the same
+default: `bun run preview` is Thalos, `--earth` / `--project=earth` is
+Earth. `params.js` is the registry of all parameters with their units and
+ranges; it validates project files and throws if a parameter is added
+without being registered.
 
 After a geography / climate / colormap change, capture the default (both) and **read both**. After a plate or plate-motion change, also run `bun run preview plates` and **read both plate captures**. After a change to the simulation itself, read `bun run preview crust` — ridges, trenches, age — not a stats dump. A globe can hide the far side; an equirect can hide how the same land looks as a planet. For lighting, camera, or mesh work, globe is enough. For “where is everything” questions, equirect is enough — pass `--lon` if the feature you care about is split across the antimeridian. Crop in rather than guessing from a thumbnail.
 

@@ -110,6 +110,7 @@ const planet = Planet.generatePlanet({
   simulateTectonics: !noTectonics,
   polarStraits: !noPolarStraits,
   connectOceans,
+  detailPass: true,
 });
 
 const projectName = planet.config.project;

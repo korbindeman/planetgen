@@ -46,6 +46,8 @@ console.log("search");
     check("thalos genes are the unpinned freeable set",
         genes.slice().sort().join() === expected.join(),
         `got ${genes.join(", ")}`);
+    check("layout search does not draw shape genes",
+        !genes.includes("warpStrength") && Params.phase("warpStrength") === "shape");
     for (const name of Object.keys(thalos)) {
         check(`thalos body ${name} is not a gene`, !genes.includes(name));
     }

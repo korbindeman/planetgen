@@ -1,14 +1,18 @@
 /*
- * A variant is one saved candidate of a project.
+ * A variant is one saved snapshot of a project.
  *
- * A variant stores its own seed, body, gene draws, body pins, ranges, and
- * parent. Likes never enter this. Only an explicit Save writes one.
- * Pins are body-only; a gene is constrained by ranges, not a pin.
+ * A variant stores its own layout seed, shape seed, body, gene draws, body
+ * pins, ranges, and parent. Likes never enter this. Only an explicit Save
+ * writes one. Every Save is a new node, child of head. Pins are body-only;
+ * a gene is constrained by ranges, not a pin.
+ *
+ * Same planet means same layout seed. Shape seed, genes, and sculpting
+ * stay on that planet — still a new node. A new layout seed or an explore
+ * tile is a different planet.
  *
  * Browser-free, so `bun run check:projects` can hold the record without
- * opening the app. Artifacts key off the id. An unnamed save updates the
- * current version in place (a newer generation). A new name branches.
- * Explore writes ranges through to head as likes reshape the box.
+ * opening the app. Artifacts key off the id. Explore writes ranges through
+ * to head as likes reshape the box.
  */
 'use strict';
 
@@ -75,7 +79,16 @@ function recipeKey(variant) {
     const values = (variant && variant.values) || {};
     const names = Object.keys(Object.assign({}, body, values)).sort();
     const bag = Object.assign({}, body, values);
-    return `${variant && variant.seed}|${names.map((n) => `${n}=${bag[n]}`).join(',')}`;
+    const layout = variant && variant.seed;
+    const shape = effectiveShapeSeed(variant);
+    return `${layout}|s${shape}|${names.map((n) => `${n}=${bag[n]}`).join(',')}`;
+}
+
+
+function effectiveShapeSeed(variant) {
+    const n = variant && variant.shapeSeed | 0;
+    if (n >= 1) return n;
+    return (variant && variant.seed | 0) || 1;
 }
 
 
@@ -91,6 +104,7 @@ function parseVariant(item, adopted) {
     const variant = {
         project: item.project,
         seed,
+        shapeSeed: (item.shapeSeed | 0) >= 1 ? (item.shapeSeed | 0) : seed,
         body,
         values,
         pins,
@@ -147,6 +161,7 @@ function ofIndividual(ind, extra) {
         project: extra.project,
         parent: extra.parent,
         seed: ind.seed,
+        shapeSeed: extra.shapeSeed,
         body: Object.assign({}, Params.pickBody(drawn), pins),
         values: pickGenes(ind.values),
         pins,
@@ -165,6 +180,7 @@ function ofWorking(input) {
         project: input.project,
         parent: input.parent,
         seed: input.seed,
+        shapeSeed: input.shapeSeed,
         body: Object.assign({}, Params.pickBody(drawn), pins),
         values: pickGenes(input.values),
         pins,
@@ -246,40 +262,37 @@ function append(list, incoming) {
 }
 
 
-/* A new name, a new seed, or an explore draw is a different planet.
- * Same seed with only knobs moved is a newer generation of this one. */
-function wouldBranch(head, input) {
+/* Same planet: same layout seed. Shape iteration stays on this planet. */
+function samePlanet(a, b) {
+    if (!a || !b) return false;
+    return (a.seed | 0) === (b.seed | 0);
+}
+
+
+/* A new layout seed or an explore draw is a different planet. A name is
+ * not. Same-planet saves are still new tree nodes. */
+function differentPlanet(head, input) {
     if (!head) return false;
-    if (typeof input === 'string' || input == null) input = {name: input || ''};
-    const name = typeof input.name === 'string' ? input.name.trim() : '';
-    if (name && name !== (head.name || '')) return true;
+    if (typeof input !== 'object' || input == null) input = {};
     if (input.discover) return true;
     if (input.seed != null && (input.seed | 0) !== (head.seed | 0)) return true;
     return false;
 }
 
 
-function update(list, id, patch) {
-    if (!id || !patch) return list || [];
-    const found = (list || []).findIndex((item) => item.id === id);
-    if (found < 0) return list || [];
-    const prev = list[found];
-    const next = list.slice();
-    const name = typeof patch.name === 'string' ? patch.name.trim().slice(0, NAME_MAX) : '';
-    next[found] = Object.assign({}, prev, {
-        seed: patch.seed != null ? patch.seed : prev.seed,
-        body: patch.body != null ? patch.body : prev.body,
-        values: patch.values != null ? patch.values : prev.values,
-        pins: patch.pins != null ? patch.pins : prev.pins,
-        ranges: patch.ranges != null ? parseRanges(patch.ranges) : prev.ranges,
-        thumb: patch.thumb || prev.thumb,
-        name: name || prev.name,
-        generation: (prev.generation || 1) + 1,
-        id: prev.id,
-        parent: prev.parent,
-        project: prev.project,
-    });
-    return reparent(next);
+/* Every Save is a new node, child of head. */
+function save(list, head, incoming) {
+    if (!incoming) return list || [];
+    const parentId = head ? head.id : parseParent(incoming.parent);
+    const generation = head && samePlanet(head, incoming)
+        ? (head.generation || 1) + 1
+        : 1;
+    return append(list, Object.assign({}, incoming, {
+        id: newId(),
+        parent: parentId,
+        generation,
+        shapeSeed: effectiveShapeSeed(incoming),
+    }));
 }
 
 
@@ -467,6 +480,7 @@ function serializeCatalog(catalog) {
                 pins: item.pins,
                 ranges: item.ranges,
             };
+            if (item.shapeSeed && item.shapeSeed !== item.seed) out.shapeSeed = item.shapeSeed;
             if (item.parent) out.parent = item.parent;
             if (item.name) out.name = item.name;
             if (item.generation > 1) out.generation = item.generation;
@@ -485,7 +499,7 @@ function commit(catalog, id) {
 
 
 /* Save moves head to the new child. The project's committed pointer
- * follows only when the save is on that line — a branch leaves it. */
+ * follows only when the save is on that line — a different planet leaves it. */
 function advanceHead(catalog, fromId, toId) {
     const next = parseCatalog(catalog, catalog && catalog.project);
     if (!findById(next.variants, toId)) return next;
@@ -566,6 +580,7 @@ module.exports = {
     parsePins,
     parseRanges,
     recipeKey,
+    effectiveShapeSeed,
     parseVariant,
     parseVariants,
     ofIndividual,
@@ -579,8 +594,9 @@ module.exports = {
     toggleRecipe,
     upsert,
     append,
-    wouldBranch,
-    update,
+    samePlanet,
+    differentPlanet,
+    save,
     setRanges,
     removeId,
     stampThumb,

@@ -230,9 +230,11 @@ const CLIMATE = {
 
 const DETAIL = {
     mesh: {
-        /* Resolution, not geography. Never sampled: changing it must not
-         * change the planet, which is the point of `stats --n=40000`. */
-        n: p('count', null, true),
+        /* Sketch grain in km. Shipped, not a gene. n is derived from this
+         * and radius so Thalos and Earth share one spacing. */
+        shapeSpacingKm: p('km'),
+        /* Fallback cell count when a caller passes detailN. Not exposed. */
+        n: p('count'),
     },
 
     warp: {
@@ -566,6 +568,18 @@ function isBody(name) {
 }
 
 
+/* Layout vs Shape. Search draws layout (and unpinned body). Shape genes
+ * are the detail module — sliders on the globe, not a second sheet. */
+function phase(name) {
+    if (isBody(name)) return 'body';
+    const meta = all()[name];
+    if (!meta) return null;
+    if (meta.module === 'detail') return 'shape';
+    if (meta.module === 'fixture') return 'fixture';
+    return 'layout';
+}
+
+
 function bodyNames() {
     return BODY_NAMES.slice();
 }
@@ -657,6 +671,7 @@ module.exports = {
     checkOverlay,
     BODY_NAMES,
     isBody,
+    phase,
     bodyNames,
     pickBody,
     freeable,

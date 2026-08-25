@@ -59,6 +59,7 @@ for (const seed of seeds) {
     simulateTectonics: !noTectonics,
     project,
     values: pins,
+    detailPass: true,
   });
   const png = view === "globe"
     ? Render.captureGlobe(planet, { overlay })

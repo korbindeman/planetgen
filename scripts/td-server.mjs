@@ -12,6 +12,7 @@ import {
 } from "./td-jobs.mjs";
 import {
   attachThumbs, decodeDataUrl, readCatalog, writeCatalog, writeThumb,
+  readShape, writeShape,
 } from "./td-catalog.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,6 +100,30 @@ const server = Bun.serve({
       const q = query(url);
       if (!q.project) return json({error: "project required"}, 400);
       return json(await pipelineStatus(root, q));
+    }
+    if (url.pathname === "/shape" && req.method === "GET") {
+      const q = query(url);
+      if (!q.project || !q.variant) return json({error: "project and variant required"}, 400);
+      try { Projects.byName(q.project); } catch { return json({error: "unknown project"}, 400); }
+      if (!Projects.isVariantId(q.variant) && q.project !== "earth") {
+        return json({error: "bad variant"}, 400);
+      }
+      const payload = await readShape(root, q.project, q.variant || "earth");
+      if (!payload) return json({error: "no shape"}, 404);
+      return json(payload);
+    }
+    if (url.pathname === "/shape" && req.method === "PUT") {
+      let body;
+      try { body = await req.json(); }
+      catch { return json({error: "invalid json"}, 400); }
+      try { Projects.byName(body.project); } catch { return json({error: "unknown project"}, 400); }
+      const id = body.variant || (Projects.isFixture(body.project) ? "earth" : null);
+      if (!id || (!Projects.isVariantId(id) && id !== "earth")) {
+        return json({error: "bad variant"}, 400);
+      }
+      if (!body.n || !body.f32) return json({error: "shape payload required"}, 400);
+      await writeShape(root, body.project, id, body);
+      return json({ok: true});
     }
     if (url.pathname === "/overlays.json") {
       return json(await overlaysWithJobs(root, query(url)));

@@ -6,27 +6,28 @@ Status labels: **decided** (settled), **recommended** (researched, needs a trial
 
 ## Authoring — decided
 
-The bake pipeline below runs on **one** planet. Getting to that planet is a
-different pipeline, and it is the studio's job:
+The bake pipeline below runs on **one** planet. Getting to that planet is
+**Discover**, and it is the studio's job. Canonical: [studio.md](studio.md).
 
 ```
 adopted body                    optional project default
     → search from a variant     working planets; likes steer the session box
-    → save variant              child: seed, body, genes, pins, session ranges
-    → hand-author (later)       sculpt that variant
-    → preview bakes             regional 90 m, per variant
-    → commit one variant        this instance is the project's planet
-    → expensive stages          cubesphere, 90 m planet, hydrology, export
+    → save variant              child of head: layout seed, shape seed, body, genes, pins
+    → run Shape                 explicit; 23 km sketch, cached on that node
+    → hand-author (later)       sculpt that variant's sketch
+    → preview tiles             90 m crops, per variant — a tool, not a stage
+    → commit (Adopt)            this instance is the project's planet
+    → Finish                    climate, terrain, hydrology, export
 ```
 
 A project is a tree of variants plus an optional adopted body. A variant
 stores its own body. Pins are body-only and inherited down the lineage.
 Commit chooses the instance — it does not pin every remaining gene.
 
-Preview bakes and later hand-edits attach to a variant. Keying them to the
-project or to the seed alone is what makes tiles follow you onto the next
-candidate and go stale. The expensive stages wait for commit so that work
-is not repeated for every roll.
+Every Save is a new node. A node's sketch does not go stale; a child is a
+different snapshot and starts unshaped. Preview tiles and later hand-edits
+attach to a variant. Keying them to the project or to the seed alone is
+what makes tiles follow you onto the next candidate.
 
 On disk that is `preview/<project>/variants.json` for the catalog and
 `preview/<project>/v/<id>/` for that variant's folder. Listing without a
@@ -38,12 +39,11 @@ tectonics are known so shaping can be tested on that base.
 ## Shape of the pipeline
 
 ```
-planetgen (sphere, ~220 km cells)                    base: plates, heightmap, climate
-    → coarse conditioning map (23 km/px, 5 channels)  sketch + bake-time climate
-    → terrain-diffusion coarse model                  realism pass, weak SNR
-    → base + decoder cascade                          90 m DEM, per cubesphere face
+planetgen layout (~10k cells) then Shape (23 km/px sketch)
+    → optional bake-time climate (ExoPlaSim)
+    → terrain-diffusion (cheap pass, then 90 m per cubesphere face)
     → hydrology / erosion                             rivers, canyons, lakes
-    → cubesphere residual pyramid                     what the game ships
+    → residual pyramid                                what the game ships
     → analytic octaves below 90 m                     lazy, in game
 ```
 
@@ -103,7 +103,7 @@ The model floor is 90 m. Ground-level gameplay needs ~1 m. That layer is non-ML 
 
 - **planetgen (this repo)**: the studio. The base, project pins, regional preview bakes, and pipeline status live here. Do not vendor terrain-diffusion. When ExoPlaSim graduates from trial, `export:td` grows a mode that takes bake-time climate rasters instead of deriving channels from `climate.js`.
 - **~/dev/terrain-diffusion**: sibling checkout, upstream untouched. The app kicks `tiff-export` as a subprocess.
-- **Cubesphere bake** (faces, seams, full 90 m job, hydrology on the DEM): still `@planetgen/bake`, a named slot. Regional crops come first.
+- **Cubesphere bake** (faces, seams, full 90 m job, hydrology on the DEM): still `@planetgen/bake`, a named slot. That is Finish/Terrain internals, not a Progress stage. Preview tiles come first, as a Discover tool.
 
 ## Order of attack
 

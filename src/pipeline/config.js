@@ -66,12 +66,16 @@ function freezeConfig(input = {}) {
     if (input.p != null) tectonics.plates = input.p;
     if (input.polarStraits != null) tectonics.polarStraits = input.polarStraits;
     if (input.detailN != null) detail.n = input.detailN;
+    else detail.n = World.regionsForSpacingKm(detail.shapeSpacingKm || 23, world);
 
     const seed = input.seed != null
         ? (EarthFixture.isEarthSeed(input.seed) ? EarthFixture.TOKEN : (input.seed | 0) || 1)
         : (resolved.seed != null
             ? (EarthFixture.isEarthSeed(resolved.seed) ? EarthFixture.TOKEN : resolved.seed)
             : 1);
+    const shapeSeed = input.shapeSeed != null
+        ? (EarthFixture.numericSeed(input.shapeSeed) || 1)
+        : EarthFixture.numericSeed(seed);
     const n = input.n == null ? 10000 : (input.n | 0);
     const jitter = input.jitter == null ? 0.75 : input.jitter;
 
@@ -87,14 +91,15 @@ function freezeConfig(input = {}) {
 
     return Object.freeze({
         seed,
+        shapeSeed,
         n,
         jitter,
         simulateTectonics: input.simulateTectonics !== false,
         /* Tectonics + sea level only: no climate, detail, erosion, or
          * geometry. Search tiles use this — continent layout is enough. */
         baseOnly: !!input.baseOnly,
-        detailPass: input.baseOnly ? false : input.detailPass !== false,
-        erosion: input.baseOnly ? false : input.erosion !== false,
+        detailPass: input.baseOnly ? false : input.detailPass === true,
+        erosion: input.baseOnly ? false : input.erosion !== false && input.detailPass === true,
         climateOn: input.climateOn === 'surface' ? 'surface' : 'sim',
         mergeOceanPlates: !!input.mergeOceanPlates,
         connectOceans: !!input.connectOceans,

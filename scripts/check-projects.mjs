@@ -156,14 +156,17 @@ for (const project of Projects.PROJECTS) {
 {
     const ids = Projects.STAGES.map(s => s.id);
     check("pipeline stages are unique", new Set(ids).size === ids.length);
+    check("pipeline stages are layout → export",
+        ids.join(",") === "layout,shape,climate,terrain,hydrology,export",
+        ids.join(","));
     for (const project of Projects.PROJECTS) {
         const problems = Projects.checkPipeline(project);
         check(`${project.name} pipeline validates`, problems.length === 0, problems.join("; "));
     }
-    check("thalos has started the base",
-        Projects.byName("thalos").pipeline.base === "in play");
-    check("earth base is the locked fixture",
-        Projects.byName("earth").pipeline.base === "fixture locked");
+    check("thalos has started layout",
+        Projects.byName("thalos").pipeline.layout === "in play");
+    check("earth layout is the locked fixture",
+        Projects.byName("earth").pipeline.layout === "fixture locked");
     check("a project's artifacts live under preview/<name>",
         Projects.dir("thalos") === "preview/thalos"
         && Projects.bakeDir("earth") === "preview/earth");
@@ -345,35 +348,45 @@ for (const project of Projects.PROJECTS) {
     const grown = Variants.append([first], Variants.ofWorking({
         project: "thalos", parent: first.id, seed: 23, pins, values: {plates: 11}, name: "ridge",
     }));
-    check("a name appends a child branch instead of updating the parent",
+    check("a name appends a child instead of updating the parent",
         grown.length === 2
         && grown[0].id !== first.id
         && grown[0].parent === first.id
         && grown[0].name === "ridge"
         && grown[1].id === first.id);
-    const moved = Variants.update(grown, first.id, Variants.ofWorking({
-        project: "thalos", seed: 24, pins, values: {plates: 18},
+    const moved = Variants.save(grown, first, Variants.ofWorking({
+        project: "thalos", seed: first.seed, pins, values: {plates: 18},
     }));
-    check("an unnamed save updates the current version in place",
-        moved.length === 2
-        && moved[1].id === first.id
-        && moved[1].seed === 24
-        && moved[1].values.plates === 18
-        && moved[1].generation === 2
-        && moved[1].parent === first.parent);
-    check("a new name is a branch, the same name is not",
-        Variants.wouldBranch(first, "ridge") && !Variants.wouldBranch(first, "")
-        && !Variants.wouldBranch(grown[0], "ridge"));
-    check("a new seed is a branch even without a name",
-        Variants.wouldBranch(first, {seed: first.seed + 1})
-        && !Variants.wouldBranch(first, {seed: first.seed}));
-    check("an explore draw is a branch even on the same seed",
-        Variants.wouldBranch(first, {discover: true, seed: first.seed}));
+    check("a same-planet save is a new node, child of head",
+        moved.length === 3
+        && moved[0].id !== first.id
+        && moved[0].parent === first.id
+        && moved[0].seed === first.seed
+        && moved[0].values.plates === 18
+        && moved[0].generation === 2
+        && moved[1].id === grown[0].id
+        && moved[2].id === first.id
+        && moved[2].values.plates === 16);
+    check("a new layout seed is a different planet, the same seed is not",
+        Variants.differentPlanet(first, {seed: first.seed + 1})
+        && !Variants.differentPlanet(first, {seed: first.seed}));
+    check("an explore draw is a different planet even on the same seed",
+        Variants.differentPlanet(first, {discover: true, seed: first.seed}));
+    check("a name is not a different planet",
+        !Variants.differentPlanet(first, {name: "ridge"}));
     const ranged = Variants.setRanges(moved, first.id, {continentFraction: [0.40, 0.44]});
-    check("explore writes ranges without starting a new generation",
-        ranged[1].id === first.id
-        && ranged[1].generation === 2
-        && ranged[1].ranges.continentFraction[0] === 0.40);
+    check("explore writes ranges without saving a node",
+        ranged[2].id === first.id
+        && ranged[2].generation === 1
+        && ranged[2].ranges.continentFraction[0] === 0.40);
+    const withShape = Variants.ofWorking({
+        project: "thalos", seed: 21, shapeSeed: 99, pins, values: {plates: 16},
+    });
+    check("shape seed is part of the recipe and defaults to the layout seed",
+        Variants.effectiveShapeSeed(first) === first.seed
+        && withShape.shapeSeed === 99
+        && Variants.dirty(withShape, first)
+        && Variants.samePlanet(withShape, first));
     check("two versions may share a recipe",
         Variants.parseVariants([first, same], pins).length === 2);
     check("a parent with a child is not the tip",

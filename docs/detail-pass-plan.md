@@ -1,9 +1,11 @@
 # Giving the base planet detail
 
-Historical design record (Aug 2026). The three steps below shipped: a second
+Historical design record (Aug 2026). The studio model that consumed this
+pass is [studio.md](studio.md): Shape is an explicit cached action at the
+23 km sketch grain, not a generate toggle. The three steps below shipped: a second
 mesh with domain warp and island crests (A), phasor ridges on the belts (C),
-and first-stage erosion (E). Further work on how the pass looks, and a
-separate detail seed, live on [wanted.md](wanted.md) — not here.
+and first-stage erosion (E). Further work on how the pass looks lives on
+[wanted.md](wanted.md) — not here. There is no Shape search sheet.
 
 Status labels follow [full-planet-pipeline.md](full-planet-pipeline.md):
 **decided**, **recommended**, **open**. The problem statement in each section

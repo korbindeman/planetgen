@@ -43,6 +43,11 @@ check("DEFAULTS stay pristine after freezeConfig",
 check("assertPristineDefaults is clean",
     Pipeline.assertPristineDefaults().length === 0,
     Pipeline.assertPristineDefaults().join("; "));
+check("layout generate does not run Shape unless asked",
+    config.detailPass === false);
+check("shape cell count follows 23 km on Thalos",
+    config.options.detail.n === World.regionsForSpacingKm(23, {radiusKm: 3186}),
+    `got ${config.options.detail.n}`);
 
 const planet = Pipeline.createPlanet(config);
 check("document has config, body, sim, detail, geometry",
@@ -57,6 +62,7 @@ const ran = Planet.generatePlanet({
     seed: 7,
     n: 4000,
     detailN: 5000,
+    detailPass: true,
     simSteps: 2,
     quiet: true,
 });
@@ -78,6 +84,44 @@ const skipped = Planet.generatePlanet({
 check("detail is absent when the pass is off", skipped.detail == null);
 check("surface is then the sim",
     skipped.mesh === skipped.sim.mesh);
+
+{
+    const Shape = require(join(root, "src", "shape-artifact.js"));
+    const packed = Shape.fromMap(ran.detail.map, {
+        n: 5000, jitter: 0.75, shapeSeed: 7, spacingKm: 23,
+    });
+    const fields = Shape.toFields(packed);
+    check("shape artifact round-trips metres",
+        !!(packed && fields && fields.cells === ran.detail.mesh.numRegions
+            && fields.r_elevation && fields.r_elevation[0] === ran.detail.map.r_elevation[0]));
+    const laid = Planet.generatePlanet({
+        seed: 7, n: 4000, detailPass: false, simSteps: 2, quiet: true,
+    });
+    const applied = Pipeline.stages.applyShapeFields(laid, fields, {});
+    Pipeline.toLegacy(laid);
+    check("a cached sketch attaches without rerunning Shape",
+        applied && laid.detail && laid.mesh === laid.detail.mesh
+        && laid.map.r_elevation[0] === ran.detail.map.r_elevation[0]);
+}
+
+{
+    const cache = {};
+    const laid = Planet.generatePlanet({
+        seed: 7, n: 4000, detailPass: false, simSteps: 2, quiet: true,
+    }, cache);
+    const simMap = laid.sim.map;
+    const shaped = Planet.generatePlanet({
+        seed: 7, n: 4000, detailN: 5000, detailPass: true, shapeSeed: 99,
+        simSteps: 2, quiet: true,
+    }, cache);
+    check("Shape reuses the layout sim and does not rerun tectonics",
+        shaped.sim.map === simMap && !!shaped.detail);
+    const other = Planet.generatePlanet({
+        seed: 8, n: 4000, detailPass: false, simSteps: 2, quiet: true,
+    }, cache);
+    check("a new layout seed does not reuse the previous sim",
+        other.sim.map !== simMap);
+}
 
 /* A later seed must not keep the first seed's mesh jitter. The tables used
  * to be process-global and fill-once, so opening one variant (or a search

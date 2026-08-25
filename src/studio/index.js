@@ -27,7 +27,10 @@ const GROUP_LABEL = {
     continents: 'Continents',
     volcanism: 'Volcanism',
     polar: 'Poles',
-    mesh: 'Detail mesh',
+    warp: 'Shape',
+    ridges: 'Ridges',
+    fluvial: 'Erosion',
+    glacial: 'Ice',
 };
 
 
@@ -38,6 +41,7 @@ function createSession(startup) {
     return {
         project,
         seed,
+        shapeSeed: seed,
         pins,
         workingValues: {},
         lastResolved: Projects.resolve({name: project, values: effectiveBag(project, pins, {})}),
@@ -57,7 +61,7 @@ function createSession(startup) {
         pendingVariantId: startup.variant || null,
         seedFromQuery: !!startup.seedFromQuery,
         pipelineFact: null,
-        pipelineBakeBusy: false,
+        pipelineShapeBusy: false,
         host: null,
     };
 }
@@ -107,6 +111,7 @@ function loadVariantState(session, variant) {
     session.workingParent = null;
     session.workingRanges = null;
     session.discovery = false;
+    session.shapeSeed = variant.shapeSeed || variant.seed;
 }
 
 
@@ -172,7 +177,9 @@ function setParam(session, name, value) {
     if (name in session.pins) session.pins[name] = value;
     else session.workingValues[name] = value;
     session.projectModified = true;
-    applyPins(session, true);
+    /* Shape genes do not touch plates. They wait for the Shape action
+     * so layout stays frozen while coasts are iterated. */
+    applyPins(session, Params.phase(name) !== 'shape');
 }
 
 
@@ -325,14 +332,14 @@ function renderPipeline(session) {
         tail.className = 'pipeline-tail';
         tail.append(right);
 
-        if (stage.id === 'regional' && live && live.canBake && session.pipelineFact) {
-            const bake = document.createElement('button');
-            bake.type = 'button';
-            bake.className = 'pipeline-action';
-            bake.dataset.action = 'bake-previews';
-            bake.textContent = session.pipelineBakeBusy ? 'Baking…' : 'Bake tiles';
-            bake.disabled = session.pipelineBakeBusy;
-            tail.append(bake);
+        if (stage.id === 'shape' && live && live.canShape) {
+            const shapeBtn = document.createElement('button');
+            shapeBtn.type = 'button';
+            shapeBtn.className = 'pipeline-action';
+            shapeBtn.dataset.action = 'run-shape';
+            shapeBtn.textContent = session.pipelineShapeBusy ? 'Shaping…' : 'Shape';
+            shapeBtn.disabled = session.pipelineShapeBusy;
+            tail.append(shapeBtn);
         }
 
         row.append(label, tail);
@@ -355,35 +362,66 @@ async function refreshPipeline(session) {
 }
 
 
-async function bakeProjectPreviews(session) {
-    if (session.pipelineBakeBusy) return;
-    await ensureVariant(session);
-    const asked = TdOverlay.snapshot();
-    session.pipelineBakeBusy = true;
-    renderPipeline(session);
-    session.host.enableTdCrops();
+async function persistShape(session, payload) {
+    if (!payload) return;
+    const variantId = session.variant && session.variant.id;
+    const id = variantId || (Projects.isFixture(session.project) ? 'earth' : null);
+    if (!id) return;
+    payload.project = session.project;
+    payload.variant = id;
+    const res = await fetch(`${TdOverlay.TD_API}/shape`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || res.statusText);
+    }
+}
+
+
+async function loadVariantShape(session) {
+    if (!session.host || !session.host.loadShape) return;
+    const variantId = session.variant && session.variant.id;
+    const id = variantId || (Projects.isFixture(session.project) ? 'earth' : null);
+    if (!id) {
+        session.host.clearShape();
+        return;
+    }
     try {
-        const res = await fetch(`${TdOverlay.TD_API}/preview-bakes`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                project: session.project,
-                seed: session.seed,
-                values: effectiveValues(session),
-                variant: session.variant && session.variant.id,
-                connectOceans: session.host.getProcess().connectOceans,
-            }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        if (!TdOverlay.stillSameWorld(asked)) return;
-        TdOverlay.reload();
-        session.host.startTdJobPoll();
+        const q = new URLSearchParams({project: session.project, variant: id});
+        const res = await fetch(`${TdOverlay.TD_API}/shape?${q}`);
+        if (!res.ok) {
+            session.host.clearShape();
+            if (session.host.isShaped && session.host.isShaped()) session.host.showLayout();
+            return;
+        }
+        const payload = await res.json();
+        session.host.loadShape(payload);
+    } catch {
+        session.host.clearShape();
+        if (session.host.isShaped && session.host.isShaped()) session.host.showLayout();
+    }
+}
+
+
+async function shapeVariant(session) {
+    if (session.pipelineShapeBusy) return;
+    await ensureVariant(session);
+    if (!Projects.isFixture(session.project) && isWorkingDirty(session)) {
+        await saveWorkingVariant(session);
+    }
+    session.pipelineShapeBusy = true;
+    renderPipeline(session);
+    try {
+        const payload = session.host.runShape(session.shapeSeed || session.seed);
+        await persistShape(session, payload);
         await refreshPipeline(session);
     } catch (err) {
-        window.alert(`Bake tiles failed: ${err.message || err}`);
+        window.alert(`Shape failed: ${err.message || err}`);
     } finally {
-        session.pipelineBakeBusy = false;
+        session.pipelineShapeBusy = false;
         renderPipeline(session);
     }
 }
@@ -503,6 +541,8 @@ function applySeed(session, next) {
     }
     const input = document.getElementById('seed-input');
     if (input) input.value = String(session.seed);
+    const shapeInput = document.getElementById('shape-seed-input');
+    if (shapeInput) shapeInput.value = String(session.shapeSeed || session.seed);
     syncVariantsUI(session);
 }
 
@@ -555,7 +595,34 @@ function shuffleSeed(session) {
     let next;
     do { next = (Math.random() * 0x7fffffff) | 0; } while (next === session.seed);
     if (session.variant) session.discovery = true;
+    session.shapeSeed = next;
+    if (session.host && session.host.clearShape) session.host.clearShape();
     commitSeed(session, next);
+}
+
+
+function setShapeSeed(session, next) {
+    const parsed = parseSeed(next);
+    if (parsed == null || EarthFixture.isEarthSeed(parsed)) {
+        const input = document.getElementById('shape-seed-input');
+        if (input) input.value = String(session.shapeSeed || session.seed);
+        return;
+    }
+    session.shapeSeed = parsed;
+    session.projectModified = true;
+    const input = document.getElementById('shape-seed-input');
+    if (input) input.value = String(parsed);
+    syncVariantsUI(session);
+    if (session.host && session.host.isShaped && session.host.isShaped()) {
+        session.host.runShape(session.shapeSeed);
+    }
+}
+
+
+function shuffleShapeSeed(session) {
+    let next;
+    do { next = (Math.random() * 0x7fffffff) | 0; } while (next === (session.shapeSeed || session.seed));
+    setShapeSeed(session, next);
 }
 
 
@@ -716,7 +783,8 @@ function resumeCatalog(session) {
 
 async function hydrateAndResume(session) {
     await hydrateCatalog(session);
-    resumeCatalog(session);
+    const resumed = resumeCatalog(session);
+    if (resumed || Projects.isFixture(session.project)) await loadVariantShape(session);
 }
 
 
@@ -782,6 +850,7 @@ function workingVariant(session, extra) {
         parent: extra.parent != null ? extra.parent
             : (session.variant && session.variant.id) || session.workingParent,
         seed: session.seed,
+        shapeSeed: session.shapeSeed,
         pins: session.pins,
         body: session.pins,
         values: variantValues(session),
@@ -878,12 +947,6 @@ function renderVariantsList(session, items) {
             adopted.textContent = 'adopted';
             badges.append(adopted);
         }
-        if ((variant.generation || 1) > 1) {
-            const gen = document.createElement('span');
-            gen.className = 'variant-badge';
-            gen.textContent = `gen ${variant.generation}`;
-            badges.append(gen);
-        }
         if (badges.childNodes.length) row.append(badges);
 
         const actions = document.createElement('div');
@@ -903,7 +966,7 @@ function renderVariantsList(session, items) {
         if (committed) {
             const mark = document.createElement('span');
             mark.className = 'variant-committed';
-            mark.title = 'Adopted — expensive stages use this version';
+            mark.title = 'Adopted — Finish runs on this version';
             mark.textContent = 'Adopted';
             actions.append(mark);
         } else {
@@ -912,7 +975,7 @@ function renderVariantsList(session, items) {
             adopt.className = 'variant-commit';
             adopt.dataset.action = 'commit-variant';
             adopt.dataset.id = variant.id;
-            adopt.title = 'Adopt this version for the pipeline';
+            adopt.title = 'Adopt this version so Finish runs on it';
             adopt.textContent = 'Adopt';
             actions.append(adopt);
         }
@@ -984,7 +1047,7 @@ function typedVersionName() {
 }
 
 
-function branchInput(session, name) {
+function differentPlanetInput(session, name) {
     return {
         name: name != null ? name : typedVersionName(),
         seed: session.seed,
@@ -993,8 +1056,8 @@ function branchInput(session, name) {
 }
 
 
-function isBranching(session, name) {
-    return Variants.wouldBranch(session.variant, branchInput(session, name));
+function isDifferentPlanet(session) {
+    return Variants.differentPlanet(session.variant, differentPlanetInput(session));
 }
 
 
@@ -1002,12 +1065,12 @@ function saveHint(session, items) {
     const name = typedVersionName();
     const dirty = isWorkingDirty(session);
     const head = selectedVariant(session, items);
-    if (isBranching(session, name)) {
-        if (name) return `Branches from ${versionLabel(head)} as ${name}.`;
-        return `A new planet — save will branch from ${versionLabel(head)}.`;
+    if (isDifferentPlanet(session)) {
+        if (name) return `A new planet, child of ${versionLabel(head)}, labeled ${name}.`;
+        return `A new planet — Save writes a child of ${versionLabel(head)}.`;
     }
     if (!head) return 'Saves the globe as the first version.';
-    if (dirty) return `Saves ${versionLabel(head)} — a newer generation of this line.`;
+    if (dirty || name) return `Same planet — Save writes a child of ${versionLabel(head)}.`;
     return '';
 }
 
@@ -1017,14 +1080,14 @@ function syncSaveButton(session) {
     const selected = selectedVariant(session, items);
     const dirty = isWorkingDirty(session);
     const name = typedVersionName();
-    const branching = isBranching(session, name);
     const saveBtn = document.getElementById('variant-save');
     if (saveBtn) {
-        if (branching) saveBtn.textContent = name ? `Branch as ${name}` : 'Branch';
-        else if (!selected) saveBtn.textContent = name ? `Save as ${name}` : 'Save';
-        else if (dirty) saveBtn.textContent = 'Save';
+        if (name && (dirty || isDifferentPlanet(session) || selected)) {
+            saveBtn.textContent = `Save as ${name}`;
+        } else if (!selected) saveBtn.textContent = name ? `Save as ${name}` : 'Save';
+        else if (dirty || isDifferentPlanet(session)) saveBtn.textContent = 'Save';
         else saveBtn.textContent = 'Saved';
-        saveBtn.disabled = !branching && !dirty && !!selected;
+        saveBtn.disabled = !isDifferentPlanet(session) && !dirty && !name && !!selected;
     }
     const hint = document.getElementById('versions-save-hint');
     if (hint) {
@@ -1058,9 +1121,9 @@ function syncVariantsUI(session) {
         button.textContent = items.length ? `Versions ${items.length}` : 'Versions';
         button.classList.toggle('is-dirty', dirty && !blocked);
         button.title = dirty
-            ? (isBranching(session)
-                ? 'Uncommitted — a new planet, save will branch'
-                : 'Uncommitted — save this version, or name a branch')
+            ? (isDifferentPlanet(session)
+                ? 'Uncommitted — a new planet, Save writes a child'
+                : 'Uncommitted — Save writes a child of this planet')
             : 'Versions of this project';
     }
     renderVersionCompare(session, items);
@@ -1216,7 +1279,7 @@ function mountSearchTiles(session) {
         open.dataset.action = 'open-search';
         open.dataset.index = String(i);
         open.setAttribute('aria-label', 'Open in the viewer without saving');
-        open.title = 'Open as uncommitted work — save will branch';
+        open.title = 'Open as uncommitted work — Save writes a new planet';
         open.textContent = 'Open';
 
         const keep = document.createElement('button');
@@ -1225,11 +1288,11 @@ function mountSearchTiles(session) {
         keep.dataset.action = 'toggle-variant';
         keep.dataset.index = String(i);
         keep.setAttribute('aria-pressed', String(kept));
-        keep.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a branch');
+        keep.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a child');
         keep.title = kept
             ? 'This planet is already a version'
-            : (session.variant ? 'Save as a branch of the current version' : 'Save as the first version');
-        keep.textContent = kept ? 'Saved' : (session.variant ? 'Branch' : 'Save');
+            : (session.variant ? 'Save as a child of the current version' : 'Save as the first version');
+        keep.textContent = kept ? 'Saved' : 'Save';
 
         actions.append(open, keep);
         tile.append(face, actions);
@@ -1339,8 +1402,8 @@ function syncSearchVariantTile(session, i, kept) {
     if (tile) tile.classList.toggle('is-kept', kept);
     if (button) {
         button.setAttribute('aria-pressed', String(kept));
-        button.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a branch');
-        button.textContent = kept ? 'Saved' : (session.variant ? 'Branch' : 'Save');
+        button.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a child');
+        button.textContent = kept ? 'Saved' : 'Save';
     }
 }
 
@@ -1398,7 +1461,7 @@ async function toggleSearchVariant(session, i) {
     extra.ranges = s.ranges;
     const child = Variants.ofIndividual(ind, extra);
     if (thumb) child.thumb = thumb;
-    const next = Variants.append(readVariants(session), child);
+    const next = Variants.save(readVariants(session), head, child);
     const saved = Variants.findById(next, child.id) || next[0];
     session.catalog = {
         project: session.project,
@@ -1432,9 +1495,18 @@ async function applySavedVariant(session, saved, nameInput) {
     session.projectModified = false;
     session.compareId = null;
     session.discovery = false;
+    session.shapeSeed = saved.shapeSeed || saved.seed;
     Boot.writeStoredVariant(session.project, saved.id);
     if (saved.thumb) persistThumb(session, saved.id, saved.thumb);
     if (nameInput) nameInput.value = '';
+    /* A child starts unshaped. Drop a parent's sketch if it is still on
+     * the globe; do not copy the file onto the new id. */
+    if (session.host && session.host.clearShape) {
+        const shaped = session.host.isShaped && session.host.isShaped();
+        session.host.clearShape();
+        if (shaped && session.host.showLayout) session.host.showLayout();
+        else if (shaped) session.host.generateMesh();
+    }
     syncContext(session);
     syncVariantsUI(session);
     renderProjectState(session);
@@ -1447,38 +1519,23 @@ async function saveWorkingVariant(session) {
     const nameInput = document.getElementById('variant-name');
     const name = typedVersionName();
     const head = session.variant;
-    const branching = isBranching(session, name);
-    if (!branching && !isWorkingDirty(session) && head) return head;
+    const newPlanet = isDifferentPlanet(session);
+    if (!newPlanet && !isWorkingDirty(session) && !name && head) return head;
     const thumb = captureWorkingThumb(session);
-    if (head && !branching) {
-        const incoming = workingVariant(session, {
-            name: name || head.name,
-            thumb,
-            parent: head.parent,
-            id: head.id,
-        });
-        const next = Variants.update(readVariants(session), head.id, incoming);
-        session.catalog = {
-            project: session.project,
-            committed: session.catalog.committed,
-            variants: next,
-        };
-        await persistCatalog(session);
-        const saved = Variants.findById(next, head.id);
-        return applySavedVariant(session, saved, nameInput);
-    }
-    const parentId = head ? head.id : session.workingParent;
-    const incoming = workingVariant(session, {name, thumb, parent: parentId});
+    const incoming = workingVariant(session, {name, thumb});
     if (!incoming) return session.variant;
-    const next = Variants.append(readVariants(session), incoming);
-    const saved = Variants.findById(next, incoming.id) || next[0];
+    const parentId = head ? head.id : session.workingParent;
+    const next = Variants.save(readVariants(session), head, incoming);
+    const saved = next[0];
     session.catalog = {
         project: session.project,
         committed: session.catalog.committed,
         variants: next,
     };
-    if (saved && !branching) {
+    if (saved && !newPlanet) {
         session.catalog = Variants.advanceHead(session.catalog, parentId, saved.id);
+    } else if (saved && !head) {
+        session.catalog = Variants.advanceHead(session.catalog, null, saved.id);
     }
     await persistCatalog(session);
     return applySavedVariant(session, saved, nameInput);
@@ -1494,13 +1551,9 @@ function openVariant(session, id) {
     session.projectModified = false;
     Boot.writeStoredVariant(session.project, variant.id);
     applyPins(session, false);
-    if (session.seed === variant.seed) {
-        session.host.generateMesh();
-        syncContext(session);
-        syncVariantsUI(session);
-        return;
-    }
-    commitSeed(session, variant.seed);
+    if (session.seed !== variant.seed) commitSeed(session, variant.seed);
+    loadVariantShape(session);
+    syncContext(session);
     syncVariantsUI(session);
 }
 
@@ -1681,6 +1734,8 @@ function bind(session) {
             syncModeButtons(session);
         } else if (action === 'shuffle-seed') {
             shuffleSeed(session);
+        } else if (action === 'shuffle-shape-seed') {
+            shuffleShapeSeed(session);
         } else if (action === 'undo-seed') {
             undoSeed(session);
         } else if (action === 'redo-seed') {
@@ -1699,8 +1754,8 @@ function bind(session) {
             openProject(session, el.dataset.project);
         } else if (action === 'toggle-pin') {
             toggleParamPin(session, el.dataset.param);
-        } else if (action === 'bake-previews') {
-            bakeProjectPreviews(session);
+        } else if (action === 'run-shape') {
+            shapeVariant(session);
         } else if (action === 'toggle-like') {
             toggleSearchLike(session, el.dataset.index | 0);
         } else if (action === 'open-search') {
@@ -1730,7 +1785,6 @@ function bind(session) {
         else if (action === 'plate-boundaries') session.host.setDrawPlateBoundaries(el.checked);
         else if (action === 'td-crops') session.host.setTdCrops(el.checked);
         else if (action === 'simulate-tectonics') session.host.setProcess('simulateTectonics', el.checked);
-        else if (action === 'detail-pass') session.host.setProcess('detailPass', el.checked);
         else if (action === 'merge-ocean-plates') session.host.setProcess('mergeOceanPlates', el.checked);
         else if (action === 'connect-oceans') session.host.setProcess('connectOceans', el.checked);
         else if (action === 'rotation') session.host.setRotation(el.valueAsNumber);
@@ -1739,10 +1793,15 @@ function bind(session) {
             const label = document.getElementById('regions-label');
             if (label) label.textContent = String(n);
             session.host.setN(n);
-        } else if (action === 'jitter') {
+        }         else if (action === 'jitter') {
             const label = document.getElementById('jitter-label');
             if (label) label.textContent = el.valueAsNumber.toFixed(2);
             session.host.setJitter(el.valueAsNumber);
+        } else if (action === 'shape-spacing') {
+            const km = el.valueAsNumber | 0;
+            const label = document.getElementById('shape-spacing-label');
+            if (label) label.textContent = `${km} km`;
+            if (session.host.setShapeSpacing) session.host.setShapeSpacing(km);
         } else if (action === 'set-param' && el.type === 'range') {
             const readout = el.parentElement && el.parentElement.querySelector('.param-value');
             const meta = Params.all()[el.dataset.param];
@@ -1755,6 +1814,7 @@ function bind(session) {
         if (!el) return;
         const action = el.dataset.action;
         if (action === 'seed') setSeed(session, el.value);
+        else if (action === 'shape-seed') setShapeSeed(session, el.value);
         else if (action === 'set-param') {
             const name = el.dataset.param;
             if (el.type === 'checkbox') setParam(session, name, el.checked);
@@ -1763,6 +1823,9 @@ function bind(session) {
     });
 
     document.getElementById('seed-input')?.addEventListener('keydown', event => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+    });
+    document.getElementById('shape-seed-input')?.addEventListener('keydown', event => {
         if (event.key === 'Enter') event.currentTarget.blur();
     });
 

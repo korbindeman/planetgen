@@ -12,6 +12,8 @@ const Tectonics = require('./tectonics');
 const Detail = require('./detail');
 const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 const Planet = require('./planet');
+const Pipeline = require('./pipeline');
+const ShapeArtifact = require('./shape-artifact');
 const Look = require('./look');
 const TdOverlay = require('./td-overlay');
 const TdTile = require('./td-tile');
@@ -41,6 +43,7 @@ const SURFACE_GLSL = Look.SURFACE_GLSL;
 /* UI parameters */
 let N = 10000;
 let jitter = 0.75;
+let shapeSpacingKm = 23;
 let rotation = -1;
 let dragRotation = mat4.create();
 let zoom = 1;
@@ -53,7 +56,10 @@ let draw_plateBoundaries = false;
 let merge_ocean_plates = false;
 let connect_oceans = false;
 let simulate_tectonics = true;
-let detail_pass = true;
+let detail_pass = false;
+let shape_seed = 0;
+let pending_shape = null;
+let apply_pending_shape = false;
 let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate'
 let previewYaw = 0;
 
@@ -416,18 +422,23 @@ var mesh, map = {};
 var simMesh, simMap;
 var quadGeometry = {xyz: null, tm: null, I: null};
 var planetCache = {};
+let last_detail_n = 0;
 
 function generateMesh() {
     planetCache.sim = null;
+    planetCache.detail = null;
+    planetCache.layout = null;
     generateMap();
     studio.setPlanetReady(true);
 }
 
 function generateMap() {
     const tectonics = studio.lastResolved.options.tectonics;
-    const detail = studio.lastResolved.options.detail;
+    const keepShape = apply_pending_shape;
+    apply_pending_shape = false;
     const result = Planet.generatePlanet({
         seed: studio.seed,
+        shapeSeed: shape_seed || studio.shapeSeed || studio.seed,
         n: N,
         p: tectonics.plates,
         jitter,
@@ -437,10 +448,16 @@ function generateMap() {
         mergeOceanPlates: merge_ocean_plates,
         connectOceans: connect_oceans,
         detailPass: detail_pass,
-        detailN: detail.n,
+        detail: {shapeSpacingKm},
         project: studio.project,
         values: studio.generateValues ? studio.generateValues() : studio.pins,
     }, planetCache);
+    last_detail_n = result.config.options.detail.n;
+    if (!detail_pass && keepShape && pending_shape) {
+        const fields = ShapeArtifact.toFields(pending_shape);
+        Pipeline.stages.applyShapeFields(result, fields, planetCache);
+        Pipeline.toLegacy(result);
+    }
     simMesh = result.simMesh;
     simMap = result.simMap;
     mesh = result.mesh;
@@ -2602,6 +2619,51 @@ function renderSearchTile(ind) {
     return paintSearchEquirect(planet, SEARCH_TILE_W, SEARCH_TILE_H);
 }
 
+function captureShape() {
+    if (!map || !map.r_elevation || mesh === simMesh) return null;
+    const spacing = shapeSpacingKm;
+    return ShapeArtifact.fromMap(map, {
+        n: last_detail_n || (studio.lastResolved && studio.lastResolved.options.detail.n),
+        jitter,
+        shapeSeed: shape_seed || studio.shapeSeed || studio.seed,
+        spacingKm: spacing,
+    });
+}
+
+
+function runShape(seed) {
+    shape_seed = (seed | 0) || studio.seed;
+    detail_pass = true;
+    generateMap();
+    pending_shape = captureShape();
+    detail_pass = false;
+    return pending_shape;
+}
+
+function isShaped() {
+    return !!(map && map.r_elevation && mesh && simMesh && mesh !== simMesh);
+}
+
+
+function loadShape(payload) {
+    pending_shape = payload;
+    apply_pending_shape = !!payload;
+    if (payload && payload.shapeSeed) shape_seed = payload.shapeSeed | 0;
+    generateMap();
+}
+
+
+function clearShape() {
+    pending_shape = null;
+    apply_pending_shape = false;
+}
+
+function showLayout() {
+    pending_shape = null;
+    apply_pending_shape = false;
+    generateMap();
+}
+
 Studio.mount(studio, {
     generateMesh,
     generateMap,
@@ -2618,6 +2680,14 @@ Studio.mount(studio, {
     setDrawPlateBoundaries(flag) { draw_plateBoundaries = flag; draw(); },
     setN(n) { N = n; generateMesh(); },
     setJitter(value) { jitter = value; generateMesh(); },
+    setShapeSpacing(km) {
+        shapeSpacingKm = Math.max(10, km | 0);
+        if (pending_shape) {
+            pending_shape = null;
+            apply_pending_shape = false;
+        }
+        generateMap();
+    },
     setRotation(value) { rotation = value; draw(); },
     getProcess: () => ({
         simulateTectonics: simulate_tectonics,
@@ -2626,6 +2696,12 @@ Studio.mount(studio, {
         connectOceans: connect_oceans,
     }),
     setProcess,
+    runShape,
+    loadShape,
+    clearShape,
+    captureShape,
+    isShaped,
+    showLayout,
     setTdCrops,
     enableTdCrops,
     startTdJobPoll,

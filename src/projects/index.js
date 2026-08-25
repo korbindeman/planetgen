@@ -157,6 +157,7 @@ module.exports = {
     variantDir: Artifacts.variantDir,
     catalogPath: Artifacts.catalogPath,
     thumbPath: Artifacts.thumbPath,
+    shapePath: Artifacts.shapePath,
     isVariantId: Artifacts.isVariantId,
     sameSeed: Artifacts.sameSeed,
     Variants,

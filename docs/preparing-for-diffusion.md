@@ -1,13 +1,13 @@
 # Preparing for terrain-diffusion
 
-Planetgen is the coarse planetary **base**: plates, a heightmap, and climate on the sphere. The detail pass already roughs in valleys and fjords. [terrain-diffusion](https://github.com/xandergos/terrain-diffusion) turns a **planar sketch** of that base into a high-resolution DEM. Fine hydrology (real river networks, discharge, lakes) and other post-processing run **after** that DEM exists.
+Planetgen is the planetary **base**: plates, a heightmap, and climate on the sphere. Discover writes a **sketch** (Shape) at this model's grain. [terrain-diffusion](https://github.com/xandergos/terrain-diffusion) turns a **planar** crop of that sketch into a high-resolution DEM. Fine hydrology (real river networks, discharge, lakes) and other post-processing run **after** that DEM exists. Studio model: [studio.md](studio.md).
 
 This note is the handoff: what the model reads, how planetgen writes it, what actually works as a sketch, and what to do once you have 90 m (or 30 m) elevation.
 
 ## Pipeline
 
 ```
-planetgen (sphere, ~220 km cells)
+planetgen layout (~10k) then Shape (23 km sketch)
     → bun run export:td          regional GeoTIFF sketches
     → terrain-diffusion tiff-export     256× upsample DEM
     → hydrology / erosion        rivers, canyons, lakes
@@ -29,7 +29,7 @@ The model does **not** want a globe, an equirectangular planet, or a finished DE
 | `xandergos/terrain-diffusion-90m` | 90 m/px | **23 km** | Large-scale worldbuilding. More coherent. Often “too expansive.” |
 | `xandergos/terrain-diffusion-30m` | 30 m/px | **7.7 km** | Playable / local variation. Finer control. |
 
-Planetgen’s mesh spacing at `N=10000` is on the order of **220 km**. Even the 90 m model’s 23 km cell is still interpolating our blobs. The sketch will look like large filled polygons, not terrain. That is correct.
+Planetgen’s layout mesh at `N=10000` is ~226 km on Earth and ~113 km on Thalos. Shape resamples onto the model’s sketch grain (**23 km**), derived from radius, before export. The 90 m model still interpolates that sketch. That is correct.
 
 ### Upsample and size
 

@@ -23,7 +23,11 @@ const World = require('./world');
 
 
 const DEFAULTS = {
-    n: 200000,                    // regions on the detail mesh
+    /* Grain of the sketch the diffusion model eats. Cell count is derived
+     * from this and the planet radius in freezeConfig. n is only a fallback
+     * when a caller passes detailN (tests, inspect). */
+    shapeSpacingKm: 23,
+    n: 200000,                    // regions on the detail mesh; derived at run
     /* World Orogen warpTerrain (terrain-post.js / terrain-config.js). */
     warpStrength: 0.75,           // their Terrain Warp slider default
     warpFreq: 4,                  // unit-sphere; ~10000 km wavelength

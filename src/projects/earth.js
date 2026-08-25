@@ -26,10 +26,8 @@ module.exports = {
     /* How far this fixture has got toward the raw bake export. Keys are
      * stages in `pipeline.js`; a missing key is not started. */
     pipeline: {
-        base: 'fixture locked',
-        conditioning: 'crops',
-        regional: 'crops',
-        bake: 'later',
+        layout: 'fixture locked',
+        terrain: 'later',
     },
 
     body: {

@@ -1117,8 +1117,8 @@
           <span id="project-title" class="project-title"></span>
         </div>
         <div class="row">
-          <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="1003" aria-label="Seed" data-action="seed">
-          <button type="button" data-action="shuffle-seed">Shuffle</button>
+          <input id="seed-input" type="text" autocomplete="off" spellcheck="false" value="1003" aria-label="Layout seed" title="Layout seed" data-action="seed">
+          <button type="button" data-action="shuffle-seed" title="Shuffle the layout seed — a different planet">Shuffle</button>
         </div>
         <div class="row">
           <button type="button" id="seed-undo" data-action="undo-seed" disabled title="Undo seed (\u2318Z)">Undo</button>
@@ -1148,7 +1148,6 @@
       <details class="panel">
         <summary>Advanced</summary>
         <label class="check"><input type="checkbox" data-action="simulate-tectonics" checked><span>Live tectonics</span></label>
-        <label class="check"><input type="checkbox" data-action="detail-pass" checked><span>Terrain detail</span></label>
         <label class="check"><input type="checkbox" data-action="merge-ocean-plates"><span>Merge ocean plates</span></label>
         <label class="check"><input type="checkbox" data-action="connect-oceans"><span>One world ocean</span></label>
         <div class="row">
@@ -1161,8 +1160,15 @@
         </div>
         <!-- Mesh resolution, not geography: changing these must not change the
              planet, which is why they are not parameters. -->
-        <label class="field"><span>Mesh size</span><output id="regions-label">10000</output>
+        <label class="field"><span>Layout mesh</span><output id="regions-label">10000</output>
           <input type="range" min="2" max="5" step="0.001" value="4" data-action="regions">
+        </label>
+        <label class="field"><span>Shape seed</span>
+          <input id="shape-seed-input" type="text" autocomplete="off" spellcheck="false" aria-label="Shape seed" title="Shuffle coasts on this planet" data-action="shape-seed">
+          <button type="button" data-action="shuffle-shape-seed" title="Shuffle the shape seed — same planet">Shuffle</button>
+        </label>
+        <label class="field"><span>Shape spacing</span><output id="shape-spacing-label">23 km</output>
+          <input type="range" min="10" max="50" step="1" value="23" data-action="shape-spacing">
         </label>
         <label class="field"><span>Mesh jitter</span><output id="jitter-label">0.50</output>
           <input type="range" min="0" max="1" step="0.001" value="0.5" data-action="jitter">
@@ -1223,8 +1229,8 @@
         <div id="versions-status" class="versions-status"></div>
       </div>
       <form id="variants-form">
-        <input id="variant-name" type="text" maxlength="48" placeholder="Name to branch" autocomplete="off" spellcheck="false" aria-label="Branch name">
-        <button type="submit" id="variant-save" title="Save or branch (\u2318S)">Save</button>
+        <input id="variant-name" type="text" maxlength="48" placeholder="Optional name" autocomplete="off" spellcheck="false" aria-label="Version name">
+        <button type="submit" id="variant-save" title="Save (\u2318S)">Save</button>
         <p id="versions-save-hint" class="versions-hint"></p>
       </form>
       <div id="versions-compare" class="versions-compare" hidden>

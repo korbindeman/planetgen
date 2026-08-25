@@ -17,7 +17,7 @@ module.exports = {
     /* How far this project has got toward the raw bake export. Keys are
      * stages in `pipeline.js`; a missing key is not started. */
     pipeline: {
-        base: 'in play',
+        layout: 'in play',
     },
 
     /* Adopted body: the default for new working planets. Variants store
