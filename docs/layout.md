@@ -259,7 +259,7 @@ default. `mergeOceanPlates` only applies on the 1843 path.
   not rebuild it without first raising the mesh by an order of magnitude.
 - **Why this model and not another** — the Aug 2026 survey of World
   Orogen, GPlates, ASPECT, tectonics.js and the Cortial and Borg papers
-  is in [history/base-survey-2026-08.md](history/base-survey-2026-08.md).
+  is in [history/layout-base-survey-2026-08.md](history/layout-base-survey-2026-08.md).
   Borg et al. (Eurographics 2026) is the one to watch.
 
 ## How to judge it

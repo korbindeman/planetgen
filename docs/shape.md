@@ -149,7 +149,7 @@ Shape reuses the variant's layout: plates and `climate.js` do **not**
 rerun when you Shape, shuffle the shape seed, or move a shape gene.
 
 The full reasoning for choosing these three, and what was rejected, is in
-[history/detail-pass-2026-08.md](history/detail-pass-2026-08.md).
+[history/shape-detail-pass-2026-08.md](history/shape-detail-pass-2026-08.md).
 
 ## Open
 

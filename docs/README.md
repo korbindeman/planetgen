@@ -65,6 +65,14 @@ them. When a wish is granted it becomes a row in section 3 upstream.
 Section 6 is the point of this repo. Almost every stage is open. A doc
 that reads as finished is either wrong or about Export.
 
+**One file per stage, until it earns a folder.** When a stage's open
+questions each grow their own working notes, promote that stage —
+`layout.md` becomes `layout/README.md` with siblings beside it, and §6
+links down to them. Sections 3 and 4 never leave the front page: the
+contract and the invariants stay where every other doc points at them.
+Do not promote a stage before it needs it; one file is what keeps the
+skeleton usable.
+
 ## Not a stage
 
 - [studio.md](studio.md) — the harness: Discover/Finish, projects,
@@ -89,9 +97,9 @@ learn something.
 Decisions as they were made, kept because the reasoning is worth more
 than the outcome. Do not update these — they are dated on purpose.
 
-- [history/detail-pass-2026-08.md](history/detail-pass-2026-08.md) — how
+- [history/shape-detail-pass-2026-08.md](history/shape-detail-pass-2026-08.md) — how
   Shape's three steps were chosen and what they replaced.
-- [history/base-survey-2026-08.md](history/base-survey-2026-08.md) — why
+- [history/layout-base-survey-2026-08.md](history/layout-base-survey-2026-08.md) — why
   planetgen and not World Orogen, GPlates, ASPECT, or tectonics.js.
 
 ## Status words

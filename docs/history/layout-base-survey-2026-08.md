@@ -17,7 +17,7 @@ The live stage is [layout.md](../layout.md).
 ## What we kept from World Orogen and what we did not
 
 Read at the same time, and the source of Shape's three steps — see
-[detail-pass-2026-08.md](detail-pass-2026-08.md).
+[shape-detail-pass-2026-08.md](shape-detail-pass-2026-08.md).
 
 | | planetgen | World Orogen | call |
 | --- | --- | --- | --- |
