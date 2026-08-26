@@ -132,6 +132,28 @@ for (const stage of STAGES) {
     check(`${stage}: § Reads records its wishes`, /\*\*Wishes\*\*/.test(text));
 }
 
+console.log("\nvocabulary");
+{
+    const context = readFileSync(join(root, "CONTEXT.md"), "utf8");
+    /* Climate, Terrain and Export went years without an entry, so the
+     * glossary is held to naming every stage it claims to cover. */
+    const words = ["Layout", "Shape", "Climate", "Terrain", "Carve", "Export",
+                   "Hydrology", "Sketch", "Pipeline", "Discover", "Finish"];
+    const absent = words.filter((w) => !context.includes(`**${w}**:`));
+    check(`CONTEXT.md defines every pipeline word (${words.length})`,
+        absent.length === 0, absent.join(", "));
+    /* An entry header is a bold term alone on its line ending in a colon.
+     * Matching bare `**` also catches a term that merely wraps onto a new
+     * line, which is most of them. */
+    const entries = context.split(/^\*\*(.+?)\*\*:$/m);
+    const noAvoid = [];
+    for (let i = 1; i < entries.length; i += 2) {
+        if (!entries[i + 1].split(/\n## /)[0].includes("_Avoid_")) noAvoid.push(entries[i]);
+    }
+    check(`every CONTEXT.md term says what not to call it (${(entries.length - 1) / 2})`,
+        noAvoid.length === 0, noAvoid.join(", "));
+}
+
 console.log("\ncontracts match the code");
 {
     const artifact = readFileSync(join(root, "src", "shape-artifact.js"), "utf8");
