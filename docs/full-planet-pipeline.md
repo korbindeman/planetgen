@@ -16,13 +16,12 @@ adopted body                    optional project default
     → run Shape                 explicit; 23 km sketch, cached on that node
     → hand-author (later)       sculpt that variant's sketch
     → preview tiles             90 m crops, per variant — a tool, not a stage
-    → commit (Adopt)            this instance is the project's planet
     → Finish                    climate, terrain, hydrology, export
 ```
 
 A project is a tree of variants plus an optional adopted body. A variant
 stores its own body. Pins are body-only and inherited down the lineage.
-Commit chooses the instance — it does not pin every remaining gene.
+Finish runs on the variant you name.
 
 Every Save is a new node. A node's sketch does not go stale; a child is a
 different snapshot and starts unshaped. Preview tiles and later hand-edits

@@ -2,10 +2,11 @@
  * Shared look. Both renderers consume this; neither should own colours.
  *
  * Ocean and biome tables live in colormap.js (the texture both sample).
- * This file is everything painted on top: ice, rock, lighting, overlay
- * palettes, annotation ink, and the TD-export hypsometric ramps.
+ * This file is everything painted on top: ice, rock, lighting, the
+ * relief look, overlay palettes, annotation ink, and the TD-export
+ * hypsometric ramps.
  *
- * The JS surfaceAlbedo and the GLSL string are built from the same
+ * The JS albedo functions and the GLSL strings are built from the same
  * constants. Change a number here, not in a renderer.
  */
 'use strict';
@@ -22,6 +23,17 @@ function lerp(a, b, t) {
 
 function lerp3(a, b, t) {
     return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+}
+
+function sampleRamp(stops, x) {
+    for (let i = 1; i < stops.length; i++) {
+        if (x <= stops[i][0] || i === stops.length - 1) {
+            const [a, ca] = stops[i - 1];
+            const [b, cb] = stops[i];
+            return lerp3(ca, cb, clamp01((x - a) / (b - a || 1)));
+        }
+    }
+    return stops[stops.length - 1][1];
 }
 
 function smoothstep(edge0, edge1, x) {
@@ -135,6 +147,7 @@ const OVERLAY_LEGEND = {
     plates: 'color = plate   dark = underwater   arrow = motion   age = time since the plate formed',
     crust: 'sea floor: pale = young, dark = old   land: red = orogeny   orange = ridge   cyan = trench   yellow = transform',
     climate: 'moisture only: sand = arid   olive = steppe   green = forest   teal = saturated',
+    relief: 'hillshade relief   blue = ocean   green = low   brown = mountains   white = peaks',
 };
 
 /* --- annotation / chrome -------------------------------------------- */
@@ -267,6 +280,48 @@ vec3 surfaceAlbedo(sampler2D colormap, vec3 tm) {
 `;
 })();
 
+/* Hypsometric land tint for the Relief look. Ocean uses the colormap's
+ * bathymetry so ridges and trenches stay visible; ice and biomes do not
+ * sit on top. The same stops feed the GLSL. */
+const RELIEF_LAND = [
+    [0.00, [0.40, 0.62, 0.34]],
+    [0.16, [0.58, 0.70, 0.36]],
+    [0.34, [0.80, 0.76, 0.46]],
+    [0.55, [0.64, 0.46, 0.28]],
+    [0.78, [0.80, 0.76, 0.70]],
+    [1.00, [0.96, 0.96, 0.97]],
+];
+
+function reliefAlbedo(e) {
+    if (e < 0) return sampleColormap(0.5 * (e + 1), 0.5);
+    return sampleRamp(RELIEF_LAND, clamp01(e));
+}
+
+const RELIEF_GLSL = (() => {
+    const lines = ['vec3 reliefLand(float e) {'];
+    for (let i = 1; i < RELIEF_LAND.length; i++) {
+        const [a, ca] = RELIEF_LAND[i - 1];
+        const [b, cb] = RELIEF_LAND[i];
+        const cond = i === RELIEF_LAND.length - 1 ? 'true' : `e <= ${glNum(b)}`;
+        lines.push(`  if (${cond}) {`);
+        lines.push(`    float t = clamp((e - ${glNum(a)}) / ${glNum(b - a)}, 0.0, 1.0);`);
+        lines.push(`    return mix(${glVec3(ca)}, ${glVec3(cb)}, t);`);
+        lines.push('  }');
+    }
+    lines.push(`  return ${glVec3(RELIEF_LAND[RELIEF_LAND.length - 1][1])};`);
+    lines.push('}');
+    return `
+${lines.join('\n')}
+vec3 reliefAlbedo(sampler2D colormap, vec3 tm) {
+  float e = tm.x;
+  if (e < 0.0) {
+    return texture2D(colormap, vec2(0.5 * (e + 1.0), 0.5)).rgb;
+  }
+  return reliefLand(clamp(e, 0.0, 1.0));
+}
+`;
+})();
+
 function hillshade(dedx, dedy) {
     const k = LIGHT.d * 2 * LIGHT.invTex;
     const slx = dedy, sly = dedx, slz = k;
@@ -372,6 +427,8 @@ module.exports = {
     sampleColormap,
     surfaceAlbedo,
     SURFACE_GLSL,
+    reliefAlbedo,
+    RELIEF_GLSL,
     hillshade,
     northPoleLines,
     elevRgb,

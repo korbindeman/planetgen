@@ -185,10 +185,15 @@ function pendingCrops() {
     ));
 }
 
+function previewUrl(url) {
+    if (!url || /^(https?:|data:|blob:)/.test(url)) return url;
+    if (url.charAt(0) === '/') return TD_API + url;
+    return url;
+}
+
 function resolveImage(url) {
-    if (!url) return url;
-    if (/^(https?:|data:|blob:)/.test(url)) return url;
-    if (apiUp && url.charAt(0) === '/') return TD_API + url;
+    if (!url || /^(https?:|data:|blob:)/.test(url)) return url;
+    if (apiUp) return previewUrl(url);
     return url;
 }
 
@@ -470,9 +475,11 @@ function projectGlobe(xyz, projection) {
 function lonLatToEquirectClip(lonDeg, latDeg, view, xshift) {
     const lonRad = lonDeg * Math.PI / 180 + xshift * Math.PI;
     const latRad = latDeg * Math.PI / 180;
+    const zx = (view.equirectZoom || 1) * (view.equirectFitX || 1);
+    const zy = (view.equirectZoom || 1) * (view.equirectFitY || 1);
     return {
-        x: ((lonRad / Math.PI) + view.equirectPanX) * view.equirectZoom,
-        y: ((2 * latRad / Math.PI) + view.equirectPanY) * view.equirectZoom,
+        x: ((lonRad / Math.PI) + view.equirectPanX) * zx,
+        y: ((2 * latRad / Math.PI) + view.equirectPanY) * zy,
         front: true,
     };
 }
@@ -524,12 +531,34 @@ function paint(view) {
     ctx.imageSmoothingQuality = 'high';
     if (view.viewMode === 'equirect') {
         for (const shift of [-2, 0, 2]) {
+            ctx.save();
+            clipToEquirectCopy(ctx, view, el.width, el.height, shift);
             for (const crop of pending) paintEquirectCrop(ctx, crop, view, el.width, el.height, shift);
+            ctx.restore();
         }
     } else {
         for (const crop of pending) paintGlobeCrop(ctx, crop, view, el.width, el.height);
     }
     if (chrome) paintGridChrome(ctx, view, el.width, el.height);
+}
+
+function clipToEquirectCopy(ctx, view, width, height, xshift) {
+    const zx = (view.equirectZoom || 1) * (view.equirectFitX || 1);
+    const zy = (view.equirectZoom || 1) * (view.equirectFitY || 1);
+    const panX = view.equirectPanX || 0;
+    const panY = view.equirectPanY || 0;
+    const left = (-1 + panX + xshift) * zx;
+    const right = (1 + panX + xshift) * zx;
+    const bottom = (-1 + panY) * zy;
+    const top = (1 + panY) * zy;
+    ctx.beginPath();
+    ctx.rect(
+        (left * 0.5 + 0.5) * width,
+        (-top * 0.5 + 0.5) * height,
+        (right - left) * 0.5 * width,
+        (top - bottom) * 0.5 * height,
+    );
+    ctx.clip();
 }
 
 /*
@@ -560,9 +589,9 @@ function projector(view, width, height, xshift) {
  */
 function paintShifts(view) {
     if (view.viewMode !== 'equirect') return [0];
-    const zoom = view.equirectZoom || 1;
+    const zx = (view.equirectZoom || 1) * (view.equirectFitX || 1);
     const panX = view.equirectPanX || 0;
-    const half = 1 / zoom;
+    const half = 1 / zx;
     const out = [];
     for (const shift of [-2, 0, 2]) {
         const lo = -half - panX - shift;
@@ -642,12 +671,15 @@ function tileScreenSize(project, tile, width, height) {
 function paintGridChrome(ctx, view, width, height) {
     ctx.save();
     for (const shift of paintShifts(view)) {
+        ctx.save();
+        if (view.viewMode === 'equirect') clipToEquirectCopy(ctx, view, width, height, shift);
         const project = projector(view, width, height, shift);
         if (grid.show) paintGridLines(ctx, project, view, width, height);
         for (const tile of grid.picked) paintTileFill(ctx, project, tile, width, height, PICK_FILL, PICK_LINE);
         if (grid.hover && !isPicked(grid.hover)) {
             paintTileFill(ctx, project, grid.hover, width, height, HOVER_FILL, HOVER_LINE);
         }
+        ctx.restore();
     }
     ctx.restore();
 }
@@ -857,6 +889,7 @@ function renderCropList(host, {onToggle, onFrame, onBake, onClearDraft, onLevel,
         if (already) host.append(note(`${already} already baked — baking again replaces them.`));
         const bake = document.createElement('button');
         bake.type = 'button';
+        bake.className = 'stage-forward';
         bake.textContent = grid.picked.length === 1 ? 'Bake tile' : `Bake ${grid.picked.length} tiles`;
         bake.disabled = !apiUp;
         bake.addEventListener('click', () => onBake && onBake());
@@ -1169,6 +1202,7 @@ function isApiUp() {
 
 module.exports = {
     TD_API,
+    previewUrl,
     load,
     reload,
     setContext,

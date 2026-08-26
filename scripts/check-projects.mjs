@@ -225,6 +225,15 @@ for (const project of Projects.PROJECTS) {
         !("thumb" in serialized)
         && serialized.body.radiusKm === pins.radiusKm
         && serialized.pins.radiusKm === pins.radiusKm);
+    check("shaped survives parse and serialize",
+        Variants.parseCatalog({
+            project: "thalos",
+            variants: [{id: variant.id, seed: 4242, values: {plates: 17}, shaped: true}],
+        }, "thalos").variants[0].shaped === true
+        && Variants.serializeCatalog({
+            project: "thalos",
+            variants: [Object.assign({}, variant, {shaped: true})],
+        }).variants[0].shaped === true);
     const legacy = Projects.parseCatalog({
         project: "thalos",
         variants: [{id: "vold1", seed: 77, values: {plates: 14}}],
@@ -238,6 +247,27 @@ for (const project of Projects.PROJECTS) {
             project: "thalos",
             variants: [{id: variant.id, seed: 4242, values: {plates: 17}, thumb: "/preview/thalos/v/vabc/thumb.jpg"}],
         }, "thalos").variants[0].thumb === "/preview/thalos/v/vabc/thumb.jpg");
+    check("stampThumb fills a matching recipe that has none",
+        Variants.stampThumb([variant], variant, "data:image/jpeg;base64,xx")[0].thumb === "data:image/jpeg;base64,xx");
+    check("stampThumb does not replace an existing thumb",
+        Variants.stampThumb(
+            [Object.assign({}, variant, {thumb: "old"})],
+            variant,
+            "new",
+        )[0].thumb === "old");
+    check("putThumb writes only that id",
+        (() => {
+            const other = Variants.ofWorking({project: "thalos", seed: 9, pins, values: {}});
+            const next = Variants.putThumb([variant, other], other.id, "data:image/jpeg;base64,yy");
+            return next[0].thumb == null && next[1].thumb === "data:image/jpeg;base64,yy";
+        })());
+    check("putThumb replace overwrites an existing thumb",
+        Variants.putThumb(
+            [Object.assign({}, variant, {thumb: "old"})],
+            variant.id,
+            "data:image/jpeg;base64,zz",
+            true,
+        )[0].thumb === "data:image/jpeg;base64,zz");
     check("bakeDir scopes a variant under v/<id>",
         Projects.bakeDir("thalos", variant.id) === `preview/thalos/v/${variant.id}`
         && Projects.bakeDir("earth") === "preview/earth");
@@ -294,7 +324,7 @@ for (const project of Projects.PROJECTS) {
         project: "thalos", seed: 12, pins, values: {plates: 10},
     });
     const pair = [variant, other];
-    check("a deep-linked variant wins over last and committed",
+    check("a deep-linked variant wins over last selected",
         Variants.resumeId({
             pendingId: other.id,
             lastId: variant.id,
@@ -307,23 +337,44 @@ for (const project of Projects.PROJECTS) {
             committed: variant.id,
             variants: pair,
         }) === other.id);
-    check("a project with no last selected opens the committed variant",
-        Variants.resumeId({committed: variant.id, variants: pair}) === variant.id);
+    check("a project with no last selected does not invent a variant",
+        Variants.resumeId({committed: variant.id, variants: pair}) == null);
     check("an id that is not in the catalog is not a neighbour",
         Variants.resumeId({
             pendingId: "vmissing",
             lastId: "vmissing",
             committed: variant.id,
             variants: pair,
-        }) === variant.id);
-    check("a seed query does not pick a variant",
+        }) == null);
+    check("a variant in the query wins even when a seed is there",
         Variants.resumeId({
             pendingId: variant.id,
             lastId: other.id,
             committed: variant.id,
             variants: pair,
             seedFromQuery: true,
+        }) === variant.id);
+    check("a seed query with no variant id does not resume last",
+        Variants.resumeId({
+            lastId: other.id,
+            variants: pair,
+            seedFromQuery: true,
+            querySeed: 1,
         }) == null);
+    check("the address bar seed still resumes last when it matches",
+        Variants.resumeId({
+            lastId: variant.id,
+            variants: pair,
+            seedFromQuery: true,
+            querySeed: variant.seed,
+        }) === variant.id);
+    check("a missing last id is still wanted so it can be restored",
+        Variants.wantedId({
+            lastId: "vmissingid1",
+            variants: pair,
+            seedFromQuery: true,
+            querySeed: variant.seed,
+        }) === "vmissingid1");
     check("the fixture has no variant to resume",
         Variants.resumeId({
             lastId: variant.id,
@@ -346,27 +397,48 @@ for (const project of Projects.PROJECTS) {
             project: "thalos", seed: 22, pins, values: {plates: 16},
         }), first));
     const grown = Variants.append([first], Variants.ofWorking({
-        project: "thalos", parent: first.id, seed: 23, pins, values: {plates: 11}, name: "ridge",
+        project: "thalos", seed: 23, pins, values: {plates: 11}, name: "ridge",
     }));
-    check("a name appends a child instead of updating the parent",
+    check("a name appends a snapshot instead of updating the last one",
         grown.length === 2
         && grown[0].id !== first.id
-        && grown[0].parent === first.id
         && grown[0].name === "ridge"
         && grown[1].id === first.id);
-    const moved = Variants.save(grown, first, Variants.ofWorking({
-        project: "thalos", seed: first.seed, pins, values: {plates: 18},
-    }));
-    check("a same-planet save is a new node, child of head",
-        moved.length === 3
+    const namedHead = Object.assign({}, first, {name: "interesting"});
+    const moved = Variants.save(
+        [namedHead],
+        namedHead,
+        Variants.ofWorking({project: "thalos", seed: first.seed, pins, values: {plates: 18}}),
+    );
+    check("a save with the same name is a new snapshot, not a child",
+        moved.length === 2
         && moved[0].id !== first.id
-        && moved[0].parent === first.id
+        && !moved[0].parent
+        && moved[0].name === "interesting"
         && moved[0].seed === first.seed
         && moved[0].values.plates === 18
         && moved[0].generation === 2
-        && moved[1].id === grown[0].id
-        && moved[2].id === first.id
-        && moved[2].values.plates === 16);
+        && /^v\d{12,}$/.test(moved[0].id)
+        && moved[1].id === first.id);
+    const boxed = Variants.ofWorking({
+        project: "thalos", seed: 21, pins, values: {plates: 16},
+        name: "interesting",
+        ranges: {continentFraction: [0.40, 0.44]},
+    });
+    const wet = Variants.save(
+        [boxed],
+        boxed,
+        Variants.ofWorking({
+            project: "thalos", seed: boxed.seed, pins, values: {plates: 16},
+            name: "wet",
+        }),
+    );
+    check("a new name keeps the ranges you were on",
+        wet[0].name === "wet"
+        && wet[0].ranges.continentFraction[0] === 0.40
+        && wet[0].ranges.continentFraction[1] === 0.44
+        && Variants.lineageRows(wet).length === 2
+        && Variants.lineageRows(wet).every((row) => row.depth === 0));
     check("a new layout seed is a different planet, the same seed is not",
         Variants.differentPlanet(first, {seed: first.seed + 1})
         && !Variants.differentPlanet(first, {seed: first.seed}));
@@ -376,9 +448,9 @@ for (const project of Projects.PROJECTS) {
         !Variants.differentPlanet(first, {name: "ridge"}));
     const ranged = Variants.setRanges(moved, first.id, {continentFraction: [0.40, 0.44]});
     check("explore writes ranges without saving a node",
-        ranged[2].id === first.id
-        && ranged[2].generation === 1
-        && ranged[2].ranges.continentFraction[0] === 0.40);
+        ranged[1].id === first.id
+        && ranged[1].generation === 1
+        && ranged[1].ranges.continentFraction[0] === 0.40);
     const withShape = Variants.ofWorking({
         project: "thalos", seed: 21, shapeSeed: 99, pins, values: {plates: 16},
     });
@@ -389,8 +461,8 @@ for (const project of Projects.PROJECTS) {
         && Variants.samePlanet(withShape, first));
     check("two versions may share a recipe",
         Variants.parseVariants([first, same], pins).length === 2);
-    check("a parent with a child is not the tip",
-        Variants.isTip(grown, grown[0].id) && !Variants.isTip(grown, first.id));
+    check("the latest save of a name is the tip",
+        Variants.isLineageTip(moved, moved[0]) && !Variants.isLineageTip(moved, moved[1]));
     const headed = Variants.advanceHead({
         project: "thalos",
         committed: first.id,
@@ -402,7 +474,7 @@ for (const project of Projects.PROJECTS) {
         project: "thalos", seed: 30, pins, values: {plates: 9},
     });
     const sideChild = Variants.ofWorking({
-        project: "thalos", parent: side.id, seed: 31, pins, values: {plates: 8}, name: "wet",
+        project: "thalos", seed: 31, pins, values: {plates: 8}, name: "wet",
     });
     const branched = Variants.advanceHead({
         project: "thalos",
@@ -411,6 +483,140 @@ for (const project of Projects.PROJECTS) {
     }, side.id, sideChild.id);
     check("a named branch leaves the committed head",
         branched.committed === first.id);
+    const named = Object.assign({}, first, {name: "interesting"});
+    const shaped = Variants.save(
+        [named],
+        named,
+        Variants.ofWorking({project: "thalos", seed: named.seed, pins, values: {plates: 16}}),
+    );
+    const lineage = Variants.lineageRows(shaped);
+    check("saves with the same name are one variant",
+        lineage.length === 1
+        && lineage[0].name === "interesting"
+        && lineage[0].history.length === 2
+        && lineage[0].variant.id === shaped[0].id
+        && lineage[0].depth === 0);
+    const fork = Variants.save(
+        shaped,
+        named,
+        Variants.ofWorking({
+            project: "thalos", seed: named.seed, pins, values: {plates: 12}, name: "wet",
+        }),
+    );
+    const forkedRows = Variants.lineageRows(fork);
+    check("a new name is another variant, not a descendant",
+        forkedRows.length === 2
+        && forkedRows.every((row) => row.depth === 0)
+        && forkedRows.some((row) => row.name === "interesting")
+        && forkedRows.some((row) => row.name === "wet"));
+    const otherWorld = Variants.save(
+        shaped,
+        shaped[0],
+        Variants.ofWorking({
+            project: "thalos", seed: named.seed + 1, pins, values: {plates: 10}, name: "interesting",
+        }),
+    );
+    const worlds = Variants.lineageRows(otherWorld);
+    check("the same name continues that variant even on another seed",
+        worlds.length === 1
+        && worlds[0].name === "interesting"
+        && worlds[0].history.length === 3);
+    const trimmed = Variants.removeLineage(fork, fork[0].id);
+    check("removing one name keeps the other",
+        Variants.lineageRows(trimmed).length === 1
+        && Variants.lineageRows(trimmed)[0].name === "interesting");
+    const hidden = Variants.markLineage(fork, fork[0].id, true);
+    check("delete marks a lineage and keeps the id",
+        hidden.length === fork.length
+        && hidden.some((item) => item.id === fork[0].id && item.deleted)
+        && Variants.lineageRows(hidden).length === 1
+        && Variants.lineageRows(hidden)[0].name === "interesting"
+        && Variants.findById(hidden, fork[0].id).deleted);
+    const restored = Variants.markLineage(hidden, fork[0].id, false);
+    check("clearing deleted puts the card back",
+        Variants.lineageRows(restored).some((row) => row.name === "wet")
+        && !Variants.findById(restored, fork[0].id).deleted);
+    const gone = Variants.markLineage(fork, fork[0].id, true);
+    check("a deleted recipe is not a kept save",
+        !Variants.findByRecipe(gone, fork[0])
+        && !!Variants.findByRecipe(fork, fork[0]));
+    check("resume skips a deleted checkout",
+        Variants.resumeId({lastId: fork[0].id, variants: gone}) == null);
+    const roundTrip = Variants.serializeCatalog({
+        project: "thalos",
+        variants: Variants.parseVariants(gone, pins),
+    });
+    check("serialize stores deleted and keeps the id",
+        roundTrip.variants.some((item) => item.id === fork[0].id && item.deleted)
+        && roundTrip.variants.length === gone.length);
+    const layoutRoot = Variants.ofWorking({
+        project: "thalos", seed: 77, pins, values: {plates: 14}, name: "interesting",
+    });
+    const shapeRoot = Object.assign({}, Variants.ofWorking({
+        project: "thalos", seed: 77, pins, values: {plates: 14},
+    }), {shaped: true});
+    const coalescedRows = Variants.lineageRows(Variants.parseVariants([shapeRoot, layoutRoot], pins));
+    check("an unnamed snapshot is not folded into a named one",
+        coalescedRows.length === 2);
+    const namedA = Variants.ofWorking({
+        project: "thalos", seed: 88, pins, values: {plates: 14}, name: "interesting",
+    });
+    const namedB = Variants.ofWorking({
+        project: "thalos", seed: 88, pins, values: {plates: 14}, name: "other",
+    });
+    check("two names are two variants even on the same seed",
+        Variants.lineageRows(Variants.parseVariants([namedB, namedA], pins)).length === 2);
+    const buried = Object.assign({}, namedA, {parent: namedB.id});
+    const recovered = Variants.lineageRows([namedB, buried]);
+    check("a parent pointer does not nest a differently named variant",
+        recovered.length === 2
+        && recovered.every((row) => row.depth === 0)
+        && recovered.some((row) => row.name === "interesting")
+        && recovered.some((row) => row.name === "other"));
+    const diskOnly = Variants.parseCatalog({
+        project: "thalos",
+        variants: [{id: "vdisk1", seed: 11, name: "gloop inland sea", project: "thalos"}],
+    }, "thalos");
+    const cacheExtra = Variants.parseCatalog({
+        project: "thalos",
+        variants: [
+            {id: "vcache1", seed: 22, name: "interesting", project: "thalos"},
+            {id: "vdisk1", seed: 11, project: "thalos"},
+        ],
+    }, "thalos");
+    const merged = Variants.mergeCatalogs(diskOnly, cacheExtra);
+    check("merging catalogs keeps every id and does not drop a name",
+        merged.variants.length === 2
+        && merged.variants.some((item) => item.name === "interesting")
+        && merged.variants.some((item) => item.name === "gloop inland sea"));
+    const shrunk = Variants.mergeCatalogs(diskOnly, cacheExtra);
+    check("a smaller incoming catalog does not delete the rest",
+        shrunk.variants.length === 2);
+    const dropped = Variants.applyDrop(merged, ["vcache1"]);
+    check("drop is the only way an id leaves the catalog",
+        dropped.variants.length === 1
+        && dropped.variants[0].id === "vdisk1");
+    const ghost = Variants.ofWorking({
+        project: "thalos", seed: 99, pins, values: {plates: 10}, name: "interesting",
+    });
+    const listed = Variants.lineageRows(diskOnly.variants, ghost);
+    check("a checkout missing from the catalog still has a card",
+        listed.length === 2
+        && listed.some((row) => row.name === "interesting")
+        && listed.some((row) => row.name === "gloop inland sea"));
+    check("serialize stores the name and not a parent",
+        Variants.serializeCatalog({
+            project: "thalos",
+            variants: Variants.parseVariants([named], pins),
+        }).variants[0].name === "interesting"
+        && !("parent" in Variants.serializeCatalog({
+            project: "thalos",
+            variants: Variants.parseVariants([named], pins),
+        }).variants[0])
+        && !("lineage" in Variants.serializeCatalog({
+            project: "thalos",
+            variants: Variants.parseVariants([named], pins),
+        }).variants[0]));
 }
 
 /* 10. A crop is a folder. Whatever files it holds, the directory is what

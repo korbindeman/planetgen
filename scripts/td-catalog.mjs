@@ -29,6 +29,8 @@ export function thumbFile(root, project, id) {
 
 
 export function thumbUrl(project, id) {
+    // Origin-relative. The page origin does not serve preview/;
+    // the browser prefixes the bake API.
     return `/${Projects.thumbPath(project, id)}`;
 }
 
@@ -80,10 +82,17 @@ export async function readCatalog(root, project) {
 
 export async function writeCatalog(root, catalog) {
     const parsed = Projects.parseCatalog(catalog, catalog.project);
-    const path = catalogFile(root, parsed.project);
+    let existing = Variants.emptyCatalog(parsed.project);
+    try {
+        existing = await readCatalog(root, parsed.project);
+    } catch {
+        /* first write */
+    }
+    const merged = Variants.applyDrop(Variants.mergeCatalogs(parsed, existing), catalog && catalog.drop);
+    const path = catalogFile(root, merged.project);
     await mkdir(dirname(path), {recursive: true});
-    await Bun.write(path, JSON.stringify(Variants.serializeCatalog(parsed), null, 2) + "\n");
-    return parsed;
+    await Bun.write(path, JSON.stringify(Variants.serializeCatalog(merged), null, 2) + "\n");
+    return merged;
 }
 
 

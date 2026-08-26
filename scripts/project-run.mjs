@@ -1,6 +1,7 @@
 /**
- * CLI run: committed variant if one exists, else a working planet.
- * Earth is the fixture token. A seed or variant id on the command line wins.
+ * CLI run: `--variant=` wins. With no seed, the last saved variant if
+ * the catalog has one, else a working planet from the adopted body.
+ * Earth is the fixture token.
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,9 +22,9 @@ export async function resolveRun(root, Projects, projectName, seedArg, variantId
     catalog = Projects.parseCatalog(raw, project.name);
   } catch (_) { /* no catalog yet */ }
   const asked = variantId && Projects.Variants.findById(catalog.variants, variantId);
-  const committed = catalog.committed
-    && Projects.Variants.findById(catalog.variants, catalog.committed);
-  const variant = asked || (seedArg == null ? committed : null);
+  const liveAsked = asked && !asked.deleted ? asked : null;
+  const latest = Projects.Variants.live(catalog.variants)[0];
+  const variant = liveAsked || (seedArg == null ? latest : null);
   if (variant) {
     return {
       project: project.name,

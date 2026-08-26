@@ -1,14 +1,13 @@
 /*
  * A variant is one saved snapshot of a project.
  *
- * A variant stores its own layout seed, shape seed, body, gene draws, body
- * pins, ranges, and parent. Likes never enter this. Only an explicit Save
- * writes one. Every Save is a new node, child of head. Pins are body-only;
- * a gene is constrained by ranges, not a pin.
+ * The list is keyed by **name**, not by seed, parent, or recipe. Save with
+ * the same name and the snapshot is the next head of that variant. Save
+ * with a new name and it is another variant, not a child of the one that
+ * was open. Each snapshot's id is a UTC unix time (`v` + milliseconds).
  *
- * Same planet means same layout seed. Shape seed, genes, and sculpting
- * stay on that planet — still a new node. A new layout seed or an explore
- * tile is a different planet.
+ * A catalog write never drops an id unless it is in `drop`. Delete
+ * sets `deleted` on the snapshot. The record stays. The list hides it.
  *
  * Browser-free, so `bun run check:projects` can hold the record without
  * opening the app. Artifacts key off the id. Explore writes ranges through
@@ -21,8 +20,39 @@ const Params = require('../params');
 const NAME_MAX = 48;
 
 
-function newId() {
-    return `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+let lastIdMs = 0;
+
+
+function newId(list) {
+    let ms = Date.now();
+    if (ms <= lastIdMs) ms = lastIdMs + 1;
+    let id = `v${ms}`;
+    while (list && findById(list, id)) {
+        ms += 1;
+        id = `v${ms}`;
+    }
+    lastIdMs = ms;
+    return id;
+}
+
+
+function idTime(id) {
+    const match = String(id || '').match(/^v(\d{12,})$/i);
+    return match ? Number(match[1]) : 0;
+}
+
+
+function normalizeName(raw) {
+    if (typeof raw !== 'string') return '';
+    return raw.trim().slice(0, NAME_MAX);
+}
+
+
+function lineageKey(variant) {
+    if (!variant) return null;
+    const name = normalizeName(variant.name);
+    if (name) return `n:${name}`;
+    return variant.id ? `i:${variant.id}` : null;
 }
 
 
@@ -92,7 +122,7 @@ function effectiveShapeSeed(variant) {
 }
 
 
-function parseVariant(item, adopted) {
+function parseVariant(item, adopted, known) {
     if (!item || typeof item !== 'object') return null;
     const seed = item.seed | 0;
     if (!(seed >= 1)) return null;
@@ -112,7 +142,7 @@ function parseVariant(item, adopted) {
         parent: parseParent(item.parent),
     };
     if (typeof item.id === 'string' && /^v[a-z0-9]+$/i.test(item.id)) variant.id = item.id;
-    else variant.id = newId();
+    else variant.id = newId(known);
     if (typeof item.name === 'string') {
         const name = item.name.trim().slice(0, NAME_MAX);
         if (name) variant.name = name;
@@ -123,6 +153,11 @@ function parseVariant(item, adopted) {
         if (item.thumb.startsWith('data:image/') || item.thumb.startsWith('/preview/')) {
             variant.thumb = item.thumb;
         }
+    }
+    if (item.shaped) variant.shaped = true;
+    variant.deleted = !!item.deleted;
+    if (typeof item.lineage === 'string' && /^v[a-z0-9]+$/i.test(item.lineage)) {
+        variant.lineage = item.lineage;
     }
     return variant;
 }
@@ -142,13 +177,13 @@ function parseVariants(raw, adopted) {
     const seenId = new Set();
     const out = [];
     for (const item of raw) {
-        const variant = parseVariant(item, adopted);
+        const variant = parseVariant(item, adopted, out);
         if (!variant) continue;
         if (seenId.has(variant.id)) continue;
         seenId.add(variant.id);
         out.push(variant);
     }
-    return reparent(out);
+    return out;
 }
 
 
@@ -168,6 +203,7 @@ function ofIndividual(ind, extra) {
         ranges: extra.ranges,
         name: extra.name,
         thumb: extra.thumb,
+        lineage: extra.lineage,
     });
 }
 
@@ -187,14 +223,26 @@ function ofWorking(input) {
         ranges: input.ranges,
         name: input.name,
         thumb: input.thumb,
+        lineage: input.lineage,
+        shaped: input.shaped,
     });
+}
+
+
+function isLive(item) {
+    return !!(item && !item.deleted);
+}
+
+
+function live(list) {
+    return (list || []).filter(isLive);
 }
 
 
 function findByRecipe(list, variant) {
     if (!variant) return null;
     const key = recipeKey(variant);
-    return (list || []).find((item) => recipeKey(item) === key) || null;
+    return live(list).find((item) => recipeKey(item) === key) || null;
 }
 
 
@@ -245,9 +293,9 @@ function upsert(list, incoming) {
     if (found >= 0) {
         const next = list.slice();
         next[found] = Object.assign({}, list[found], incoming, {id: list[found].id});
-        return reparent(next);
+        return next;
     }
-    return reparent([incoming, ...list]);
+    return [incoming, ...list];
 }
 
 
@@ -255,10 +303,10 @@ function append(list, incoming) {
     if (!incoming) return list || [];
     const keepId = incoming.id && !findById(list, incoming.id);
     const item = Object.assign({}, incoming, {
-        id: keepId ? incoming.id : newId(),
+        id: keepId ? incoming.id : newId(list),
         generation: incoming.generation >= 1 ? incoming.generation : 1,
     });
-    return reparent([item, ...(list || [])]);
+    return [item, ...(list || [])];
 }
 
 
@@ -280,19 +328,29 @@ function differentPlanet(head, input) {
 }
 
 
-/* Every Save is a new node, child of head. */
+/* Same name continues that variant. A new name is another variant.
+ * Ids are UTC unix time. Parent and recipe do not group the list. */
 function save(list, head, incoming) {
     if (!incoming) return list || [];
-    const parentId = head ? head.id : parseParent(incoming.parent);
-    const generation = head && samePlanet(head, incoming)
-        ? (head.generation || 1) + 1
-        : 1;
-    return append(list, Object.assign({}, incoming, {
-        id: newId(),
-        parent: parentId,
-        generation,
+    const typed = normalizeName(incoming.name);
+    const name = typed || (head && normalizeName(head.name)) || undefined;
+    const members = name
+        ? (list || []).filter((item) => normalizeName(item.name) === name)
+        : [];
+    const payload = Object.assign({}, incoming, {
+        id: newId(list),
+        generation: members.length + 1,
         shapeSeed: effectiveShapeSeed(incoming),
-    }));
+    });
+    delete payload.parent;
+    delete payload.lineage;
+    if (name) payload.name = name;
+    else delete payload.name;
+    const incomingRanges = payload.ranges || {};
+    if (!Object.keys(incomingRanges).length && head && head.ranges) {
+        payload.ranges = head.ranges;
+    }
+    return append(list, payload);
 }
 
 
@@ -335,6 +393,20 @@ function stampThumb(list, variant, thumb) {
     let changed = false;
     const next = (list || []).map((item) => {
         if (recipeKey(item) !== key || item.thumb) return item;
+        changed = true;
+        return Object.assign({}, item, {thumb});
+    });
+    return changed ? next : (list || []);
+}
+
+
+function putThumb(list, id, thumb, replace) {
+    if (!thumb || !id) return list || [];
+    let changed = false;
+    const next = (list || []).map((item) => {
+        if (item.id !== id) return item;
+        if (!replace && item.thumb) return item;
+        if (item.thumb === thumb) return item;
         changed = true;
         return Object.assign({}, item, {thumb});
     });
@@ -439,6 +511,203 @@ function treeRows(list) {
 }
 
 
+function samePlanetChildren(list, id) {
+    const node = findById(list, id);
+    if (!node) return [];
+    return childrenOf(list, id).filter((child) => samePlanet(node, child));
+}
+
+
+function sortByTime(items) {
+    return (items || []).slice().sort((a, b) => idTime(a.id) - idTime(b.id));
+}
+
+
+function lineageMembers(list, variant) {
+    const key = lineageKey(variant);
+    if (!key) return [];
+    return (list || []).filter((item) => lineageKey(item) === key);
+}
+
+
+function pickHead(members) {
+    const sorted = sortByTime(members);
+    return sorted.length ? sorted[sorted.length - 1] : null;
+}
+
+
+function isLineageTip(list, variant) {
+    if (!variant) return false;
+    const head = pickHead(lineageMembers(list, variant));
+    return !!(head && head.id === variant.id);
+}
+
+
+function lineageHistory(list, variant) {
+    return sortByTime(lineageMembers(list, variant));
+}
+
+
+function lineageName(list, variant) {
+    if (!variant) return 'working planet';
+    if (variant.name) return variant.name;
+    const head = pickHead(lineageMembers(list, variant));
+    if (head && head.name) return head.name;
+    return String(variant.seed);
+}
+
+
+function lineageRoot(list, variant) {
+    if (!variant) return null;
+    const members = lineageMembers(list, variant);
+    if (!members.length) return variant;
+    return sortByTime(members)[0] || variant;
+}
+
+
+function lineageUnique(list, tip) {
+    if (!tip) return [];
+    return lineageMembers(list, tip);
+}
+
+
+/* One card per name. Unnamed snapshots are each their own card.
+ * A checkout that is not in the catalog still gets a row. */
+function lineageRows(list, checkout) {
+    const items = list || [];
+    const seen = new Set();
+    const rows = [];
+    for (const item of items) {
+        if (!isLive(item)) continue;
+        const key = lineageKey(item);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const members = live(lineageMembers(items, item));
+        if (!members.length) continue;
+        const head = pickHead(members) || item;
+        rows.push({
+            variant: head,
+            history: sortByTime(members),
+            depth: 0,
+            parent: null,
+            notes: [],
+            name: head.name || String(head.seed),
+            fork: false,
+        });
+    }
+    rows.sort((a, b) => idTime(b.variant.id) - idTime(a.variant.id));
+    if (checkout && checkout.id && isLive(checkout) && !findById(live(items), checkout.id)) {
+        const key = lineageKey(checkout);
+        if (!key || !seen.has(key)) {
+            rows.unshift({
+                variant: checkout,
+                history: [checkout],
+                depth: 0,
+                parent: null,
+                notes: [],
+                name: checkout.name || String(checkout.seed),
+                fork: false,
+            });
+        }
+    }
+    return rows;
+}
+
+
+function removeLineage(list, tipId) {
+    const tip = findById(list, tipId);
+    if (!tip) return list || [];
+    const ids = new Set(lineageMembers(list, tip).map((item) => item.id));
+    return (list || []).filter((item) => !ids.has(item.id));
+}
+
+
+function markDeleted(list, ids, deleted) {
+    const set = ids instanceof Set ? ids : new Set(ids || []);
+    if (!set.size) return list || [];
+    let changed = false;
+    const flag = !!deleted;
+    const next = (list || []).map((item) => {
+        if (!set.has(item.id)) return item;
+        if (!!item.deleted === flag) return item;
+        changed = true;
+        return Object.assign({}, item, {deleted: flag});
+    });
+    return changed ? next : (list || []);
+}
+
+
+function markLineage(list, tipId, deleted) {
+    const tip = findById(list, tipId);
+    if (!tip) return list || [];
+    return markDeleted(list, lineageMembers(list, tip).map((item) => item.id), deleted);
+}
+
+
+function preferVariant(kept, incoming) {
+    return Object.assign({}, kept, incoming, {
+        id: kept.id,
+        name: incoming.name || kept.name,
+        shaped: !!(kept.shaped || incoming.shaped),
+        thumb: incoming.thumb || kept.thumb,
+        generation: Math.max(kept.generation || 1, incoming.generation || 1),
+    });
+}
+
+
+/* Incoming order wins. Ids only in `existing` are appended, never dropped. */
+function mergeVariants(incoming, existing) {
+    const fromExisting = new Map();
+    for (const item of existing || []) {
+        if (item && item.id) fromExisting.set(item.id, item);
+    }
+    const out = [];
+    const seen = new Set();
+    for (const item of incoming || []) {
+        if (!item || !item.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        out.push(fromExisting.has(item.id) ? preferVariant(fromExisting.get(item.id), item) : item);
+    }
+    for (const item of existing || []) {
+        if (!item || !item.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        out.push(item);
+    }
+    return out;
+}
+
+
+function mergeCatalogs(incoming, existing) {
+    const project = (incoming && incoming.project) || (existing && existing.project) || '';
+    const variants = mergeVariants(incoming && incoming.variants, existing && existing.variants);
+    const committed = [incoming && incoming.committed, existing && existing.committed]
+        .find((id) => findById(variants, id)) || null;
+    return {project, committed, variants};
+}
+
+
+function parseDrop(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((id) => typeof id === 'string' && /^v[a-z0-9]+$/i.test(id));
+}
+
+
+function applyDrop(catalog, drop) {
+    const ids = new Set(parseDrop(drop));
+    if (!ids.size) return catalog;
+    const variants = (catalog.variants || []).filter((item) => !ids.has(item.id));
+    const committed = catalog.committed && ids.has(catalog.committed) ? null : catalog.committed;
+    return {project: catalog.project || '', committed, variants};
+}
+
+
+function remember(list, incoming) {
+    if (!incoming) return list || [];
+    if (findById(list, incoming.id)) return list || [];
+    return [incoming, ...(list || [])];
+}
+
+
 function emptyCatalog(project) {
     return {project: project || '', committed: null, variants: []};
 }
@@ -481,9 +750,10 @@ function serializeCatalog(catalog) {
                 ranges: item.ranges,
             };
             if (item.shapeSeed && item.shapeSeed !== item.seed) out.shapeSeed = item.shapeSeed;
-            if (item.parent) out.parent = item.parent;
             if (item.name) out.name = item.name;
             if (item.generation > 1) out.generation = item.generation;
+            if (item.shaped) out.shaped = true;
+            if (item.deleted) out.deleted = true;
             return out;
         }),
     };
@@ -539,15 +809,33 @@ function migrate(legacyKeeps, legacySeeds, project, adopted) {
 
 
 /* Which saved variant a project should open.
- * A deep link wins, then the last one this project had selected, then
- * the committed instance. A seed in the query, or the fixture, means
- * none — those are not a tree. A missing id is not replaced by the
- * next row in the list. */
+ * A deep link wins, then the last one this project had selected.
+ * A leftover catalog `committed` id is ignored. A seed in the query with
+ * no variant id is a working planet, not a catalog checkout — but the
+ * address bar always writes both, so a variant in the query still wins.
+ * A missing id is returned by wantedId so the studio can put it back. */
+function wantedId(input) {
+    if (input && input.fixture) return null;
+    const pending = input && input.pendingId;
+    if (typeof pending === 'string' && /^v[a-z0-9]+$/i.test(pending)) return pending;
+    const last = input && input.lastId;
+    const lastOk = typeof last === 'string' && /^v[a-z0-9]+$/i.test(last) ? last : null;
+    if (input && input.seedFromQuery && !pending) {
+        if (!lastOk) return null;
+        const found = (input.variants || []).find((item) => item && item.id === lastOk);
+        const querySeed = input.querySeed;
+        if (found && querySeed != null && (found.seed | 0) !== (querySeed | 0)) return null;
+        return lastOk;
+    }
+    return lastOk;
+}
+
+
 function resumeId(input) {
-    if (input && (input.fixture || input.seedFromQuery)) return null;
-    const ids = new Set((input && input.variants || []).map((item) => item && item.id).filter(Boolean));
-    const pick = (id) => (id && ids.has(id) ? id : null);
-    return pick(input && input.pendingId) || pick(input && input.lastId) || pick(input && input.committed) || null;
+    const id = wantedId(input);
+    if (!id) return null;
+    const found = (input && input.variants || []).find((item) => item && item.id === id);
+    return found && isLive(found) ? id : null;
 }
 
 
@@ -585,6 +873,8 @@ module.exports = {
     parseVariants,
     ofIndividual,
     ofWorking,
+    isLive,
+    live,
     findByRecipe,
     sameRecipe,
     dirty,
@@ -600,18 +890,36 @@ module.exports = {
     setRanges,
     removeId,
     stampThumb,
+    putThumb,
     valuesOf,
     inheritedPins,
     childrenOf,
     shortParam,
     edgeNotes,
     treeRows,
+    samePlanetChildren,
+    isLineageTip,
+    lineageHistory,
+    lineageName,
+    lineageRoot,
+    lineageUnique,
+    lineageRows,
+    removeLineage,
+    markDeleted,
+    markLineage,
+    lineageKey,
+    mergeVariants,
+    mergeCatalogs,
+    applyDrop,
+    parseDrop,
+    remember,
     emptyCatalog,
     parseCatalog,
     serializeCatalog,
     commit,
     advanceHead,
     migrate,
+    wantedId,
     resumeId,
     refinement,
 };

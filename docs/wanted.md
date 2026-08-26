@@ -22,3 +22,7 @@ is missing from the planet and you want to know whether that is known.
   from, so a tile whose ground did not change is kept when a sibling
   snapshot is saved. Surgical edits elsewhere on the planet then do not
   invalidate still-correct tiles.
+- **Advanced, and the 1843 toggles.** Layout still folds mesh `N`, shape
+  spacing, jitter, and the 1843 path (live tectonics, merge ocean plates,
+  one world ocean). Those toggles are mostly unused and should likely go.
+  Give Advanced another look; keep improving the tectonic model itself.

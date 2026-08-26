@@ -24,6 +24,7 @@ bun run preview          # globe + equirectangular map
 bun run preview plates   # plate shapes and motion
 bun run preview crust    # ridges, trenches, sea-floor age
 bun run preview climate  # moisture on its own
+bun run preview relief   # hypsometric tint and hillshade
 bun run preview --earth  # the Earth project
 bun run sheet            # twelve seeds on one sheet
 ```

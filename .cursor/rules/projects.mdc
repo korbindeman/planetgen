@@ -20,20 +20,22 @@ the **fixture**, not a tree.
   (`planetgen.activeProject`); a restart resumes that project. Switching
   means going back to the project page — there is no in-workspace dropdown.
 - A **variant** is a saved snapshot: layout seed, shape seed, body, gene
-  draws, body **pins**, **ranges**, and a parent. Every **Save** writes a
-  new node, child of **head**. A new layout seed or an explore tile is a
-  **different planet**; shape iteration and gene moves on this layout seed
-  are the **same planet**. A name labels a node; it is not what makes a
-  child. The UI word is Save, never Update. Explore likes write **ranges**
-  to the current version as they go. Pins are body-only. Earth has no
-  variants. How this works: [docs/studio.md](docs/studio.md).
+  draws, body **pins**, **ranges**, and a **name**. Its id is UTC unix
+  time. Every **Save** writes a new snapshot. The same name continues
+  that card; a new name is another variant. The panel shows one card per
+  name. The catalog merges by id on load and write. Delete marks a
+  snapshot (`deleted`); the id stays. `drop` is the only way an id
+  leaves the file. The checkout on the globe is always a card. The UI
+  word is Save, never Update. Explore likes write **ranges** to the
+  current snapshot as they go. Pins are body-only. Earth has no variants.
+  How this works: [docs/studio.md](docs/studio.md).
 - Artifacts belong to a variant: `preview/<project>/v/<id>/`, catalog at
   `preview/<project>/variants.json`. Earth and a project with no variant
   still use `preview/<project>/`. Listing without a variant id does not
   walk `v/`. Loading another project or variant must not show the last
   one's tiles.
-- CLI with no seed uses the committed (Adopted) variant if there is one,
-  else a working planet from the adopted body. **Commit** means Adopt for
-  Finish, not a Save.
+- CLI with no seed uses the last saved variant if there is one, else a
+  working planet from the adopted body. Pass `--variant=` to pick a node.
+  Finish runs on whichever variant you name; there is no Adopt/Commit step.
 - Do not treat the generator's Earth-calibrated DEFAULTS as a third project.
   Those are the unmarked baseline the body sits on.

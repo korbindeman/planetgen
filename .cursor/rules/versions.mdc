@@ -1,37 +1,48 @@
 ---
-description: Save always writes a child. Same planet vs different planet is layout seed, not reused ids.
+description: Save writes a timestamped snapshot. Same name continues that variant.
 alwaysApply: true
 ---
 
-# Versions
+# Variants
 
-The catalog is a tree of snapshots. Uncommitted work stays on **head**
-until Save. The UI word is **Save**, never Update. How the studio works:
-[docs/studio.md](docs/studio.md). Language: `CONTEXT.md`.
+Uncommitted work stays on the globe until Save. The UI word is
+**variant**, never version. **Save**, never Update. How the studio
+works: [docs/studio.md](docs/studio.md). Language: `CONTEXT.md`.
 
 ## The rule
 
-Every **Save** writes a **new node**, child of HEAD.
+Every **Save** writes a **new snapshot**. Its id is UTC unix time
+(`v` + milliseconds).
 
+- **The name is the variant.** The name field shows the active card.
+  Save with that name and this snapshot is the next head. Change the
+  name and Save starts another variant, keeping the ranges you were on.
+  The list does not nest names.
 - **Shuffle of the layout seed, or an explore tile** is a **different
-  planet**. Save is still a child. Commit/Adopt does not follow.
-- **Layout genes, shape seed, shape genes, sculpting, body, a name** on
-  this layout seed is the **same planet**. Save is still a child. Adopted
-  follows that line when the save is on it.
-- **A name** labels the node. It is not what makes a child.
+  planet**. Give it a new name if it should not join the active card.
+- **Shape** with no new name continues the active name.
 
-Do not reuse a variant id for a later Save. Do not treat a node's Shape
-sketch as stale — a child is a different snapshot and starts unshaped.
-Explore likes may write **ranges** to HEAD as they go; that is not a save
-of the planet.
+The Variants panel shows one card per name. Earlier saves of that name
+are history on the card. A catalog write never drops an id. Delete
+marks the snapshot (`deleted`); the list hides it. Undo clears the
+mark. Loading merges disk with the browser cache by id. The checkout
+on the globe is always a card — if it is missing from the file, put it
+back.
+
+Do not reuse a snapshot id. Do not group cards by seed, parent, or
+recipe. Explore likes may write **ranges** to the active snapshot as
+they go; that is not a save of the planet.
 
 ## Language
 
-**Save** — write the working planet as a new node, child of head.
+**Save** — write the working planet as a new snapshot.
 _Avoid_: Update, commit
 
 **Same planet** — same layout seed. Shape iteration stays here.
 _Avoid_: Generation, in-place update
 
 **Different planet** — new layout seed, or an explore tile.
-_Avoid_: Fork, copy, save as (unless naming)
+_Avoid_: Copy, save as (unless naming)
+
+**Variant** — the named card. Snapshots of that name are its history.
+_Avoid_: Fork (as a tree operation)

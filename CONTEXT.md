@@ -9,7 +9,7 @@ The named world being made. A project is an evolutionary tree of **variants**, p
 _Avoid_: World (the generated body), seed, preset, Earth (that is the fixture)
 
 **Fixture**:
-A locked known planet used to test shaping on a base whose tectonics are already known. Earth is the only one. It is not a tree: no **search**, no **variants**, no seed to shuffle. Authored knobs live in its file, not as pins.
+A locked known planet used to test shaping on a base whose tectonics are already known. Earth is the only one. It is not a tree: no **search**, no **variants**, no seed to shuffle. Authored knobs live in its file, not as pins. Layout and Shape still run; there is no Save, Variants, or Explore.
 _Avoid_: Project, variant, Earth-like (the generator's goal)
 
 **Body**:
@@ -33,12 +33,12 @@ Climate → Terrain → Hydrology → Export on a kept **variant**. Overnight an
 _Avoid_: Pipeline, bake (Terrain is the bake), production, export chain
 
 **Layout**:
-The 10k sim: plates, continents, `climate.js`. Search and shuffle run here only until Shape is asked for.
-_Avoid_: Base, coarse, tectonics (the module)
+The 10k sim: plates, continents, `climate.js`. Search and shuffle run here. **Body**, tectonics genes, and climate genes live here. A **variant** that has not entered Shape opens here. You can return here to change plates; **Save** writes a child, the parent keeps its **sketch**.
+_Avoid_: Base, coarse, tectonics (the module), branch (that is a child in the tree)
 
 **Shape**:
-Explicit pass on a saved **variant** that writes the **sketch**. Shape seed, shape genes, later sculpting. Cached on that node. A child starts unshaped.
-_Avoid_: Detail pass, regional DEM, 23 km (that is the grain, not the stage)
+Explicit pass on a saved **variant** that writes the **sketch**. Shape seed, shape genes (warp, ridges, erosion, ice), later sculpting, preview tiles. Cached on that node. A child starts unshaped.
+_Avoid_: Detail pass, regional DEM, 23 km (that is the grain, not the stage), mode (as something you pick)
 
 **Sketch**:
 The height (+ climate channels) at the terrain model's grain (23 km today). Discover writes it. Finish reads it. Spacing is a shipped value, not a gene.
@@ -53,30 +53,38 @@ RNG key for warp, islands, ridges, first-stage erosion. Shuffle this → the **s
 _Avoid_: Detail seed, the seed
 
 **Variant**:
-One saved snapshot of a **project**: layout seed, shape seed, **body**, gene draws, **pins**, **ranges**, parent. Artifacts belong to that id. Only an explicit Save writes one. Every Save is a new node, child of **head**. Two variants can share a layout seed and still be different snapshots. A node's sketch does not go stale — a child is a different snapshot.
-_Avoid_: Saved seed, keep, favourite, like, working planet, commit (that is Adopt)
+One saved snapshot of a **project**: layout seed, shape seed, **body**, gene draws, **pins**, **ranges**. Its id is a UTC unix time. Artifacts belong to that id. Only an explicit Save writes one. Two snapshots can share a layout seed and still be different saves. A node's sketch does not go stale — a later save is a different snapshot.
+_Avoid_: Version, saved seed, keep, favourite, like, working planet
 
 **Save**:
-Write the working planet as a **new node**, child of **head**. A new **layout seed** or an explore tile is a **different planet**; layout genes, shape seed, shape genes, sculpting, body, and a name stay the **same planet**. A name labels the node; it is not what makes a child.
-_Avoid_: Update, commit, branch (the identity split is same vs different planet)
+Write the working planet as a **new snapshot**. The name field next to Save shows the **variant** you are on — that is the line a Save continues. Change the name and Save starts another variant, keeping the **ranges** you were on.
+_Avoid_: Update, commit, branch, fork (as the identity split)
+
+**Delete**:
+Mark a **variant** so it leaves the list. The snapshot stays. A badge offers Undo, which clears the mark.
+_Avoid_: Drop, destroy, erase
 
 **Same planet**:
-Same **layout seed**. Shape iteration, gene moves, and sculpting stay on this planet. Still a new tree node on Save.
+Same **layout seed**. Shape iteration, gene moves, and sculpting stay on this planet. Still a new snapshot on Save. The name, not the seed, decides which card it joins.
 _Avoid_: Generation, in-place update, same variant id
 
 **Different planet**:
-New **layout seed**, or an explore tile. Save is still a child. **Commit** does not follow.
-_Avoid_: Branch (except as "child in the tree"), fork, save as
+New **layout seed**, or an explore tile. Save is still a snapshot. Give it a new name if it is another variant.
+_Avoid_: Branch, save as
+
+**Fork**:
+Not a catalog operation. A new name on Save is another variant. The previous name stays.
+_Avoid_: Calling every Save a fork
 
 **Lineage**:
-The parent link between saved **variants**. The catalog is this tree, not a list. See **Save**. What changed versus the parent sits on the edge.
-_Avoid_: History (the tectonic sim), undo, variant list
+The saves that share one **name**, in time order. The Variants panel shows one card per name. The latest save is the head (thumbnail and open target). Shape with no new name continues the active name.
+_Avoid_: Showing every snapshot as its own variant, History (the tectonic sim), nesting by parent or seed
 
 **Head**:
 The **variant** currently checked out. Shuffle, edits, and opened explore
-tiles stay on head as uncommitted work until **Save**. Head is not the
-**commit** unless that save was the first version on that line.
-_Avoid_: Current, selected (ambiguous with search)
+tiles stay on head as uncommitted work until **Save**. The UI
+word is **Active**.
+_Avoid_: Current, selected (ambiguous with search), HEAD (in the UI)
 
 **Pin**:
 A **body** value a saved **variant** has locked. Children inherit it. Genes are not pinned — a tight **range** is how a line stays near a gene. A pin does not rewrite siblings or the rest of the project.
@@ -95,26 +103,26 @@ A search-tile mark that reshapes the current **ranges** as you go and writes tha
 _Avoid_: Favourite, upvote, save
 
 **Search**:
-A sheet of **working planets** drawn from the selected **variant**: its **ranges**, minus its **pins**, starting from its **body**. Layout only. There is no Shape sheet — iterate Shape on the globe. Likes update those ranges on the variant immediately. Opening or saving a tile is a **different planet**. Earth has no search.
+A sheet of **working planets** drawn from the selected **variant**: its **ranges**, minus its **pins**, starting from its **body**. Layout only. There is no Shape sheet — iterate Shape on the globe. Likes update those ranges on the variant immediately. Opening or saving a tile is a **different planet**. Earth has no search. The UI word is **Explore**.
 _Avoid_: Shuffle (that only changes the layout seed), Shape search
 
 **Refinement**:
 How tight a **variant**'s **ranges** are versus the vouched intervals. That number sits on the node. What changed versus the parent sits on the edge. Siblings may differ — one line was searched longer. Read it off the stored box; do not store a separate score.
 _Avoid_: Fitness, generation count, search depth
 
-**Commit**:
-Choosing one **variant** as the project's planet so **Finish** runs on that instance. The UI word is **Adopt**. Commit does not pin every remaining gene. Not a Save.
-_Avoid_: Pin, bake, export, Save
-
 **Pipeline**:
-Discover then Finish. Progress lists Layout, Shape, Climate, Terrain, Hydrology, Export. Preview tiles are a tool, not a stage.
-_Avoid_: Build, export chain, cubesphere, regional DEM, coarse planet, conditioning, base (as a stage)
+Discover then Finish. Stages are Layout, Shape, Climate, Terrain, Hydrology, Export. The UI flow is that order. Preview tiles are a tool, not a stage.
+_Avoid_: Build, export chain, cubesphere, regional DEM, coarse planet, conditioning, base (as a stage), Progress (as a workspace panel)
+
+**Progress**:
+Where a **variant** sits in the **pipeline**. Shown on that node in the tree. Not a workspace panel. Discover's screens are the flow.
+_Avoid_: Pipeline widget, stage list, sidebar rows
 
 ## Flagged ambiguities
 
 **Seed** is two keys. **Layout seed** is the planet identity. **Shape seed** is coasts. A variant includes both and is more than a seed. Do not say "save this seed" when you mean save a variant.
 
-**Base** is this repo's job (the generator), not a Progress stage. The Discover stages are **Layout** and **Shape**.
+**Base** is this repo's job (the generator), not a pipeline stage. The Discover stages are **Layout** and **Shape**.
 
 **landFraction** is not a parameter. It was a post-hoc sea-level shift to hit a dry percentage. Author **water** and **continentFraction** instead; judge the dry share from the picture.
 
@@ -122,36 +130,40 @@ _Avoid_: Build, export chain, cubesphere, regional DEM, coarse planet, condition
 
 **A generate is not a variant.** It has the same recipe shape, but it is a **working planet** until Save. Do not call the fleeting globe a variant.
 
-**Commit** is Adopt-for-Finish, not a Save. Do not call a tree node a commit.
-
 ## Example
 
 — Thalos has three saved variants and no adopted body yet. Is that the planet?
 — No. That is the **project** still initializing. Each **variant** already has its own **body**.
 
 — I liked three tiles and kept two. Are those the same?
-— No. The likes reshape the **ranges** on the current variant as you go. The two you saved are **children** — each tile is a **different planet**.
+— No. The likes reshape the **ranges** on the current variant as you go. The two you saved are snapshots. Give a new name if that planet is another variant.
 
-— One child looks barely narrowed and another is a sliver. Is that a bug?
-— No. **Refinement** is per variant. The tree is how you see the asymmetry.
+— One save looks barely narrowed and another is a sliver. Is that a bug?
+— No. **Refinement** is per snapshot.
 
-— I shuffled, tweaked tilt, shuffled again, and hit Save. What is in the tree?
-— A child: the globe as it stood at Save, a **different planet** from the version you shuffled from. The in-between rerolls were uncommitted.
+— I shuffled, tweaked tilt, shuffled again, and hit Save. What is in the catalog?
+— The globe as it stood at Save. The in-between rerolls were uncommitted.
 
 — I changed tilt on this layout seed and hit Save, no new name. What happened?
-— Save wrote a child of **head**. **Same planet**. The parent still has its own sketch, if it had one.
+— Save wrote a new snapshot. The card keeps the name. The previous save is that line's history.
 
 — I shuffled the shape seed and hit Save. What happened?
-— A child, **same planet**. Layout did not rerun. The new node needs Shape run (or you ran it before Save).
+— A new snapshot under the same name. Layout did not rerun.
 
-— I opened an older version, liked a new seed, and named it. What happened?
-— Explore is a **different planet**. The name labels that child. **Head** moves there. The adopted **commit** stays.
+— I opened an older save on this line and hit Save. What happened?
+— Another snapshot of that name. It is the new head.
 
-— I saved a child from a variant whose radius is pinned. What radius does it have?
-— The parent's. That **pin** is **lineage**, not a project rewrite.
+— I named a save while standing on **interesting**. What happened?
+— If the name is **interesting**, that line continues. If the name is new, that variant appears and **interesting** stays.
+
+— I opened an older variant, liked a new seed, and named it. What happened?
+— Explore is a **different planet**. The name labels that variant.
+
+— I saved from a variant whose radius is pinned. What radius does it have?
+— The pins on that snapshot. A pin is not a project rewrite.
 
 — If I change radius on the working planet, do the old variants change?
-— No. Each variant keeps the body it was saved with. Their bakes stay valid.
+— No. Each snapshot keeps the body it was saved with. Their bakes stay valid.
 
 — I want an ocean world. Do I set land fraction to 5%?
 — No. That is **water**: drowned. Land fraction is not a parameter.

@@ -23,6 +23,7 @@ bun run preview                              # globe + equirect — start here
 bun run preview plates                       # plate shapes and motion
 bun run preview crust                        # ridges, trenches, sea-floor age
 bun run preview climate                      # moisture field on its own
+bun run preview relief                       # hypsometric tint and hillshade
 bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400
 bun run sheet                                # 12 seeds in one contact sheet, preview/thalos/seed-sheet.png
 bun run sheet --count=9 --view=globe --overlay=plates
@@ -115,6 +116,7 @@ bun run preview plates          # plates + motion arrows (globe and equirect)
 bun run preview plates equirect
 bun run preview crust           # sea-floor age, orogeny, boundary types
 bun run preview climate         # the moisture field on its own
+bun run preview relief          # hypsometric tint and hillshade
 bun run preview --no-tectonics  # the 1843 blend, for comparison
 ```
 
@@ -127,6 +129,7 @@ Then read the **compare** sheet for that view if it exists, otherwise the latest
 | **plates** | `preview/thalos/plates.png`, `preview/thalos/equirect-plates.png` (and their `-compare` sheets) | One color per plate, darker = underwater, named, with motion arrows and time since the plate formed | Plate size and shape, mixed land/ocean on a plate, relative motion |
 | **crust** | `preview/thalos/crust.png`, `preview/thalos/equirect-crust.png` (and their `-compare` sheets) | Sea floor pale = young to dark = old; land red = orogeny; orange = ridge, cyan = trench, yellow = transform | What the simulation is doing: ridge systems and the age gradient beside them, subduction zones, transform segments |
 | **climate** | `preview/thalos/climate.png`, `preview/thalos/equirect-climate.png` (and their `-compare` sheets) | Moisture alone: sand = arid, olive = steppe, green = forest, teal = saturated | Judging moisture. The biome colours compress the middle of the range, so a real change can look like no change on the finished map |
+| **relief** | `preview/thalos/relief.png`, `preview/thalos/equirect-relief.png` (and their `-compare` sheets) | Hypsometric tint + hillshade: blue ocean, green lowlands, brown mountains, white peaks | Judging elevation. Surface biomes hide belts and basin shape; this look does not |
 
 `bun run check:earth` locks the Earth fixture's `stats` report to a checked-in
 baseline (`scripts/earth-baseline.txt`) so a model change cannot drift Earth
@@ -147,8 +150,8 @@ being discovered) and Earth (the present-day reference fixture). A project
 file holds the adopted **body**. Earth is the **fixture**: authored knobs and
 a seed token, no tree. A **variant** is a saved snapshot (layout seed, shape
 seed, body, genes, body pins, ranges, parent). Every Save writes a child of
-head. Search is layout only; Shape is an explicit cached pass. **Commit**
-(Adopt) picks the instance Finish runs on. How this works: `docs/studio.md`.
+head. Search is layout only; Shape is an explicit cached pass. Finish
+runs on the variant you name. How this works: `docs/studio.md`.
 Captures, crops and preview tiles belong to a variant and live in
 `preview/<name>/v/<id>/` (Earth and a project with no variant still use
 `preview/<name>/`). Loading one *assigns* the authored bag rather than

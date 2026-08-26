@@ -1,8 +1,6 @@
 /*
- * The studio: picker, sidebar, body pins, variant tree, search chrome.
- *
- * Mounted against the renderer's generate/draw operations. The renderer
- * keeps WebGL, mesh generation, and process flags that are not parameters.
+ * The studio: picker, shell, stage panels, variant tree. Chrome is Preact.
+ * The renderer keeps WebGL, mesh generation, and process flags.
  */
 'use strict';
 
@@ -12,6 +10,9 @@ const Search = require('../search');
 const EarthFixture = require('../earth-fixture');
 const TdOverlay = require('../td-overlay');
 const Boot = require('./boot');
+const Sidebar = require('./sidebar');
+const Ui = require('./ui');
+const Undo = require('./undo');
 const { mountHudIcons } = require('./icons.js');
 
 const SEED_HISTORY_MAX = 50;
@@ -19,19 +20,7 @@ const VARIANTS_KEY = 'planetgen.variants';
 const SAVED_SEEDS_KEY = 'planetgen.savedSeeds';
 const SEARCH_KEEPS_KEY = 'planetgen.searchKeeps';
 const Variants = Projects.Variants;
-
-const MODULE_ORDER = ['world', 'tectonics', 'climate', 'detail'];
-const GROUP_LABEL = {
-    body: 'Body',
-    history: 'History',
-    continents: 'Continents',
-    volcanism: 'Volcanism',
-    polar: 'Poles',
-    warp: 'Shape',
-    ridges: 'Ridges',
-    fluvial: 'Erosion',
-    glacial: 'Ice',
-};
+let thumbFill = 0;
 
 
 function createSession(startup) {
@@ -63,6 +52,12 @@ function createSession(startup) {
         pipelineFact: null,
         pipelineShapeBusy: false,
         host: null,
+        ui: {
+            stageIntent: null,
+            variantsOpen: false,
+            saveName: '',
+            undo: null,
+        },
     };
 }
 
@@ -75,16 +70,6 @@ function parseSeed(raw) {
 function projectLabel(name) {
     const project = Boot.knownProject(name) && Projects.byName(name);
     return project && project.label ? project.label : name;
-}
-
-
-function paramOrder() {
-    const registry = Params.all();
-    return Params.exposed().slice().sort((a, b) => {
-        const ma = MODULE_ORDER.indexOf(registry[a].module);
-        const mb = MODULE_ORDER.indexOf(registry[b].module);
-        return ma - mb || a.localeCompare(b);
-    });
 }
 
 
@@ -112,6 +97,7 @@ function loadVariantState(session, variant) {
     session.workingRanges = null;
     session.discovery = false;
     session.shapeSeed = variant.shapeSeed || variant.seed;
+    session.ui.saveName = Variants.lineageName(session.catalog.variants, variant);
 }
 
 
@@ -150,23 +136,14 @@ function syncContext(session) {
 }
 
 
-function formatValue(meta, value) {
-    if (value == null) return 'free';
-    if (typeof value === 'boolean') return value ? 'on' : 'off';
-    if (meta.unit === 'count' || meta.unit === 'step' || meta.unit === 'km' || meta.unit === 'm') {
-        return String(Math.round(value));
-    }
-    if (meta.unit === 'frac' || meta.unit === '1') return value.toFixed(3);
-    return String(Math.round(value * 10) / 10);
+function paint(session) {
+    if (typeof session.redraw === 'function') session.redraw();
 }
 
 
 function applyPins(session, rebuild) {
     session.lastResolved = Projects.resolve({name: session.project, values: effectiveValues(session)});
-    renderParams(session);
-    renderProjectState(session);
-    renderPipeline(session);
-    syncVariantsUI(session);
+    paint(session);
     syncContext(session);
     if (rebuild) session.host.generateMesh();
 }
@@ -200,151 +177,30 @@ function toggleParamPin(session, name) {
 function markProjectModified(session) {
     if (session.projectModified) return;
     session.projectModified = true;
-    renderProjectState(session);
+    paint(session);
+}
+
+
+function markShaped(session, id, value) {
+    if (!id) return;
+    const found = Variants.findById(readVariants(session), id);
+    if (found) found.shaped = !!value;
+    if (session.variant && session.variant.id === id) session.variant.shaped = !!value;
 }
 
 
 function renderParams(session) {
-    const host = document.getElementById('param-list');
-    if (!host) return;
-    host.textContent = '';
-    const registry = Params.all();
-    let lastGroup = null;
-
-    for (const name of paramOrder()) {
-        const meta = registry[name];
-        const pinned = name in session.pins;
-        const value = paramValue(session, name);
-
-        if (meta.group !== lastGroup) {
-            lastGroup = meta.group;
-            const heading = document.createElement('div');
-            heading.className = 'param-group';
-            heading.textContent = GROUP_LABEL[meta.group] || meta.group;
-            host.append(heading);
-        }
-
-        const row = document.createElement('div');
-        const probing = !pinned && name in variantValues(session);
-        row.className = pinned ? 'param' : probing ? 'param free is-probe' : 'param free';
-
-        const head = document.createElement('div');
-        head.className = 'param-head';
-
-        const label = document.createElement('span');
-        label.className = 'param-name';
-        label.textContent = name;
-
-        const readout = document.createElement('span');
-        readout.className = 'param-value';
-        readout.textContent = formatValue(meta, value);
-
-        if (!Projects.isFixture(session.project) && Params.isBody(name)) {
-            const pin = document.createElement('button');
-            pin.type = 'button';
-            pin.className = 'param-pin';
-            pin.dataset.action = 'toggle-pin';
-            pin.dataset.param = name;
-            pin.textContent = pinned ? '◉' : '○';
-            pin.setAttribute('aria-pressed', String(pinned));
-            pin.title = pinned ? `${name} is pinned on this variant — click to free it`
-                               : `${name} is free — click to pin it at its current value`;
-            head.append(pin, label, readout);
-        } else {
-            head.append(label, readout);
-        }
-        row.append(head);
-
-        if (meta.unit === 'bool') {
-            const box = document.createElement('input');
-            box.type = 'checkbox';
-            box.dataset.action = 'set-param';
-            box.dataset.param = name;
-            box.checked = !!value;
-            row.append(box);
-        } else if (meta.range) {
-            const [lo, hi] = meta.range;
-            const slider = document.createElement('input');
-            slider.type = 'range';
-            slider.dataset.action = 'set-param';
-            slider.dataset.param = name;
-            slider.min = String(lo);
-            slider.max = String(hi);
-            slider.step = (meta.unit === 'count' || meta.unit === 'step') ? '1' : String((hi - lo) / 200);
-            /* A free parameter still has to show something, so an unset one
-               sits at the middle of its range rather than at zero. */
-            slider.value = String(value == null ? (lo + hi) / 2 : value);
-            row.append(slider);
-        }
-
-        host.append(row);
-    }
+    paint(session);
 }
 
 
 function renderProjectState(session) {
-    const state = document.getElementById('project-state');
-    if (!state) return;
-    const bits = [];
-    if (!Projects.isFixture(session.project)) {
-        bits.push(`${Object.keys(session.pins).length} locked`);
-    }
-    if (isWorkingDirty(session)) bits.push('uncommitted');
-    if (session.variant && session.catalog.committed === session.variant.id) bits.push('adopted');
-    else if (session.variant) bits.push('HEAD');
-    state.textContent = bits.join(', ');
+    paint(session);
 }
 
 
 function renderPipeline(session) {
-    const hostEl = document.getElementById('project-pipeline');
-    if (!hostEl) return;
-    const authored = Projects.byName(session.project);
-    const notes = authored.pipeline || {};
-    const factById = new Map((session.pipelineFact && session.pipelineFact.stages || []).map((s) => [s.id, s]));
-    hostEl.textContent = '';
-    hostEl.hidden = false;
-
-    for (const stage of Projects.STAGES) {
-        const live = factById.get(stage.id);
-        const intent = (live && live.intent) || notes[stage.id] || '';
-        const fact = live ? live.fact : '';
-        const empty = !intent && !fact;
-        const later = intent === 'later';
-        const row = document.createElement('div');
-        row.className = 'pipeline-row'
-            + (empty ? ' is-empty' : '')
-            + (later ? ' is-later' : '')
-            + (fact === 'stale' ? ' is-stale' : '');
-        if (stage.title) row.title = stage.title;
-
-        const label = document.createElement('span');
-        label.className = 'stage';
-        label.textContent = stage.label;
-
-        const right = document.createElement('span');
-        right.className = 'status';
-        const shown = live ? (fact || '—') : (empty ? '—' : intent);
-        right.textContent = shown;
-        if (intent && intent !== shown) right.title = intent;
-
-        const tail = document.createElement('span');
-        tail.className = 'pipeline-tail';
-        tail.append(right);
-
-        if (stage.id === 'shape' && live && live.canShape) {
-            const shapeBtn = document.createElement('button');
-            shapeBtn.type = 'button';
-            shapeBtn.className = 'pipeline-action';
-            shapeBtn.dataset.action = 'run-shape';
-            shapeBtn.textContent = session.pipelineShapeBusy ? 'Shaping…' : 'Shape';
-            shapeBtn.disabled = session.pipelineShapeBusy;
-            tail.append(shapeBtn);
-        }
-
-        row.append(label, tail);
-        hostEl.append(row);
-    }
+    paint(session);
 }
 
 
@@ -378,6 +234,10 @@ async function persistShape(session, payload) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || res.statusText);
     }
+    if (variantId) {
+        markShaped(session, variantId, true);
+        await persistCatalog(session);
+    }
 }
 
 
@@ -399,6 +259,10 @@ async function loadVariantShape(session) {
         }
         const payload = await res.json();
         session.host.loadShape(payload);
+        if (variantId) {
+            markShaped(session, variantId, true);
+            persistCatalog(session);
+        }
     } catch {
         session.host.clearShape();
         if (session.host.isShaped && session.host.isShaped()) session.host.showLayout();
@@ -409,14 +273,20 @@ async function loadVariantShape(session) {
 async function shapeVariant(session) {
     if (session.pipelineShapeBusy) return;
     await ensureVariant(session);
-    if (!Projects.isFixture(session.project) && isWorkingDirty(session)) {
-        await saveWorkingVariant(session);
+    if (!Projects.isFixture(session.project) && session.variant) {
+        const needsHead = !session.variant.shaped || isWorkingDirty(session);
+        if (needsHead) {
+            session.ui.stageIntent = 'shape';
+            await saveWorkingVariant(session, {force: true});
+        }
     }
     session.pipelineShapeBusy = true;
     renderPipeline(session);
     try {
         const payload = session.host.runShape(session.shapeSeed || session.seed);
         await persistShape(session, payload);
+        session.ui.stageIntent = 'shape';
+        ensureCurrentThumb(session);
         await refreshPipeline(session);
     } catch (err) {
         window.alert(`Shape failed: ${err.message || err}`);
@@ -428,11 +298,10 @@ async function shapeVariant(session) {
 
 
 function syncProjectTitle(session) {
-    const title = document.getElementById('project-title');
-    if (title) title.textContent = projectLabel(session.project);
     if (!document.documentElement.classList.contains('is-picker')) {
         document.title = `${projectLabel(session.project)} — Procedural Planet Generation`;
     }
+    paint(session);
 }
 
 
@@ -445,32 +314,11 @@ function showWorkspace(session) {
 
 function showProjectPage(session) {
     if (session.searchSession) exitSearch(session);
-    document.getElementById('variants-popover')?.hidePopover?.();
+    session.ui.variantsOpen = false;
     document.documentElement.classList.add('is-picker');
     document.getElementById('workspace')?.setAttribute('aria-hidden', 'true');
     document.title = 'Projects';
-    renderProjectPage(session);
-    const current = document.querySelector('.project-card.is-current')
-        || document.querySelector('.project-card');
-    current?.focus();
-}
-
-
-function renderProjectPage(session) {
-    const host = document.getElementById('project-list');
-    if (!host) return;
-    host.textContent = '';
-    for (const project of Projects.PROJECTS) {
-        const card = document.createElement('button');
-        card.type = 'button';
-        card.className = 'project-card' + (project.name === session.project && session.planetReady ? ' is-current' : '');
-        card.dataset.action = 'open-project';
-        card.dataset.project = project.name;
-        if (project.name === session.project && session.planetReady) card.setAttribute('aria-current', 'page');
-
-        card.textContent = project.label || project.name;
-        host.append(card);
-    }
+    paint(session);
 }
 
 
@@ -506,8 +354,14 @@ async function loadProject(session, name) {
     session.workingParent = null;
     session.workingRanges = null;
     session.workingThumb = '';
+    session.thumbPending = null;
+    thumbFill += 1;
     session.compareId = null;
     session.discovery = false;
+    session.ui.stageIntent = null;
+    session.ui.variantsOpen = false;
+    session.ui.saveName = '';
+    Undo.dismissUndo(session, {immediate: true});
     session.catalog = Variants.emptyCatalog(project.name);
     session.pendingVariantId = lastId;
     session.seedFromQuery = false;
@@ -518,6 +372,7 @@ async function loadProject(session, name) {
 
     await hydrateCatalog(session);
     if (resumeCatalog(session)) {
+        if (session.catalog.variants.length) await persistCatalog(session);
         session.host.generateMesh();
         renderSearchChrome(session);
         return;
@@ -529,6 +384,7 @@ async function loadProject(session, name) {
     syncContext(session);
     renderSearchChrome(session);
     syncVariantsUI(session);
+    if (session.catalog.variants.length) await persistCatalog(session);
 }
 
 
@@ -539,19 +395,13 @@ function applySeed(session, next) {
         session.seed = (next | 0);
         if (session.seed === 0) session.seed = 1;
     }
-    const input = document.getElementById('seed-input');
-    if (input) input.value = String(session.seed);
-    const shapeInput = document.getElementById('shape-seed-input');
-    if (shapeInput) shapeInput.value = String(session.shapeSeed || session.seed);
-    syncVariantsUI(session);
+    if (!session.shapeSeed) session.shapeSeed = session.seed;
+    paint(session);
 }
 
 
 function syncSeedHistoryButtons(session) {
-    const undo = document.getElementById('seed-undo');
-    const redo = document.getElementById('seed-redo');
-    if (undo) undo.disabled = session.seedHistoryIndex <= 0;
-    if (redo) redo.disabled = session.seedHistoryIndex >= session.seedHistory.length - 1;
+    paint(session);
 }
 
 
@@ -577,13 +427,11 @@ function commitSeed(session, next) {
 function setSeed(session, next) {
     const parsed = parseSeed(next);
     if (parsed == null) {
-        const input = document.getElementById('seed-input');
-        if (input) input.value = String(session.seed);
+        paint(session);
         return;
     }
     if (EarthFixture.isEarthSeed(parsed) && session.project !== 'earth') {
-        const input = document.getElementById('seed-input');
-        if (input) input.value = String(session.seed);
+        paint(session);
         return;
     }
     if (session.variant) session.discovery = true;
@@ -597,6 +445,7 @@ function shuffleSeed(session) {
     if (session.variant) session.discovery = true;
     session.shapeSeed = next;
     if (session.host && session.host.clearShape) session.host.clearShape();
+    session.ui.stageIntent = 'layout';
     commitSeed(session, next);
 }
 
@@ -604,15 +453,12 @@ function shuffleSeed(session) {
 function setShapeSeed(session, next) {
     const parsed = parseSeed(next);
     if (parsed == null || EarthFixture.isEarthSeed(parsed)) {
-        const input = document.getElementById('shape-seed-input');
-        if (input) input.value = String(session.shapeSeed || session.seed);
+        paint(session);
         return;
     }
     session.shapeSeed = parsed;
     session.projectModified = true;
-    const input = document.getElementById('shape-seed-input');
-    if (input) input.value = String(parsed);
-    syncVariantsUI(session);
+    paint(session);
     if (session.host && session.host.isShaped && session.host.isShaped()) {
         session.host.runShape(session.shapeSeed);
     }
@@ -693,17 +539,41 @@ function cachedCatalog(project) {
 }
 
 
-async function persistCatalog(session) {
+function keepThumbs(previous, next) {
+    if (!previous || !previous.length) return next;
+    let changed = false;
+    const variants = next.variants.map((item) => {
+        if (item.thumb) return item;
+        const old = Variants.findById(previous, item.id);
+        if (!old || !old.thumb) return item;
+        changed = true;
+        return Object.assign({}, item, {thumb: old.thumb});
+    });
+    return changed ? Object.assign({}, next, {variants}) : next;
+}
+
+
+async function persistCatalog(session, opts) {
+    const previous = session.catalog.variants;
     const catalog = Projects.parseCatalog(session.catalog, session.project);
-    session.catalog = catalog;
+    session.catalog = keepThumbs(previous, catalog);
     cacheCatalog(catalog);
+    const body = Variants.serializeCatalog(catalog);
+    const drop = opts && opts.drop;
+    if (drop && drop.length) body.drop = drop;
     try {
         const res = await fetch(`${TdOverlay.TD_API}/variants`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(Variants.serializeCatalog(catalog)),
+            body: JSON.stringify(body),
         });
-        if (res.ok) session.catalog = Projects.parseCatalog(await res.json(), session.project);
+        if (res.ok) {
+            session.catalog = keepThumbs(previous, Variants.mergeCatalogs(
+                Projects.parseCatalog(await res.json(), session.project),
+                session.catalog,
+            ));
+            cacheCatalog(session.catalog);
+        }
     } catch (_) { /* local cache still has it */ }
 }
 
@@ -718,20 +588,25 @@ async function persistThumb(session, id, dataUrl) {
         });
         if (!res.ok) return;
         const data = await res.json();
+        if (!data.thumb) return;
         const found = Variants.findById(session.catalog.variants, id);
-        if (found && data.thumb) found.thumb = data.thumb;
+        if (found) found.thumb = data.thumb;
+        if (session.variant && session.variant.id === id) session.variant.thumb = data.thumb;
+        syncVariantsUI(session);
     } catch (_) { /* optional */ }
 }
 
 
 async function hydrateCatalog(session) {
-    let catalog = cachedCatalog(session.project) || Variants.emptyCatalog(session.project);
+    const cached = cachedCatalog(session.project);
+    let disk = Variants.emptyCatalog(session.project);
     try {
         const res = await fetch(`${TdOverlay.TD_API}/variants?project=${encodeURIComponent(session.project)}`);
         if (res.ok) {
-            catalog = Projects.parseCatalog(await res.json(), session.project);
+            disk = Projects.parseCatalog(await res.json(), session.project);
         }
     } catch (_) { /* cache / migrate */ }
+    let catalog = Variants.mergeCatalogs(disk, cached);
     if (!catalog.variants.length && !Projects.isFixture(session.project)) {
         const migrated = Variants.migrate(
             parseLegacyKeeps(),
@@ -739,33 +614,59 @@ async function hydrateCatalog(session) {
             session.project,
             Projects.byName(session.project).body,
         );
-        if (migrated.length) catalog.variants = migrated;
+        if (migrated.length) catalog = Variants.mergeCatalogs({
+            project: session.project,
+            committed: catalog.committed,
+            variants: migrated,
+        }, catalog);
     }
     session.catalog = catalog;
     cacheCatalog(catalog);
-    if (catalog.variants.length) await persistCatalog(session);
-    for (const item of session.catalog.variants) {
-        if (item.thumb && item.thumb.startsWith('data:')) {
-            await persistThumb(session, item.id, item.thumb);
-        }
-    }
+}
+
+
+function recoverCheckout(session, id) {
+    const found = Variants.findById(session.catalog.variants, id);
+    if (found) return Variants.isLive(found) ? found : null;
+    if (EarthFixture.isEarthSeed(session.seed) || !(session.seed >= 1)) return null;
+    const incoming = workingVariant(session, {id});
+    if (!incoming) return null;
+    incoming.id = id;
+    session.catalog = {
+        project: session.project,
+        committed: session.catalog.committed,
+        variants: Variants.remember(session.catalog.variants, incoming),
+    };
+    return Variants.findById(session.catalog.variants, id);
 }
 
 
 function resumeCatalog(session) {
-    const id = Variants.resumeId({
+    const wanted = Variants.wantedId({
         pendingId: session.pendingVariantId,
         lastId: Boot.readStoredVariant(session.project),
-        committed: session.catalog.committed,
         variants: session.catalog.variants,
         seedFromQuery: session.seedFromQuery,
+        querySeed: session.seed,
         fixture: Projects.isFixture(session.project),
     });
     session.pendingVariantId = null;
     session.seedFromQuery = false;
-    const found = id && Variants.findById(session.catalog.variants, id);
-    if (!found) {
-        if (id && session.catalog.variants.length) Boot.writeStoredVariant(session.project, null);
+    let id = wanted;
+    if (!id && !Projects.isFixture(session.project) && session.seed >= 1
+        && session.catalog.variants.length
+        && !Variants.live(session.catalog.variants).some((item) => (item.seed | 0) === (session.seed | 0))) {
+        id = Variants.newId();
+    }
+    if (!id) {
+        syncVariantsUI(session);
+        renderProjectState(session);
+        syncContext(session);
+        return false;
+    }
+    const found = Variants.findById(session.catalog.variants, id)
+        || recoverCheckout(session, id);
+    if (!found || !Variants.isLive(found)) {
         syncVariantsUI(session);
         renderProjectState(session);
         syncContext(session);
@@ -784,11 +685,17 @@ function resumeCatalog(session) {
 async function hydrateAndResume(session) {
     await hydrateCatalog(session);
     const resumed = resumeCatalog(session);
+    if (session.catalog.variants.length) await persistCatalog(session);
+    for (const item of session.catalog.variants) {
+        if (item.thumb && item.thumb.startsWith('data:')) {
+            await persistThumb(session, item.id, item.thumb);
+        }
+    }
     if (resumed || Projects.isFixture(session.project)) await loadVariantShape(session);
 }
 
 
-function setCatalogVariants(session, items) {
+function setCatalogVariants(session, items, opts) {
     const committed = items.some((item) => item.id === session.catalog.committed)
         ? session.catalog.committed
         : null;
@@ -797,7 +704,7 @@ function setCatalogVariants(session, items) {
         committed,
         variants: items,
     };
-    return persistCatalog(session);
+    return persistCatalog(session, opts);
 }
 
 
@@ -816,7 +723,29 @@ function variantThumbOf(canvas) {
         off.height = height;
         const ctx = off.getContext('2d');
         if (!ctx) return canvas.toDataURL('image/jpeg', 0.72);
-        ctx.drawImage(canvas, 0, 0, width, height);
+        const sw = canvas.width;
+        const sh = canvas.height;
+        if (!(sw > 0 && sh > 0)) return '';
+        const ratio = sw / sh;
+        /* A square globe canvas cropped to 2:1 is an equatorial strip.
+           Letterbox that. A wide map view is cropped to the fitted 2:1. */
+        if (ratio < 1.25) {
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, width, height);
+            const dh = height;
+            const dw = dh * ratio;
+            ctx.drawImage(canvas, 0, 0, sw, sh, (width - dw) / 2, 0, dw, dh);
+        } else {
+            let sx = 0, sy = 0, cw = sw, ch = sh;
+            if (ratio > 2) {
+                cw = sh * 2;
+                sx = (sw - cw) / 2;
+            } else if (ratio < 2) {
+                ch = sw / 2;
+                sy = (sh - ch) / 2;
+            }
+            ctx.drawImage(canvas, sx, sy, cw, ch, 0, 0, width, height);
+        }
         return off.toDataURL('image/jpeg', 0.72);
     } catch (_) {
         return '';
@@ -824,17 +753,106 @@ function variantThumbOf(canvas) {
 }
 
 
+function surfaceThumbJpeg(canvas) {
+    if (!canvas || typeof canvas.toDataURL !== 'function') return '';
+    try {
+        return canvas.toDataURL('image/jpeg', 0.86);
+    } catch (_) {
+        return '';
+    }
+}
+
+
 function captureWorkingThumb(session) {
+    if (session.host && typeof session.host.renderWorkingThumb === 'function') {
+        const painted = surfaceThumbJpeg(session.host.renderWorkingThumb());
+        if (painted) {
+            session.workingThumb = painted;
+            return painted;
+        }
+    }
+    if (session.host && typeof session.host.drawNow === 'function') {
+        session.host.drawNow();
+    }
     const thumb = variantThumbOf(document.getElementById('output'));
     if (thumb) session.workingThumb = thumb;
     return session.workingThumb || '';
 }
 
 
-function versionLabel(variant) {
-    if (!variant) return 'working';
-    if (variant.name) return variant.name;
-    return String(variant.seed);
+function applyCatalogThumb(session, id, thumb) {
+    if (!id || !thumb) return null;
+    const prev = readVariants(session);
+    const next = Variants.putThumb(prev, id, thumb, true);
+    if (next === prev) return Variants.findById(prev, id);
+    session.catalog = Object.assign({}, session.catalog, {variants: next});
+    const found = Variants.findById(next, id);
+    if (found && session.variant && session.variant.id === id) session.variant = found;
+    return found;
+}
+
+
+function ensureCurrentThumb(session) {
+    const thumb = captureWorkingThumb(session);
+    if (!session.planetReady || Projects.isFixture(session.project)) return thumb;
+    const current = session.variant;
+    if (!thumb || !current || isWorkingDirty(session)) return thumb;
+    applyCatalogThumb(session, current.id, thumb);
+    persistThumb(session, current.id, thumb);
+    return thumb;
+}
+
+
+function thumbNaturalWidth(thumb) {
+    if (!thumb) return Promise.resolve(0);
+    const src = TdOverlay.previewUrl(thumb);
+    if (!src) return Promise.resolve(0);
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img.naturalWidth || 0);
+        img.onerror = () => resolve(0);
+        img.src = src;
+    });
+}
+
+
+async function fillMissingThumbs(session) {
+    if (Projects.isFixture(session.project)) return;
+    const run = ++thumbFill;
+    ensureCurrentThumb(session);
+    if (!session.host || typeof session.host.renderVariantThumb !== 'function') {
+        syncVariantsUI(session);
+        return;
+    }
+    for (const item of readVariants(session)) {
+        if (run !== thumbFill) return;
+        const current = session.variant && item.id === session.variant.id && !isWorkingDirty(session);
+        if (item.deleted) continue;
+        const lowRes = item.thumb && (await thumbNaturalWidth(item.thumb)) < 800;
+        if (item.thumb && !lowRes && !current) continue;
+        if (current) {
+            ensureCurrentThumb(session);
+            continue;
+        }
+        if (!session.thumbPending) session.thumbPending = new Set();
+        session.thumbPending.add(item.id);
+        syncVariantsUI(session);
+        const canvas = session.host.renderVariantThumb(item);
+        const thumb = surfaceThumbJpeg(canvas) || variantThumbOf(canvas);
+        session.thumbPending.delete(item.id);
+        if (run !== thumbFill) return;
+        if (thumb) {
+            applyCatalogThumb(session, item.id, thumb);
+            persistThumb(session, item.id, thumb);
+        }
+        syncVariantsUI(session);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+}
+
+
+function variantLabel(list, variant) {
+    return Variants.lineageName(list || [], variant);
 }
 
 
@@ -847,8 +865,6 @@ function workingVariant(session, extra) {
     extra = extra || {};
     return Variants.ofWorking({
         project: session.project,
-        parent: extra.parent != null ? extra.parent
-            : (session.variant && session.variant.id) || session.workingParent,
         seed: session.seed,
         shapeSeed: session.shapeSeed,
         pins: session.pins,
@@ -869,187 +885,27 @@ function selectedVariant(session, items) {
 }
 
 
-function renderVariantsList(session, items) {
-    const list = document.getElementById('variants-list');
-    if (!list) return;
-    list.replaceChildren();
-    if (!items.length) {
-        const empty = document.createElement('div');
-        empty.className = 'variants-empty';
-        empty.textContent = 'No versions yet. Save the globe to start the tree.';
-        list.append(empty);
-        return;
-    }
-    const current = selectedVariant(session, items);
-    for (const rowInfo of Variants.treeRows(items)) {
-        const variant = rowInfo.variant;
-        const committed = session.catalog.committed === variant.id;
-        const isHead = current && current.id === variant.id;
-        const isCompare = session.compareId === variant.id;
-
-        if (rowInfo.notes.length) {
-            const edge = document.createElement('div');
-            edge.className = 'variant-edge';
-            edge.style.paddingLeft = `${8 + rowInfo.depth * 16}px`;
-            edge.textContent = rowInfo.notes.join(' · ');
-            list.append(edge);
-        }
-
-        const row = document.createElement('div');
-        row.className = 'variant-row'
-            + (isHead ? ' is-current' : '')
-            + (isCompare ? ' is-compare' : '')
-            + (committed ? ' is-committed' : '');
-        row.style.marginLeft = `${rowInfo.depth * 16}px`;
-
-        const pick = document.createElement('button');
-        pick.type = 'button';
-        pick.className = 'variant-item';
-        pick.dataset.action = 'compare-variant';
-        pick.dataset.id = variant.id;
-        pick.title = `Compare ${versionLabel(variant)}`;
-
-        if (variant.thumb) {
-            const img = document.createElement('img');
-            img.className = 'variant-thumb';
-            img.src = variant.thumb;
-            img.alt = '';
-            pick.append(img);
-        } else {
-            const blank = document.createElement('span');
-            blank.className = 'variant-thumb-empty';
-            blank.textContent = 'No thumbnail';
-            pick.append(blank);
-        }
-        const meta = document.createElement('span');
-        meta.className = 'variant-meta';
-        const label = document.createElement('span');
-        label.className = 'variant-name';
-        label.textContent = versionLabel(variant);
-        const num = document.createElement('span');
-        num.className = 'variant-seed';
-        num.textContent = String(variant.seed);
-        meta.append(label, num);
-        pick.append(meta);
-        row.append(pick);
-
-        const badges = document.createElement('div');
-        badges.className = 'variant-badges';
-        if (isHead) {
-            const head = document.createElement('span');
-            head.className = 'variant-badge';
-            head.textContent = 'HEAD';
-            badges.append(head);
-        }
-        if (committed) {
-            const adopted = document.createElement('span');
-            adopted.className = 'variant-badge';
-            adopted.textContent = 'adopted';
-            badges.append(adopted);
-        }
-        if (badges.childNodes.length) row.append(badges);
-
-        const actions = document.createElement('div');
-        actions.className = 'variant-actions';
-        if (!isHead) {
-            const open = document.createElement('button');
-            open.type = 'button';
-            open.className = 'variant-open';
-            open.dataset.action = 'open-variant';
-            open.dataset.id = variant.id;
-            open.textContent = 'Open';
-            open.title = isWorkingDirty(session)
-                ? `Check out ${versionLabel(variant)} — unsaved work is not kept`
-                : `Check out ${versionLabel(variant)}`;
-            actions.append(open);
-        }
-        if (committed) {
-            const mark = document.createElement('span');
-            mark.className = 'variant-committed';
-            mark.title = 'Adopted — Finish runs on this version';
-            mark.textContent = 'Adopted';
-            actions.append(mark);
-        } else {
-            const adopt = document.createElement('button');
-            adopt.type = 'button';
-            adopt.className = 'variant-commit';
-            adopt.dataset.action = 'commit-variant';
-            adopt.dataset.id = variant.id;
-            adopt.title = 'Adopt this version so Finish runs on it';
-            adopt.textContent = 'Adopt';
-            actions.append(adopt);
-        }
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'variant-delete';
-        del.dataset.action = 'delete-variant';
-        del.dataset.id = variant.id;
-        del.setAttribute('aria-label', `Remove ${versionLabel(variant)}`);
-        del.textContent = '×';
-        actions.append(del);
-        row.append(actions);
-        list.append(row);
-    }
+function typedVariantName(session) {
+    return ((session && session.ui && session.ui.saveName) || '').trim().slice(0, Variants.NAME_MAX);
 }
 
 
-function comparePair(session, items) {
-    const head = selectedVariant(session, items);
-    const other = session.compareId ? Variants.findById(items, session.compareId) : null;
-    const dirty = isWorkingDirty(session);
-    if (other && (!head || other.id !== head.id)) {
-        return {
-            a: {
-                label: dirty ? 'Uncommitted' : `${versionLabel(head)} · HEAD`,
-                thumb: dirty ? session.workingThumb : (head && head.thumb),
-            },
-            b: {label: versionLabel(other), thumb: other.thumb},
-        };
-    }
-    if (dirty && head) {
-        return {
-            a: {label: 'Uncommitted', thumb: session.workingThumb},
-            b: {label: `${versionLabel(head)} · HEAD`, thumb: head.thumb},
-        };
-    }
-    return null;
+function activeVariantName(session) {
+    if (!session || !session.variant) return '';
+    return Variants.lineageName(readVariants(session), session.variant);
 }
 
 
-function renderVersionCompare(session, items) {
-    const host = document.getElementById('versions-compare');
-    const stage = document.getElementById('versions-compare-stage');
-    const imgA = document.getElementById('versions-compare-a');
-    const imgB = document.getElementById('versions-compare-b');
-    const labelA = document.getElementById('versions-compare-a-label');
-    const labelB = document.getElementById('versions-compare-b-label');
-    if (!host || !imgA || !imgB) return;
-    const pair = comparePair(session, items);
-    if (!pair || !pair.a.thumb || !pair.b.thumb) {
-        host.hidden = true;
-        return;
-    }
-    host.hidden = false;
-    imgA.hidden = !pair.a.thumb;
-    imgB.hidden = !pair.b.thumb;
-    if (pair.a.thumb) imgA.src = pair.a.thumb;
-    if (pair.b.thumb) imgB.src = pair.b.thumb;
-    if (labelA) labelA.textContent = pair.a.label;
-    if (labelB) labelB.textContent = pair.b.label;
-    const slider = document.getElementById('versions-compare-slider');
-    if (stage && slider) stage.style.setProperty('--split', `${slider.value}%`);
-}
-
-
-function typedVersionName() {
-    const nameInput = document.getElementById('variant-name');
-    return nameInput ? nameInput.value.trim().slice(0, Variants.NAME_MAX) : '';
+function isRenamed(session) {
+    const typed = typedVariantName(session);
+    const current = activeVariantName(session);
+    return !!(typed && typed !== current);
 }
 
 
 function differentPlanetInput(session, name) {
     return {
-        name: name != null ? name : typedVersionName(),
+        name: name != null ? name : typedVariantName(session),
         seed: session.seed,
         discover: !!session.discovery,
     };
@@ -1062,133 +918,23 @@ function isDifferentPlanet(session) {
 
 
 function saveHint(session, items) {
-    const name = typedVersionName();
+    const name = typedVariantName(session);
     const dirty = isWorkingDirty(session);
     const head = selectedVariant(session, items);
-    if (isDifferentPlanet(session)) {
-        if (name) return `A new planet, child of ${versionLabel(head)}, labeled ${name}.`;
-        return `A new planet — Save writes a child of ${versionLabel(head)}.`;
+    const label = variantLabel(items, head);
+    const renamed = isRenamed(session);
+    if (!head) {
+        return name ? `Save starts ${name}.` : 'Save writes the first variant.';
     }
-    if (!head) return 'Saves the globe as the first version.';
-    if (dirty || name) return `Same planet — Save writes a child of ${versionLabel(head)}.`;
+    if (renamed) return `Save starts ${name}. ${label} stays.`;
+    if (dirty) return `Save continues ${label}.`;
     return '';
 }
 
 
-function syncSaveButton(session) {
-    const items = readVariants(session);
-    const selected = selectedVariant(session, items);
-    const dirty = isWorkingDirty(session);
-    const name = typedVersionName();
-    const saveBtn = document.getElementById('variant-save');
-    if (saveBtn) {
-        if (name && (dirty || isDifferentPlanet(session) || selected)) {
-            saveBtn.textContent = `Save as ${name}`;
-        } else if (!selected) saveBtn.textContent = name ? `Save as ${name}` : 'Save';
-        else if (dirty || isDifferentPlanet(session)) saveBtn.textContent = 'Save';
-        else saveBtn.textContent = 'Saved';
-        saveBtn.disabled = !isDifferentPlanet(session) && !dirty && !name && !!selected;
-    }
-    const hint = document.getElementById('versions-save-hint');
-    if (hint) {
-        const text = saveHint(session, items);
-        hint.textContent = text;
-        hint.hidden = !text;
-    }
-}
-
-
 function syncVariantsUI(session) {
-    const items = readVariants(session);
-    const selected = selectedVariant(session, items);
-    const dirty = isWorkingDirty(session);
-    syncSaveButton(session);
-    const status = document.getElementById('versions-status');
-    if (status) {
-        if (dirty && selected) status.textContent = `On ${versionLabel(selected)} · uncommitted`;
-        else if (dirty && session.workingParent) {
-            const parent = Variants.findById(items, session.workingParent);
-            status.textContent = parent ? `From ${versionLabel(parent)} · uncommitted` : 'Uncommitted';
-        } else if (dirty) status.textContent = 'Uncommitted';
-        else if (selected) status.textContent = `HEAD · ${versionLabel(selected)}`;
-        else status.textContent = '';
-    }
-    const button = document.getElementById('variants-btn');
-    if (button) {
-        const blocked = Projects.isFixture(session.project);
-        button.hidden = blocked;
-        button.disabled = blocked;
-        button.textContent = items.length ? `Versions ${items.length}` : 'Versions';
-        button.classList.toggle('is-dirty', dirty && !blocked);
-        button.title = dirty
-            ? (isDifferentPlanet(session)
-                ? 'Uncommitted — a new planet, Save writes a child'
-                : 'Uncommitted — Save writes a child of this planet')
-            : 'Versions of this project';
-    }
-    renderVersionCompare(session, items);
-    renderVariantsList(session, items);
+    paint(session);
 }
-
-
-function positionVariantsPopover() {
-    const button = document.getElementById('variants-btn');
-    const popover = document.getElementById('variants-popover');
-    if (!button || !popover) return;
-    const rect = button.getBoundingClientRect();
-    const gap = 8;
-    const width = Math.min(384, window.innerWidth - 16);
-    let left = rect.right + gap;
-    let top = rect.top;
-    if (left + width > window.innerWidth - 8) {
-        left = Math.max(8, window.innerWidth - width - 8);
-        top = rect.bottom + gap;
-    }
-    const maxTop = window.innerHeight - 16;
-    popover.style.width = `${width}px`;
-    popover.style.left = `${left}px`;
-    popover.style.top = `${Math.min(top, maxTop)}px`;
-    popover.style.transformOrigin = `${Math.max(0, rect.left - left)}px ${Math.max(0, rect.top - top)}px`;
-}
-
-
-function setupVariants(session) {
-    const form = document.getElementById('variants-form');
-    const popover = document.getElementById('variants-popover');
-    if (form) {
-        form.addEventListener('submit', (event) => {
-            event.preventDefault();
-            saveWorkingVariant(session);
-        });
-    }
-    if (popover) {
-        popover.addEventListener('toggle', (event) => {
-            const open = event.newState === 'open';
-            document.getElementById('variants-btn')?.setAttribute('aria-expanded', open ? 'true' : 'false');
-            if (!open) return;
-            captureWorkingThumb(session);
-            syncVariantsUI(session);
-            positionVariantsPopover();
-            document.getElementById('variant-name')?.focus();
-        });
-        window.addEventListener('resize', () => {
-            if (popover.matches(':popover-open')) positionVariantsPopover();
-        });
-        const slider = document.getElementById('versions-compare-slider');
-        const stage = document.getElementById('versions-compare-stage');
-        if (slider && stage) {
-            slider.addEventListener('input', () => {
-                stage.style.setProperty('--split', `${slider.value}%`);
-            });
-        }
-        const nameInput = document.getElementById('variant-name');
-        if (nameInput) {
-            nameInput.addEventListener('input', () => syncSaveButton(session));
-        }
-    }
-    syncVariantsUI(session);
-}
-
 
 function syncModeButtons(session) {
     const drawMode = session.host.getDrawMode();
@@ -1199,106 +945,14 @@ function syncModeButtons(session) {
 
 
 function renderSearchChrome(session) {
-    const start = document.getElementById('search-start');
-    const controls = document.getElementById('search-controls');
-    const sheet = document.getElementById('search-sheet');
-    const genes = Search.genesFor(searchPins(session));
-    const blocked = Projects.isFixture(session.project) || genes.length === 0;
-    if (start) {
-        start.hidden = !!session.searchSession;
-        start.disabled = blocked || !!session.searchSession;
-        start.title = Projects.isFixture(session.project)
-            ? 'Earth is a reference — explore does not run there'
-            : 'Sample freeable ranges and pick the planets you like';
-    }
-    if (controls) controls.hidden = !session.searchSession;
-    if (sheet) sheet.hidden = !session.searchSession;
-    if (!session.searchSession) return;
-
-    const s = session.searchSession;
-    const next = document.getElementById('search-next');
-    const back = document.getElementById('search-back');
-    const done = document.getElementById('search-done');
-    if (next) next.disabled = s.busy;
-    if (back) back.disabled = s.busy || !s.history.length;
-    if (done) done.disabled = s.busy;
-    const status = document.getElementById('search-status');
-    if (status) {
-        const n = s.population.length;
-        const ready = s.canvases.filter(Boolean).length;
-        const saved = readVariants(session).length;
-        const savedBit = saved ? ` · ${saved} versions` : '';
-        status.textContent = s.busy
-            ? `Generation ${s.generation + 1} · ${ready} / ${n}`
-            : `Generation ${s.generation + 1} · ${s.liked.size} liked${savedBit}`;
-    }
-    const host = document.getElementById('search-ranges');
-    if (host) {
-        host.textContent = '';
-        for (const name of s.genes) {
-            const row = document.createElement('div');
-            row.className = 'search-range';
-            row.textContent = `${name}  ${Search.formatRange(name, s.ranges[name])}`;
-            host.append(row);
-        }
-    }
+    paint(session);
 }
 
 
 function mountSearchTiles(session) {
-    const grid = document.getElementById('search-grid');
-    if (!grid || !session.searchSession) return;
-    grid.textContent = '';
-    const extras = searchExtra(session);
-    const saved = readVariants(session);
-    session.searchSession.population.forEach((ind, i) => {
-        const liked = session.searchSession.liked.has(i);
-        const kept = Variants.hasRecipe(saved, ind, extras);
-        const tile = document.createElement('div');
-        tile.className = 'search-tile'
-            + (session.searchSession.canvases[i] ? '' : ' is-pending')
-            + (liked ? ' is-liked' : '')
-            + (kept ? ' is-kept' : '');
-        tile.dataset.index = String(i);
-
-        const face = document.createElement('button');
-        face.type = 'button';
-        face.className = 'search-tile-face';
-        face.dataset.action = 'toggle-like';
-        face.dataset.index = String(i);
-        face.setAttribute('aria-pressed', String(liked));
-        face.setAttribute('aria-label', liked ? 'Unlike this planet' : 'Like this planet');
-        if (session.searchSession.canvases[i]) face.append(session.searchSession.canvases[i]);
-
-        const actions = document.createElement('div');
-        actions.className = 'search-tile-actions';
-
-        const open = document.createElement('button');
-        open.type = 'button';
-        open.className = 'search-tile-open';
-        open.dataset.action = 'open-search';
-        open.dataset.index = String(i);
-        open.setAttribute('aria-label', 'Open in the viewer without saving');
-        open.title = 'Open as uncommitted work — Save writes a new planet';
-        open.textContent = 'Open';
-
-        const keep = document.createElement('button');
-        keep.type = 'button';
-        keep.className = 'search-tile-keep';
-        keep.dataset.action = 'toggle-variant';
-        keep.dataset.index = String(i);
-        keep.setAttribute('aria-pressed', String(kept));
-        keep.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a child');
-        keep.title = kept
-            ? 'This planet is already a version'
-            : (session.variant ? 'Save as a child of the current version' : 'Save as the first version');
-        keep.textContent = kept ? 'Saved' : 'Save';
-
-        actions.append(open, keep);
-        tile.append(face, actions);
-        grid.append(tile);
-    });
+    paint(session);
 }
+
 
 
 async function fillSearchSheet(session) {
@@ -1307,27 +961,19 @@ async function fillSearchSheet(session) {
     const run = ++session.searchRun;
     current.busy = true;
     current.canvases = current.canvases || [];
-    mountSearchTiles(session);
-    renderSearchChrome(session);
+    paint(session);
     for (let i = 0; i < current.population.length; i++) {
         if (run !== session.searchRun || session.searchSession !== current) return;
         if (!current.canvases[i]) {
             current.canvases[i] = session.host.renderSearchTile(current.population[i]);
         }
-        if (run !== session.searchRun || session.searchSession !== current) return;
-        const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
-        const face = tile && tile.querySelector('.search-tile-face');
-        if (face && !face.contains(current.canvases[i])) {
-            tile.classList.remove('is-pending');
-            face.append(current.canvases[i]);
-        }
         stampVariantThumb(session, i);
-        renderSearchChrome(session);
+        paint(session);
         await new Promise((resolve) => setTimeout(resolve, 0));
     }
     if (run !== session.searchRun || session.searchSession !== current) return;
     current.busy = false;
-    renderSearchChrome(session);
+    paint(session);
 }
 
 
@@ -1367,14 +1013,6 @@ function toggleSearchLike(session, i) {
     if (!session.searchSession) return;
     if (session.searchSession.liked.has(i)) session.searchSession.liked.delete(i);
     else session.searchSession.liked.add(i);
-    const liked = session.searchSession.liked.has(i);
-    const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
-    const face = tile && tile.querySelector('.search-tile-face');
-    if (tile) tile.classList.toggle('is-liked', liked);
-    if (face) {
-        face.setAttribute('aria-pressed', String(liked));
-        face.setAttribute('aria-label', liked ? 'Unlike this planet' : 'Like this planet');
-    }
     syncExploreRanges(session);
 }
 
@@ -1396,15 +1034,8 @@ function stampVariantThumb(session, i) {
 }
 
 
-function syncSearchVariantTile(session, i, kept) {
-    const tile = document.querySelector(`#search-grid .search-tile[data-index="${i}"]`);
-    const button = tile && tile.querySelector('.search-tile-keep');
-    if (tile) tile.classList.toggle('is-kept', kept);
-    if (button) {
-        button.setAttribute('aria-pressed', String(kept));
-        button.setAttribute('aria-label', kept ? 'Already a version' : 'Save as a child');
-        button.textContent = kept ? 'Saved' : 'Save';
-    }
+function syncSearchVariantTile(session) {
+    paint(session);
 }
 
 
@@ -1468,7 +1099,6 @@ async function toggleSearchVariant(session, i) {
         committed: session.catalog.committed,
         variants: next,
     };
-    if (saved && !head) session.catalog = Variants.advanceHead(session.catalog, null, saved.id);
     await persistCatalog(session);
     session.variant = saved;
     session.discovery = false;
@@ -1476,6 +1106,7 @@ async function toggleSearchVariant(session, i) {
     Boot.writeStoredVariant(session.project, saved && saved.id);
     session.workingValues = Object.assign({}, incoming.body, incoming.values);
     session.workingRanges = s.ranges;
+    session.ui.saveName = saved && saved.name ? saved.name : session.ui.saveName;
     session.projectModified = false;
     if (session.seed !== incoming.seed) applySeed(session, incoming.seed);
     const extras = searchExtra(session);
@@ -1488,7 +1119,9 @@ async function toggleSearchVariant(session, i) {
 }
 
 
-async function applySavedVariant(session, saved, nameInput) {
+async function applySavedVariant(session, saved) {
+    const stayShape = session.ui.stageIntent === 'shape'
+        || (session.host && session.host.isShaped && session.host.isShaped());
     session.variant = saved;
     session.workingParent = null;
     session.workingRanges = saved.ranges || null;
@@ -1496,9 +1129,9 @@ async function applySavedVariant(session, saved, nameInput) {
     session.compareId = null;
     session.discovery = false;
     session.shapeSeed = saved.shapeSeed || saved.seed;
+    session.ui.saveName = saved.name || Variants.lineageName(session.catalog.variants, saved);
     Boot.writeStoredVariant(session.project, saved.id);
     if (saved.thumb) persistThumb(session, saved.id, saved.thumb);
-    if (nameInput) nameInput.value = '';
     /* A child starts unshaped. Drop a parent's sketch if it is still on
      * the globe; do not copy the file onto the new id. */
     if (session.host && session.host.clearShape) {
@@ -1507,24 +1140,23 @@ async function applySavedVariant(session, saved, nameInput) {
         if (shaped && session.host.showLayout) session.host.showLayout();
         else if (shaped) session.host.generateMesh();
     }
+    session.ui.stageIntent = stayShape ? 'shape' : 'layout';
     syncContext(session);
-    syncVariantsUI(session);
-    renderProjectState(session);
+    paint(session);
     return saved;
 }
 
 
-async function saveWorkingVariant(session) {
+async function saveWorkingVariant(session, opts) {
     if (Projects.isFixture(session.project)) return session.variant;
-    const nameInput = document.getElementById('variant-name');
-    const name = typedVersionName();
+    const name = typedVariantName(session);
     const head = session.variant;
     const newPlanet = isDifferentPlanet(session);
-    if (!newPlanet && !isWorkingDirty(session) && !name && head) return head;
+    const force = !!(opts && opts.force);
+    if (!force && !newPlanet && !isWorkingDirty(session) && !isRenamed(session) && head) return head;
     const thumb = captureWorkingThumb(session);
     const incoming = workingVariant(session, {name, thumb});
     if (!incoming) return session.variant;
-    const parentId = head ? head.id : session.workingParent;
     const next = Variants.save(readVariants(session), head, incoming);
     const saved = next[0];
     session.catalog = {
@@ -1532,22 +1164,19 @@ async function saveWorkingVariant(session) {
         committed: session.catalog.committed,
         variants: next,
     };
-    if (saved && !newPlanet) {
-        session.catalog = Variants.advanceHead(session.catalog, parentId, saved.id);
-    } else if (saved && !head) {
-        session.catalog = Variants.advanceHead(session.catalog, null, saved.id);
-    }
     await persistCatalog(session);
-    return applySavedVariant(session, saved, nameInput);
+    return applySavedVariant(session, saved);
 }
 
 
-function openVariant(session, id) {
+function openVariant(session, id, opts) {
     const variant = Variants.findById(readVariants(session), id);
-    if (!variant) return;
+    if (!variant || variant.deleted) return;
     if (session.searchSession) exitSearch(session);
     loadVariantState(session, variant);
     session.compareId = null;
+    session.ui.stageIntent = variant.shaped ? 'shape' : 'layout';
+    if (!opts || !opts.keepOpen) session.ui.variantsOpen = false;
     session.projectModified = false;
     Boot.writeStoredVariant(session.project, variant.id);
     applyPins(session, false);
@@ -1558,27 +1187,6 @@ function openVariant(session, id) {
 }
 
 
-function compareVariant(session, id) {
-    if (!Variants.findById(readVariants(session), id)) return;
-    session.compareId = session.compareId === id ? null : id;
-    captureWorkingThumb(session);
-    syncVariantsUI(session);
-}
-
-
-function commitVariant(session, id) {
-    const variant = Variants.findById(readVariants(session), id || (session.variant && session.variant.id));
-    if (!variant) return;
-    session.catalog = Variants.commit(session.catalog, variant.id);
-    persistCatalog(session);
-    if (!session.variant || session.variant.id !== variant.id) openVariant(session, variant.id);
-    else {
-        renderProjectState(session);
-        syncVariantsUI(session);
-    }
-}
-
-
 async function ensureVariant(session) {
     if (Projects.isFixture(session.project)) return null;
     if (session.variant) return session.variant;
@@ -1586,18 +1194,19 @@ async function ensureVariant(session) {
 }
 
 
-function deleteVariant(session, id) {
-    const next = Variants.removeId(readVariants(session), id);
-    if (session.compareId === id) session.compareId = null;
-    if (session.workingParent === id) session.workingParent = null;
+function restoreDeletedVariants(session, snapshot) {
+    const next = Variants.markDeleted(readVariants(session), snapshot.ids, false);
     setCatalogVariants(session, next);
-    if (session.variant && session.variant.id === id) {
-        session.variant = null;
-        Boot.writeStoredVariant(session.project, null);
-        applyPins(session, true);
-        syncContext(session);
-    } else if (Boot.readStoredVariant(session.project) === id) {
-        Boot.writeStoredVariant(session.project, session.variant && session.variant.id);
+    if (snapshot.compareId && !session.compareId) session.compareId = snapshot.compareId;
+    if (snapshot.workingParent && !session.workingParent) {
+        session.workingParent = snapshot.workingParent;
+    }
+    const restoreCheckout = snapshot.restoreCheckout
+        && !session.variant
+        && (snapshot.seed == null || (session.seed | 0) === (snapshot.seed | 0));
+    if (restoreCheckout) {
+        openVariant(session, snapshot.checkoutId, {keepOpen: !!session.ui.variantsOpen});
+        return;
     }
     if (session.searchSession) {
         const extra = searchExtra(session);
@@ -1610,13 +1219,55 @@ function deleteVariant(session, id) {
 }
 
 
+function deleteVariant(session, id) {
+    const list = readVariants(session);
+    const tip = Variants.findById(list, id);
+    if (!tip || tip.deleted) return;
+    const doomed = Variants.lineageUnique(list, tip);
+    const doomedIds = doomed.map((item) => item.id);
+    const idSet = new Set(doomedIds);
+    const next = Variants.markDeleted(list, doomedIds, true);
+    const snapshot = {
+        ids: doomedIds,
+        checkoutId: session.variant && session.variant.id,
+        restoreCheckout: !!(session.variant && idSet.has(session.variant.id)),
+        seed: session.variant && session.variant.seed,
+        compareId: session.compareId,
+        workingParent: session.workingParent,
+    };
+    if (idSet.has(session.compareId)) session.compareId = null;
+    if (idSet.has(session.workingParent)) session.workingParent = null;
+    setCatalogVariants(session, next);
+    if (session.variant && idSet.has(session.variant.id)) {
+        session.variant = null;
+        session.ui.saveName = '';
+        Boot.writeStoredVariant(session.project, null);
+        applyPins(session, true);
+        syncContext(session);
+    } else if (idSet.has(Boot.readStoredVariant(session.project))) {
+        Boot.writeStoredVariant(session.project, session.variant && session.variant.id);
+    }
+    if (session.searchSession) {
+        const extra = searchExtra(session);
+        session.searchSession.population.forEach((ind, i) => {
+            syncSearchVariantTile(session, i, Variants.hasRecipe(next, ind, extra));
+        });
+    }
+    renderSearchChrome(session);
+    syncVariantsUI(session);
+    const label = Variants.lineageName(list, tip);
+    Undo.offerUndo(session, {
+        message: `${label} deleted`,
+        run: () => restoreDeletedVariants(session, snapshot),
+    });
+}
+
+
 function exitSearch(session) {
     session.searchRun++;
     session.searchSession = null;
     document.body.classList.remove('search-mode');
-    const grid = document.getElementById('search-grid');
-    if (grid) grid.textContent = '';
-    renderSearchChrome(session);
+    paint(session);
 }
 
 
@@ -1707,10 +1358,50 @@ function doneSearch(session) {
 
 function populate(session) {
     syncProjectTitle(session);
-    renderProjectPage(session);
     applyPins(session, false);
     syncModeButtons(session);
-    renderSearchChrome(session);
+    paint(session);
+}
+
+
+function goLayout(session) {
+    session.ui.stageIntent = 'layout';
+    if (session.host && session.host.showLayout) session.host.showLayout();
+    paint(session);
+}
+
+
+async function goShape(session) {
+    const dirty = isWorkingDirty(session);
+    const shaped = session.variant && session.variant.shaped;
+    if (!dirty && shaped) {
+        session.ui.stageIntent = 'shape';
+        await loadVariantShape(session);
+        paint(session);
+        return;
+    }
+    await shapeVariant(session);
+}
+
+
+function openVariantsModal(session) {
+    if (Projects.isFixture(session.project)) return;
+    session.ui.variantsOpen = true;
+    ensureCurrentThumb(session);
+    fillMissingThumbs(session);
+    paint(session);
+}
+
+
+function uiSnapshot(session) {
+    const items = readVariants(session);
+    return {
+        projectLabel: projectLabel(session.project),
+        workingSnapshot: workingVariant(session),
+        differentPlanet: isDifferentPlanet(session),
+        saveHint: saveHint(session, items),
+        searchExtra: searchExtra(session),
+    };
 }
 
 
@@ -1732,48 +1423,13 @@ function bind(session) {
         } else if (action === 'draw') {
             session.host.setDrawMode(el.dataset.draw);
             syncModeButtons(session);
-        } else if (action === 'shuffle-seed') {
-            shuffleSeed(session);
-        } else if (action === 'shuffle-shape-seed') {
-            shuffleShapeSeed(session);
-        } else if (action === 'undo-seed') {
-            undoSeed(session);
-        } else if (action === 'redo-seed') {
-            redoSeed(session);
-        } else if (action === 'search-start') {
-            enterSearch(session);
-        } else if (action === 'search-next') {
-            nextSearch(session);
-        } else if (action === 'search-back') {
-            backSearch(session);
-        } else if (action === 'search-done') {
-            doneSearch(session);
-        } else if (action === 'back-to-projects') {
-            showProjectPage(session);
-        } else if (action === 'open-project') {
-            openProject(session, el.dataset.project);
-        } else if (action === 'toggle-pin') {
-            toggleParamPin(session, el.dataset.param);
-        } else if (action === 'run-shape') {
-            shapeVariant(session);
-        } else if (action === 'toggle-like') {
-            toggleSearchLike(session, el.dataset.index | 0);
-        } else if (action === 'open-search') {
-            openSearchTile(session, el.dataset.index | 0);
-        } else if (action === 'toggle-variant') {
-            toggleSearchVariant(session, el.dataset.index | 0);
-        } else if (action === 'open-variant') {
-            openVariant(session, el.dataset.id);
-        } else if (action === 'compare-variant') {
-            compareVariant(session, el.dataset.id);
-        } else if (action === 'delete-variant') {
-            deleteVariant(session, el.dataset.id);
-        } else if (action === 'commit-variant') {
-            commitVariant(session, el.dataset.id);
+            paint(session);
         } else if (action === 'view-toggle') {
             const next = session.host.getViewMode() === 'globe' ? 'equirect' : 'globe';
             session.host.setViewMode(next);
             syncModeButtons(session);
+        } else if (action === 'toggle-sidebar') {
+            session.sidebar && session.sidebar.toggle({focusToggle: true});
         }
     });
 
@@ -1784,54 +1440,17 @@ function bind(session) {
         if (action === 'plate-vectors') session.host.setDrawPlateVectors(el.checked);
         else if (action === 'plate-boundaries') session.host.setDrawPlateBoundaries(el.checked);
         else if (action === 'td-crops') session.host.setTdCrops(el.checked);
-        else if (action === 'simulate-tectonics') session.host.setProcess('simulateTectonics', el.checked);
-        else if (action === 'merge-ocean-plates') session.host.setProcess('mergeOceanPlates', el.checked);
-        else if (action === 'connect-oceans') session.host.setProcess('connectOceans', el.checked);
-        else if (action === 'rotation') session.host.setRotation(el.valueAsNumber);
-        else if (action === 'regions') {
-            const n = Math.pow(10, el.valueAsNumber) | 0;
-            const label = document.getElementById('regions-label');
-            if (label) label.textContent = String(n);
-            session.host.setN(n);
-        }         else if (action === 'jitter') {
-            const label = document.getElementById('jitter-label');
-            if (label) label.textContent = el.valueAsNumber.toFixed(2);
-            session.host.setJitter(el.valueAsNumber);
-        } else if (action === 'shape-spacing') {
-            const km = el.valueAsNumber | 0;
-            const label = document.getElementById('shape-spacing-label');
-            if (label) label.textContent = `${km} km`;
-            if (session.host.setShapeSpacing) session.host.setShapeSpacing(km);
-        } else if (action === 'set-param' && el.type === 'range') {
-            const readout = el.parentElement && el.parentElement.querySelector('.param-value');
-            const meta = Params.all()[el.dataset.param];
-            if (readout && meta) readout.textContent = formatValue(meta, el.valueAsNumber);
-        }
-    });
-
-    root.addEventListener('change', event => {
-        const el = closestAction(event);
-        if (!el) return;
-        const action = el.dataset.action;
-        if (action === 'seed') setSeed(session, el.value);
-        else if (action === 'shape-seed') setShapeSeed(session, el.value);
-        else if (action === 'set-param') {
-            const name = el.dataset.param;
-            if (el.type === 'checkbox') setParam(session, name, el.checked);
-            else setParam(session, name, el.valueAsNumber);
-        }
-    });
-
-    document.getElementById('seed-input')?.addEventListener('keydown', event => {
-        if (event.key === 'Enter') event.currentTarget.blur();
-    });
-    document.getElementById('shape-seed-input')?.addEventListener('keydown', event => {
-        if (event.key === 'Enter') event.currentTarget.blur();
     });
 
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && document.documentElement.classList.contains('is-picker')) {
-            if (session.planetReady) {
+        if (event.key === 'Escape') {
+            if (session.ui.variantsOpen) {
+                event.preventDefault();
+                session.ui.variantsOpen = false;
+                paint(session);
+                return;
+            }
+            if (document.documentElement.classList.contains('is-picker') && session.planetReady) {
                 event.preventDefault();
                 showWorkspace(session);
             }
@@ -1850,6 +1469,7 @@ function bind(session) {
         if (key === 'z') {
             event.preventDefault();
             if (event.shiftKey) redoSeed(session);
+            else if (Undo.hasUndo(session)) Undo.runUndo(session);
             else undoSeed(session);
         } else if (key === 'y' && !event.shiftKey) {
             event.preventDefault();
@@ -1861,6 +1481,7 @@ function bind(session) {
 
 function mount(session, host) {
     mountHudIcons();
+    session.sidebar = Sidebar.mount();
     session.host = host;
     session.refreshPipeline = () => refreshPipeline(session);
     session.exitSearch = () => exitSearch(session);
@@ -1870,20 +1491,52 @@ function mount(session, host) {
     session.setPlanetReady = (value) => {
         session.planetReady = !!value;
         if (!value) return;
-        captureWorkingThumb(session);
-        const popover = document.getElementById('variants-popover');
-        if (popover && popover.matches(':popover-open')) syncVariantsUI(session);
+        ensureCurrentThumb(session);
+        if (session.ui.variantsOpen) fillMissingThumbs(session);
+        paint(session);
     };
+    Ui.mount(session, () => uiSnapshot(session), {
+        backToProjects: () => showProjectPage(session),
+        openProject: (name) => openProject(session, name),
+        save: () => saveWorkingVariant(session),
+        setSaveName: (value) => {
+            session.ui.saveName = value.slice(0, Variants.NAME_MAX);
+            paint(session);
+        },
+        openVariants: () => openVariantsModal(session),
+        closeVariants: () => {
+            session.ui.variantsOpen = false;
+            paint(session);
+        },
+        openVariant: (id, opts) => openVariant(session, id, opts),
+        deleteVariant: (id) => deleteVariant(session, id),
+        runUndo: () => Undo.runUndo(session),
+        goLayout: () => goLayout(session),
+        goShape: () => goShape(session),
+        enterSearch: () => enterSearch(session),
+        searchNext: () => nextSearch(session),
+        searchBack: () => backSearch(session),
+        searchDone: () => doneSearch(session),
+        toggleLike: (i) => toggleSearchLike(session, i),
+        openSearchTile: (i) => openSearchTile(session, i),
+        toggleSearchVariant: (i) => toggleSearchVariant(session, i),
+        shuffleSeed: () => shuffleSeed(session),
+        undoSeed: () => undoSeed(session),
+        redoSeed: () => redoSeed(session),
+        setSeed: (value) => setSeed(session, value),
+        shuffleShapeSeed: () => shuffleShapeSeed(session),
+        setShapeSeed: (value) => setShapeSeed(session, value),
+        togglePin: (name) => toggleParamPin(session, name),
+        setParam: (name, value) => setParam(session, name, value),
+        syncLook: () => syncModeButtons(session),
+    });
     bind(session);
-    setupVariants(session);
     session.generateValues = () => effectiveValues(session);
     session.ensureVariant = () => ensureVariant(session);
     applySeed(session, session.seed);
-    syncSeedHistoryButtons(session);
     populate(session);
     session.ready = hydrateAndResume(session);
 }
-
 
 module.exports = Object.assign({
     createSession,

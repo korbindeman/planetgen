@@ -1,8 +1,8 @@
 /*
  * CPU renderer for headless captures. Same mesh, colormap and look as the
  * WebGL path: barycentric interpolation across the quad geometry, then
- * Look.surfaceAlbedo and a screen-space hillshade. No browser, no GL.
- * Palette, ice, lighting and overlay colours live in look.js.
+ * Look.surfaceAlbedo (or Look.reliefAlbedo) and a screen-space hillshade.
+ * No browser, no GL. Palette, ice, lighting and overlay colours live in look.js.
  */
 'use strict';
 
@@ -20,7 +20,11 @@ const TWO_PI = 2 * PI;
 const POLE_LAT = PI / 2 - 1e-6;
 const POLE_SNAP = 3 * PI / 180;
 const {OVERLAY_LEGEND, PLATE_ARROW, BOUNDARY_INK} = Look;
-const {surfaceAlbedo, hillshade, northPoleLines} = Look;
+const {surfaceAlbedo, reliefAlbedo, hillshade, northPoleLines} = Look;
+
+function paintedOverlay(overlay) {
+    return overlay === 'plates' || overlay === 'crust' || overlay === 'climate';
+}
 
 function globeProjection(yaw, rotation, zoom) {
     const u = mat4.create();
@@ -82,7 +86,7 @@ function putPixelOpaque(target, x, y, z, r, g, b) {
     target.rgba[p + 3] = 255;
 }
 
-function rasterTriangle(target, a, b, c, shade, overlay) {
+function rasterTriangle(target, a, b, c, shade, overlay, relief) {
     const minX = Math.max(0, Math.floor(Math.min(a.x, b.x, c.x)));
     const maxX = Math.min(target.width - 1, Math.ceil(Math.max(a.x, b.x, c.x)));
     const minY = Math.max(0, Math.floor(Math.min(a.y, b.y, c.y)));
@@ -122,7 +126,7 @@ function rasterTriangle(target, a, b, c, shade, overlay) {
                 const e = u * a.e + v * b.e + w * c.e;
                 const m = u * a.m + v * b.m + w * c.m;
                 const t = u * a.t + v * b.t + w * c.t;
-                const alb = surfaceAlbedo(e, m, t);
+                const alb = relief ? reliefAlbedo(e) : surfaceAlbedo(e, m, t);
                 putPixelOpaque(target, x, y, z,
                     Math.round(Math.max(0, Math.min(1, alb[0] * light)) * 255),
                     Math.round(Math.max(0, Math.min(1, alb[1] * light)) * 255),
@@ -151,7 +155,7 @@ function projectAttr(v, matrix, width, height) {
     return Object.assign({}, v, s);
 }
 
-function drawIndexed(target, xyz, tm, indices, matrix, overlay) {
+function drawIndexed(target, xyz, tm, indices, matrix, overlay, relief) {
     const {width, height} = target;
     const n = indices.length;
     for (let i = 0; i < n; i += 3) {
@@ -163,17 +167,17 @@ function drawIndexed(target, xyz, tm, indices, matrix, overlay) {
         if (A.x > width + 2 && B.x > width + 2 && C.x > width + 2) continue;
         if (A.y < -2 && B.y < -2 && C.y < -2) continue;
         if (A.y > height + 2 && B.y > height + 2 && C.y > height + 2) continue;
-        rasterTriangle(target, A, B, C, 1, overlay);
+        rasterTriangle(target, A, B, C, 1, overlay, relief);
     }
 }
 
-function drawUnindexed(target, xyz, tm, count, matrix, overlay) {
+function drawUnindexed(target, xyz, tm, count, matrix, overlay, relief) {
     const {width, height} = target;
     for (let i = 0; i < count; i += 3) {
         const A = projectAttr(vertexAttr(xyz, tm, i, overlay), matrix, width, height);
         const B = projectAttr(vertexAttr(xyz, tm, i + 1, overlay), matrix, width, height);
         const C = projectAttr(vertexAttr(xyz, tm, i + 2, overlay), matrix, width, height);
-        rasterTriangle(target, A, B, C, 1, overlay);
+        rasterTriangle(target, A, B, C, 1, overlay, relief);
     }
 }
 
@@ -332,7 +336,7 @@ function wrapPanX(x) {
     return ((x + 1) % 2 + 2) % 2 - 1;
 }
 
-function drawEquirectSurface(target, tris, panX, overlay) {
+function drawEquirectSurface(target, tris, panX, overlay, relief) {
     const {width, height} = target;
     for (const xshift of [-2, 0, 2]) {
         const matrix = equirectMatrix(panX, xshift);
@@ -340,7 +344,7 @@ function drawEquirectSurface(target, tris, panX, overlay) {
             const A = projectAttr(tris[i], matrix, width, height);
             const B = projectAttr(tris[i + 1], matrix, width, height);
             const C = projectAttr(tris[i + 2], matrix, width, height);
-            rasterTriangle(target, A, B, C, 1, overlay);
+            rasterTriangle(target, A, B, C, 1, overlay, relief);
         }
     }
 }
@@ -579,23 +583,24 @@ function paintPlateAnnotations(rgba, width, height, planet, mode, projection, xs
 }
 
 function surfaceTm(planet, overlay) {
-    if (overlay) return Planet.buildOverlayColorTm(planet.mesh, planet.map, overlay);
+    if (paintedOverlay(overlay)) return Planet.buildOverlayColorTm(planet.mesh, planet.map, overlay);
     return planet.geometry.tm;
 }
 
 function renderGlobe(planet, opts = {}) {
     const size = opts.size || GLOBE_SIZE;
     const overlay = opts.overlay || null;
+    const painted = paintedOverlay(overlay);
+    const relief = overlay === 'relief';
     const yaw = opts.yaw || 0;
     const rotation = opts.rotation == null ? -1 : opts.rotation;
     const zoom = opts.zoom == null ? 1 : opts.zoom;
     const matrix = globeProjection(yaw, rotation, zoom);
     const target = makeTarget(size, size);
     const tm = surfaceTm(planet, overlay);
-    drawIndexed(target, planet.geometry.xyz, tm, planet.geometry.I, matrix, !!overlay);
-    const ink = overlay ? BOUNDARY_INK : [1, 1, 1, 1];
-    if (overlay) drawBoundariesGlobe(target, plateBoundarySegments(planet.mesh, planet.map), matrix, ink);
-    if (!overlay) drawNorthPole(target, matrix);
+    drawIndexed(target, planet.geometry.xyz, tm, planet.geometry.I, matrix, painted, relief);
+    if (painted) drawBoundariesGlobe(target, plateBoundarySegments(planet.mesh, planet.map), matrix, BOUNDARY_INK);
+    if (!painted) drawNorthPole(target, matrix);
     if (overlay === 'plates') {
         paintPlateAnnotations(target.rgba, size, size, planet, 'globe', matrix, 0);
     }
@@ -606,13 +611,15 @@ function renderEquirect(planet, opts = {}) {
     const width = opts.width || EQUIRECT_W;
     const height = opts.height || EQUIRECT_H;
     const overlay = opts.overlay || null;
+    const painted = paintedOverlay(overlay);
+    const relief = overlay === 'relief';
     const lon0 = Number(opts.lon0) || 0;
     const panX = wrapPanX(-(lon0 / 180));
     const tm = surfaceTm(planet, overlay);
-    const tris = buildEquirectTris(planet.geometry.xyz, tm, planet.geometry.I, !!overlay);
+    const tris = buildEquirectTris(planet.geometry.xyz, tm, planet.geometry.I, painted);
     const target = makeTarget(width, height);
-    drawEquirectSurface(target, tris, panX, !!overlay);
-    if (overlay) {
+    drawEquirectSurface(target, tris, panX, painted, relief);
+    if (painted) {
         const ink = BOUNDARY_INK;
         drawEquirectBoundaries(target, plateBoundarySegments(planet.mesh, planet.map), panX, ink);
     }

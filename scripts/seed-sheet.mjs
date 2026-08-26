@@ -8,6 +8,7 @@
  *   bun run sheet --count=16 --from=200
  *   bun run sheet --view=globe
  *   bun run sheet --overlay=plates
+ *   bun run sheet --overlay=relief
  *   bun run sheet --project=earth
  *   bun run sheet --no-tectonics
  *

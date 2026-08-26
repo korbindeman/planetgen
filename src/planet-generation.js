@@ -38,6 +38,9 @@ const u_colormap = regl.texture({
 });
 
 const SURFACE_GLSL = Look.SURFACE_GLSL;
+const RELIEF_GLSL = Look.RELIEF_GLSL;
+const DRAW_MODES = ['quads', 'centroid', 'plates', 'crust', 'climate', 'relief'];
+const FLAT_OVERLAYS = ['plates', 'crust', 'climate'];
 
 
 /* UI parameters */
@@ -60,18 +63,31 @@ let detail_pass = false;
 let shape_seed = 0;
 let pending_shape = null;
 let apply_pending_shape = false;
-let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate'
+let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate' | 'relief'
 let previewYaw = 0;
 
-/* Which per-region overlay the surface is painted with, if any. */
+function askedLook() {
+    if (viewPersistSuspended || previewOverlay) return previewOverlay;
+    return drawMode;
+}
+
+/* Flat per-region overlays. Relief is a surface look (hypsometric + hillshade),
+ * not one of these — it keeps lighting and does not paint plate colours. */
 function overlayMode() {
-    if (viewPersistSuspended) return previewOverlay;
-    if (previewOverlay) return previewOverlay;
-    return ['plates', 'crust', 'climate'].indexOf(drawMode) !== -1 ? drawMode : null;
+    const asked = askedLook();
+    return FLAT_OVERLAYS.indexOf(asked) !== -1 ? asked : null;
 }
 
 function usePlateOverlay() {
     return overlayMode() !== null;
+}
+
+function useReliefLook() {
+    return askedLook() === 'relief';
+}
+
+function useCentroid() {
+    return drawMode === 'centroid' && !useReliefLook();
 }
 
 let mapId = 0;
@@ -110,7 +126,7 @@ void main() {
 `,
 
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 uniform float u_pointsize;
 attribute vec3 a_xyz;
@@ -148,7 +164,7 @@ void main() {
 `,
 
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
 attribute vec4 a_rgba;
@@ -200,7 +216,7 @@ void main() {
 `,
 
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
 attribute vec3 a_tm;
@@ -232,10 +248,11 @@ precision mediump float;
 
 uniform sampler2D u_colormap;
 uniform vec2 u_light_angle;
-uniform float u_inverse_texture_size, u_slope, u_flat, u_c, u_d, u_outline_strength;
+uniform float u_inverse_texture_size, u_slope, u_flat, u_c, u_d, u_outline_strength, u_relief;
 
 varying vec3 v_tm;
 ${SURFACE_GLSL}
+${RELIEF_GLSL}
 void main() {
    float dedx = dFdx(v_tm.x);
    float dedy = dFdy(v_tm.x);
@@ -243,13 +260,13 @@ void main() {
    vec3 light_vector = normalize(vec3(u_light_angle, mix(u_slope, u_flat, slope_vector.z)));
    float light = u_c + max(0.0, dot(light_vector, slope_vector));
    float outline = 1.0 + u_outline_strength * max(dedx,dedy);
-   vec3 albedo = surfaceAlbedo(u_colormap, v_tm);
+   vec3 albedo = mix(surfaceAlbedo(u_colormap, v_tm), reliefAlbedo(u_colormap, v_tm), u_relief);
    gl_FragColor = vec4(albedo * light / outline, 1);
 }
 `,
 
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
 attribute vec3 a_tm;
@@ -265,6 +282,7 @@ void main() {
         u_projection: regl.prop('u_projection'),
         ...Look.globeLightUniforms,
         u_outline_strength: 0,
+        u_relief: regl.prop('u_relief'),
     },
 
     elements: regl.prop('elements'),
@@ -283,7 +301,7 @@ void main() {
 }
 `,
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
 attribute vec3 a_tm;
@@ -312,7 +330,7 @@ void main() {
 }
 `,
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
 attribute vec3 a_tm;
@@ -348,7 +366,7 @@ void main() {
 }
 `,
     vert: `
-precision mediump float;
+precision highp float;
 uniform mat4 u_projection;
 attribute vec3 a_xyz;
 attribute vec2 a_uv;
@@ -380,6 +398,13 @@ void main() {
 
 const bakedGpu = new Map();
 const EQUIRECT_TILE_Z = -0.55;
+
+const withEquirectScissor = regl({
+    scissor: {
+        enable: true,
+        box: (context, props) => props.box,
+    },
+});
 
 /**********************************************************************
  * Geometry
@@ -670,6 +695,7 @@ const PI = Math.PI;
 const TWO_PI = 2 * PI;
 const EQUIRECT_W = 2048;
 const EQUIRECT_H = 1024;
+const EQUIRECT_ASPECT = EQUIRECT_W / EQUIRECT_H;
 const GLOBE_SIZE = 1024;
 const POLE_LAT = PI / 2 - 1e-6;
 const POLE_SNAP = 3 * PI / 180;
@@ -681,12 +707,53 @@ function wrapPanX(x) {
     return ((x + 1) % 2 + 2) % 2 - 1;
 }
 
+/*
+ * Scale that fits the 2:1 map into a viewport of `width`×`height`
+ * without stretching. Home is zoom 1, pan 0: the full equirect sits
+ * in the largest 2:1 rectangle that the window can hold.
+ */
+function equirectFitScale(width, height) {
+    const aspect = width / Math.max(1, height);
+    if (aspect >= EQUIRECT_ASPECT) return {x: EQUIRECT_ASPECT / aspect, y: 1};
+    return {x: 1, y: aspect / EQUIRECT_ASPECT};
+}
+
+function canvasEquirectFit(canvas) {
+    return equirectFitScale(canvas.width, canvas.height);
+}
+
+function clampEquirectPanY() {
+    const canvas = document.getElementById('output');
+    if (!canvas) return;
+    const fit = canvasEquirectFit(canvas);
+    const maxPan = Math.max(0, 1 - 1 / (fit.y * equirectZoom));
+    equirectPanY = Math.min(maxPan, Math.max(-maxPan, equirectPanY));
+}
+
+function syncEquirectCanvasSize() {
+    const canvas = document.getElementById('output');
+    if (!canvas || viewMode !== 'equirect' || viewPersistSuspended) return false;
+    const host = canvas.closest('.globe');
+    if (!host) {
+        if (canvas.width !== EQUIRECT_W) canvas.width = EQUIRECT_W;
+        if (canvas.height !== EQUIRECT_H) canvas.height = EQUIRECT_H;
+        return false;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(host.clientWidth * dpr));
+    const h = Math.max(1, Math.round(host.clientHeight * dpr));
+    if (canvas.width === w && canvas.height === h) return false;
+    canvas.width = w;
+    canvas.height = h;
+    clampEquirectPanY();
+    return true;
+}
+
 function syncViewModeDom() {
     const canvas = document.getElementById('output');
     if (viewMode === 'equirect') {
-        canvas.width = EQUIRECT_W;
-        canvas.height = EQUIRECT_H;
         document.body.classList.add('view-equirect');
+        syncEquirectCanvasSize();
         const toggle = document.querySelector('.view-mode-toggle');
         if (toggle) {
             toggle.title = 'Globe view';
@@ -821,18 +888,18 @@ function rColorFn(r) {
 
 function getEquirectSurfaceGeometry() {
     const overlay = usePlateOverlay();
-    const meshMode = drawMode === 'centroid' ? 'centroid' : 'quads';
+    const meshMode = useCentroid() ? 'centroid' : 'quads';
     const key = `${meshMode}:${mapId}:${overlayMode() || 'surf'}`;
     if (equirectCache && equirectCache.key === key) return equirectCache.geo;
     let geo;
     if (overlay) {
-        if (drawMode === 'centroid') {
+        if (useCentroid()) {
             const raw = generateVoronoiGeometry(mesh, map, overlayColorForRegion);
             geo = buildEquirectTriangles(raw.xyz, raw.tm, null);
         } else {
             geo = buildEquirectTriangles(quadGeometry.xyz, overlayColorTm(), quadGeometry.I);
         }
-    } else if (drawMode === 'centroid') {
+    } else if (useCentroid()) {
         const raw = generateVoronoiGeometry(mesh, map, rColorFn);
         geo = buildEquirectTriangles(raw.xyz, raw.tm, null);
     } else {
@@ -843,10 +910,53 @@ function getEquirectSurfaceGeometry() {
 }
 
 function equirectProjection(xshift) {
+    const canvas = document.getElementById('output');
+    const fit = canvasEquirectFit(canvas);
     const p = mat4.create();
-    mat4.scale(p, p, [equirectZoom, equirectZoom, 1]);
+    mat4.scale(p, p, [fit.x * equirectZoom, fit.y * equirectZoom, 1]);
     mat4.translate(p, p, [equirectPanX + xshift, equirectPanY, 0]);
     return p;
+}
+
+/*
+ * One wrapped copy of the map is the lon/lat rectangle [-1, 1]² after
+ * pan and zoom. Wrapping triangles and the polar pad stick out past
+ * that rectangle — a torn vertical edge, or a shard at the pole —
+ * whenever zoom leaves the rectangle inside the viewport. Clip each
+ * copy to its rectangle so the seam is a straight line.
+ */
+function equirectCopyRect(width, height, xshift, panX, panY, zoom) {
+    const fit = equirectFitScale(width, height);
+    const zx = zoom * fit.x;
+    const zy = zoom * fit.y;
+    const left = (-1 + panX + xshift) * zx;
+    const right = (1 + panX + xshift) * zx;
+    const bottom = (-1 + panY) * zy;
+    const top = (1 + panY) * zy;
+    return {
+        x: (left * 0.5 + 0.5) * width,
+        y: (-top * 0.5 + 0.5) * height,
+        w: (right - left) * 0.5 * width,
+        h: (top - bottom) * 0.5 * height,
+        glY: (bottom * 0.5 + 0.5) * height,
+    };
+}
+
+function equirectScissorBox(width, height, xshift) {
+    const r = equirectCopyRect(width, height, xshift, equirectPanX, equirectPanY, equirectZoom);
+    const x = Math.max(0, Math.floor(r.x));
+    const y = Math.max(0, Math.floor(r.glY));
+    const w = Math.min(width, Math.ceil(r.x + r.w)) - x;
+    const h = Math.min(height, Math.ceil(r.glY + r.h)) - y;
+    if (w <= 0 || h <= 0) return null;
+    return {x, y, width: w, height: h};
+}
+
+function clipCanvasToEquirectCopy(ctx, width, height, xshift) {
+    const r = equirectCopyRect(width, height, xshift, equirectPanX, equirectPanY, equirectZoom);
+    ctx.beginPath();
+    ctx.rect(r.x, r.y, r.w, r.h);
+    ctx.clip();
 }
 
 function appendEquirectSegment(line_xyz, line_rgba, ax, ay, az, bx, by, bz, rgbaA, rgbaB) {
@@ -1030,16 +1140,23 @@ function drawBakedTiles(u_projection, mode) {
 function drawEquirect() {
     const geo = getEquirectSurfaceGeometry();
     const overlay = usePlateOverlay();
+    const gl = regl._gl;
+    const width = gl.drawingBufferWidth;
+    const height = gl.drawingBufferHeight;
     for (const xshift of [-2, 0, 2]) {
+        const box = equirectScissorBox(width, height, xshift);
+        if (!box) continue;
         const u_projection = equirectProjection(xshift);
-        drawSurface(u_projection, geo.xyz, geo.tm, geo.count);
-        drawBakedTiles(u_projection, 'equirect');
-        if (!overlay && draw_plateVectors) {
-            drawEquirectPlateVectors(u_projection, simMesh, simMap);
-        }
-        if (overlay || draw_plateBoundaries) {
-            drawEquirectPlateBoundaries(u_projection, mesh, map);
-        }
+        withEquirectScissor({box}, () => {
+            drawSurface(u_projection, geo.xyz, geo.tm, geo.count);
+            drawBakedTiles(u_projection, 'equirect');
+            if (!overlay && draw_plateVectors) {
+                drawEquirectPlateVectors(u_projection, simMesh, simMap);
+            }
+            if (overlay || draw_plateBoundaries) {
+                drawEquirectPlateBoundaries(u_projection, mesh, map);
+            }
+        });
     }
 }
 
@@ -1096,12 +1213,15 @@ function finishDraw() {
     _draw_pending = false;
     if (!viewPersistSuspended) {
         paintLivePlateOverlay();
+        const fit = canvasEquirectFit(document.getElementById('output'));
         TdOverlay.paint({
             viewMode,
             globeProjection: globeProjectionMatrix(),
             equirectPanX,
             equirectPanY,
             equirectZoom,
+            equirectFitX: fit.x,
+            equirectFitY: fit.y,
             seed: studio.seed,
             project: studio.project,
             zoom: viewMode === 'equirect' ? equirectZoom : zoom,
@@ -1114,6 +1234,7 @@ function finishDraw() {
 }
 
 let _draw_pending = false;
+let _draw_token = 0;
 function globeProjectionMatrix() {
     let u_projection = mat4.create();
     mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5]);
@@ -1124,14 +1245,15 @@ function globeProjectionMatrix() {
 
 function drawSurface(u_projection, xyz, tm, count) {
     const overlay = usePlateOverlay();
-    if (drawMode === 'centroid') {
+    const relief = useReliefLook() ? 1 : 0;
+    if (useCentroid()) {
         const cmd = overlay ? renderFlatTriangles : renderTriangles;
         cmd({u_projection, a_xyz: xyz, a_tm: tm, count});
         return;
     }
     const elements = count == null ? quadGeometry.I : sequentialElements(count);
     const cmd = overlay ? renderFlatIndexed : renderIndexedTriangles;
-    cmd({u_projection, a_xyz: xyz, a_tm: tm, elements});
+    cmd({u_projection, a_xyz: xyz, a_tm: tm, elements, u_relief: relief});
 }
 
 function _draw() {
@@ -1146,7 +1268,7 @@ function _draw() {
     }
 
     const overlay = usePlateOverlay();
-    if (drawMode === 'centroid') {
+    if (useCentroid()) {
         const colorFn = overlay ? overlayColorForRegion : rColorFn;
         let triangleGeometry = generateVoronoiGeometry(mesh, map, colorFn);
         drawSurface(u_projection, triangleGeometry.xyz, triangleGeometry.tm, triangleGeometry.xyz.length / 3);
@@ -1607,7 +1729,7 @@ function exportPreview(view, opts = {}) {
     const savedOverlay = previewOverlay;
     const overlay = opts.overlay || (opts.plates ? 'plates' : null);
     previewOverlay = overlay;
-    if (overlay) {
+    if (overlay && overlay !== 'relief') {
         draw_plateBoundaries = true;
         draw_plateVectors = false;
     }
@@ -1620,6 +1742,8 @@ function exportPreview(view, opts = {}) {
         draw_plateVectors = savedVectors;
         previewOverlay = savedOverlay;
         viewPersistSuspended = false;
+        syncViewModeDom();
+        if (mesh) _draw();
     }
 }
 
@@ -1641,10 +1765,12 @@ function clipToCanvas(clip, width, height) {
 }
 
 function projectEquirectPoint(xyz, xshift) {
+    const canvas = document.getElementById('output');
+    const fit = canvasEquirectFit(canvas);
     const lon = Math.atan2(xyz[1], xyz[0]) + xshift * Math.PI;
     const lat = Math.asin(Math.max(-1, Math.min(1, xyz[2])));
-    const x = ((lon / Math.PI) + equirectPanX) * equirectZoom;
-    const y = ((2 * lat / Math.PI) + equirectPanY) * equirectZoom;
+    const x = ((lon / Math.PI) + equirectPanX) * equirectZoom * fit.x;
+    const y = ((2 * lat / Math.PI) + equirectPanY) * equirectZoom * fit.y;
     return {x, y, z: -0.5, front: true};
 }
 
@@ -1792,7 +1918,10 @@ function paintLivePlateOverlay() {
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     if (viewMode === 'equirect') {
         for (const shift of [-2, 0, 2]) {
+            ctx.save();
+            clipCanvasToEquirectCopy(ctx, overlay.width, overlay.height, shift);
             paintPlateAnnotations(ctx, overlay.width, overlay.height, 'equirect', null, shift);
+            ctx.restore();
         }
     } else {
         paintPlateAnnotations(ctx, overlay.width, overlay.height, 'globe', globeProjectionMatrix());
@@ -1872,6 +2001,8 @@ function captureEquirectPreview(lon0, overlay) {
     const savedPanY = equirectPanY;
     const savedZoom = equirectZoom;
     applyViewMode('equirect');
+    src.width = EQUIRECT_W;
+    src.height = EQUIRECT_H;
     const deg = Number(lon0);
     equirectPanX = wrapPanX(Number.isFinite(deg) ? -(deg / 180) : 0);
     equirectPanY = 0;
@@ -1915,8 +2046,23 @@ function captureEquirectPreview(lon0, overlay) {
 function draw() {
     if (!_draw_pending) {
         _draw_pending = true;
-        requestAnimationFrame(_draw);
+        const token = ++_draw_token;
+        requestAnimationFrame(() => {
+            if (token !== _draw_token) return;
+            _draw();
+        });
     }
+}
+
+
+/* Same-turn draw so a thumbnail can read the canvas before the
+ * compositor clears the WebGL buffer. */
+function drawNow() {
+    if (!mesh || !quadGeometry || !quadGeometry.xyz) return false;
+    _draw_token += 1;
+    _draw_pending = true;
+    _draw();
+    return true;
 }
 
 /*
@@ -2092,8 +2238,9 @@ function canvasToClip(x, y, width, height) {
 function canvasToLonLat(x, y, width, height) {
     if (viewMode === 'equirect') {
         const clip = canvasToClip(x, y, width, height);
-        const lonDeg = ((clip.x / equirectZoom) - equirectPanX) * 180;
-        const latDeg = ((clip.y / equirectZoom) - equirectPanY) * 90;
+        const fit = equirectFitScale(width, height);
+        const lonDeg = ((clip.x / (fit.x * equirectZoom)) - equirectPanX) * 180;
+        const latDeg = ((clip.y / (fit.y * equirectZoom)) - equirectPanY) * 90;
         return {
             lon: TdTile.wrapLon(lonDeg),
             lat: Math.max(-89.9, Math.min(89.9, latDeg)),
@@ -2209,11 +2356,6 @@ function setupDragRotation() {
         return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
     }
 
-    function clampEquirectPanY() {
-        const maxPan = Math.max(0, 1 - 1 / equirectZoom);
-        equirectPanY = Math.min(maxPan, Math.max(-maxPan, equirectPanY));
-    }
-
     function currentZoom() {
         return viewMode === 'equirect' ? equirectZoom : zoom;
     }
@@ -2224,8 +2366,9 @@ function setupDragRotation() {
             const prev = equirectZoom;
             if (focus && next !== prev) {
                 const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
-                equirectPanX = wrapPanX(equirectPanX + clip.x * (1 / next - 1 / prev));
-                equirectPanY += clip.y * (1 / next - 1 / prev);
+                const fit = canvasEquirectFit(canvas);
+                equirectPanX = wrapPanX(equirectPanX + (clip.x / fit.x) * (1 / next - 1 / prev));
+                equirectPanY += (clip.y / fit.y) * (1 / next - 1 / prev);
             }
             equirectZoom = next;
             clampEquirectPanY();
@@ -2329,8 +2472,9 @@ function setupDragRotation() {
         lastY = event.clientY;
 
         if (viewMode === 'equirect') {
-            equirectPanX = wrapPanX(equirectPanX + (dx / rect.width) * 2 / equirectZoom);
-            equirectPanY += (-dy / rect.height) * 2 / equirectZoom;
+            const fit = canvasEquirectFit(canvas);
+            equirectPanX = wrapPanX(equirectPanX + (dx / rect.width) * 2 / (fit.x * equirectZoom));
+            equirectPanY += (-dy / rect.height) * 2 / (fit.y * equirectZoom);
             clampEquirectPanY();
             draw();
             return;
@@ -2476,7 +2620,8 @@ function refreshTdCropList() {
 }
 
 /*
- * Colour a baked tile with the globe's own surface look.
+ * Colour a baked tile with the globe's current look — surface albedo or
+ * hillshade relief, matching the mesh it sits on.
  *
  * The bake gives back elevation in metres and nothing else. Albedo needs
  * moisture and temperature too, and those come from this planet's climate
@@ -2510,9 +2655,9 @@ function paintTdSurface(crop) {
             const i = y * w + x;
             const fx = (x + 0.5) / w;
             const fy = (y + 0.5) / h;
-            const moist = sampleTdField(climate.moist, climate.n, fx, fy);
-            const temp = sampleTdField(climate.temp, climate.n, fx, fy);
-            const [r, g, b] = Look.surfaceAlbedo(e[i], moist, temp);
+            const [r, g, b] = useReliefLook()
+                ? Look.reliefAlbedo(e[i])
+                : Look.surfaceAlbedo(e[i], moist, temp);
             const x0 = x === 0 ? x : x - 1;
             const x1 = x === w - 1 ? x : x + 1;
             const shade = Look.hillshade(
@@ -2601,6 +2746,61 @@ function paintSearchEquirect(planet, width, height) {
     return canvas;
 }
 
+const VARIANT_THUMB_W = 1024;
+const VARIANT_THUMB_H = 512;
+
+function paintSurfaceEquirect(planet, width, height) {
+    const layers = Planet.rasterizeEquirect(planet.mesh, planet.map, width, height, 0);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(width, height);
+    const {elev, moist, temp} = layers;
+    for (let i = 0; i < width * height; i++) {
+        const rgb = Look.surfaceAlbedo(elev[i], moist[i], temp[i]);
+        const p = i * 4;
+        img.data[p] = Math.round(clamp01(rgb[0]) * 255);
+        img.data[p + 1] = Math.round(clamp01(rgb[1]) * 255);
+        img.data[p + 2] = Math.round(clamp01(rgb[2]) * 255);
+        img.data[p + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+}
+
+function variantThumbPlanetOpts(variant) {
+    const tectonics = studio.lastResolved.options.tectonics;
+    const values = Object.assign({}, variant.body, variant.values);
+    return {
+        seed: variant.seed,
+        shapeSeed: variant.shapeSeed,
+        n: N,
+        p: values.plates != null ? values.plates : tectonics.plates,
+        jitter,
+        simulateTectonics: simulate_tectonics,
+        simSteps: values.steps != null ? values.steps : tectonics.steps,
+        polarStraits: values.polarStraits !== false,
+        mergeOceanPlates: merge_ocean_plates,
+        connectOceans: connect_oceans,
+        baseOnly: true,
+        project: variant.project || studio.project,
+        values,
+        quiet: true,
+    };
+}
+
+function renderVariantThumb(variant) {
+    if (!variant) return null;
+    const planet = Planet.generatePlanet(variantThumbPlanetOpts(variant), {});
+    return paintSurfaceEquirect(planet, VARIANT_THUMB_W, VARIANT_THUMB_H);
+}
+
+function renderWorkingThumb() {
+    if (!mesh || !map) return null;
+    return paintSurfaceEquirect({mesh, map}, VARIANT_THUMB_W, VARIANT_THUMB_H);
+}
+
 function renderSearchTile(ind) {
     const tectonics = studio.lastResolved.options.tectonics;
     const planet = Planet.generatePlanet({
@@ -2664,18 +2864,29 @@ function showLayout() {
     generateMap();
 }
 
+function applyDrawMode(mode) {
+    if (DRAW_MODES.indexOf(mode) === -1) return;
+    const prev = drawMode;
+    drawMode = mode;
+    if ((prev === 'relief') !== (mode === 'relief')) TdOverlay.repaintSurfaces();
+    draw();
+}
+
 Studio.mount(studio, {
     generateMesh,
     generateMap,
     draw,
+    drawNow,
+    renderVariantThumb,
+    renderWorkingThumb,
     getViewMode: () => viewMode,
     getDrawMode: () => drawMode,
+    getN: () => N,
+    getJitter: () => jitter,
+    getShapeSpacing: () => shapeSpacingKm,
+    getRotation: () => rotation,
     setViewMode: applyViewMode,
-    setDrawMode(mode) {
-        if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(mode) === -1) return;
-        drawMode = mode;
-        draw();
-    },
+    setDrawMode: applyDrawMode,
     setDrawPlateVectors(flag) { draw_plateVectors = flag; draw(); },
     setDrawPlateBoundaries(flag) { draw_plateBoundaries = flag; draw(); },
     setN(n) { N = n; generateMesh(); },
@@ -2706,6 +2917,7 @@ Studio.mount(studio, {
     enableTdCrops,
     startTdJobPoll,
     renderSearchTile,
+    refreshTdCropList,
 });
 
 /* Embed + capture adapter. The sidebar does not go through these. */
@@ -2714,10 +2926,8 @@ window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
 window.setP = newP => studio.setParam('plates', newP);
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
 window.setDrawMode = newMode => {
-    if (['quads', 'centroid', 'plates', 'crust', 'climate'].indexOf(newMode) === -1) return;
-    drawMode = newMode;
+    applyDrawMode(newMode);
     studio.syncModeButtons();
-    draw();
 };
 window.setViewMode = newMode => { applyViewMode(newMode); studio.syncModeButtons(); };
 window.setDrawPlateVectors = flag => { draw_plateVectors = flag; draw(); };
@@ -2736,6 +2946,16 @@ document.querySelector('.north-compass')?.addEventListener('click', reorientNort
 document.querySelector('.view-reset')?.addEventListener('click', resetView);
 restoreViewState();
 syncViewModeDom();
+{
+    const globe = document.querySelector('.globe');
+    const onViewport = () => {
+        if (syncEquirectCanvasSize()) draw();
+    };
+    if (globe && typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(onViewport).observe(globe);
+    }
+    window.addEventListener('resize', onViewport);
+}
 studio.syncModeButtons();
 const hasPicker = !!document.getElementById('project-page');
 function startWorkspace() {
