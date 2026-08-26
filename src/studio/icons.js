@@ -8,6 +8,7 @@ import { faCompass } from '@fortawesome/free-solid-svg-icons/faCompass';
 import { faGlobe } from '@fortawesome/free-solid-svg-icons/faGlobe';
 import { faHouse } from '@fortawesome/free-solid-svg-icons/faHouse';
 import { faMap } from '@fortawesome/free-solid-svg-icons/faMap';
+import { faRuler } from '@fortawesome/free-solid-svg-icons/faRuler';
 
 const ICONS = {
     'chevron-left': faChevronLeft,
@@ -16,6 +17,7 @@ const ICONS = {
     globe: faGlobe,
     house: faHouse,
     map: faMap,
+    ruler: faRuler,
 };
 
 function svgFor(def, className) {

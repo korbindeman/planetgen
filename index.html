@@ -1450,8 +1450,13 @@
         touch-action: none;
         user-select: none;
       }
+      body.measuring #output,
+      body.measuring #output:active {
+        cursor: crosshair;
+      }
       #plate-overlay,
-      #td-overlay {
+      #td-overlay,
+      #measure-overlay {
         position: absolute;
         inset: 0;
         width: 100%;
@@ -1525,6 +1530,7 @@
         z-index: 1;
         display: flex;
         flex-direction: column;
+        align-items: flex-end;
         gap: 0.5rem;
       }
       .globe-hud-btn {
@@ -1558,12 +1564,54 @@
       .globe-hud-btn:active {
         transform: scale(0.96);
       }
+      .globe-hud-btn[aria-pressed="true"] {
+        background: rgba(0, 0, 0, 0.1);
+      }
+      .measure-readout {
+        min-width: 48px;
+        max-width: 12rem;
+        padding: 0.45rem 0.65rem;
+        border-radius: 12px;
+        color: #2a2e36;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.08),
+          0 1px 2px rgba(0, 0, 0, 0.12),
+          0 6px 16px rgba(0, 0, 0, 0.14);
+        text-align: right;
+        pointer-events: none;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+      }
+      .measure-readout[hidden] { display: none; }
+      .measure-readout-value {
+        display: block;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        text-wrap: balance;
+      }
+      .measure-readout-value[hidden] { display: none; }
+      .measure-readout-hint {
+        display: block;
+        margin-top: 0.12rem;
+        opacity: 0.48;
+        font-size: 0.85em;
+        text-wrap: pretty;
+      }
       @media (hover: hover) and (pointer: fine) {
         .globe-hud-btn:hover {
           box-shadow:
             0 0 0 1px rgba(0, 0, 0, 0.1),
             0 2px 4px rgba(0, 0, 0, 0.12),
             0 8px 20px rgba(0, 0, 0, 0.16);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .globe-hud-btn {
+          transition-duration: 0ms;
+        }
+        .globe-hud-btn:active {
+          transform: none;
         }
       }
       .hud-icon {
@@ -2227,7 +2275,15 @@
         <canvas id="output" width="2048" height="1024"></canvas>
         <canvas id="td-overlay" width="2048" height="1024"></canvas>
         <canvas id="plate-overlay" width="2048" height="1024"></canvas>
+        <canvas id="measure-overlay" width="2048" height="1024"></canvas>
         <div class="globe-hud">
+          <div class="measure-readout" hidden>
+            <span class="measure-readout-value" hidden></span>
+            <span class="measure-readout-hint"></span>
+          </div>
+          <button type="button" class="globe-hud-btn measure-toggle" title="Measure distance (M)" aria-label="Measure distance" aria-pressed="false">
+            <i data-icon="ruler" class="hud-icon" aria-hidden="true"></i>
+          </button>
           <button type="button" class="globe-hud-btn view-mode-toggle" data-action="view-toggle" title="Globe view" aria-label="Globe view">
             <i data-icon="map" class="hud-icon icon-to-map" aria-hidden="true"></i>
             <i data-icon="globe" class="hud-icon icon-to-globe" aria-hidden="true"></i>

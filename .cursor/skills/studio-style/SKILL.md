@@ -48,7 +48,8 @@ If `prefers-reduced-motion: reduce` is set, drop transform motion.
 
 ## Copy
 
-Write UI copy with the simple-english skill. Use pragmatic mode.
+Write UI copy with the simple-english skill. Use pragmatic mode. Project
+docs are the **docs** skill, not this one.
 
 Buttons and labels are technical names. Keep the words in `CONTEXT.md` as they are.
 

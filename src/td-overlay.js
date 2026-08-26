@@ -450,6 +450,34 @@ function overlayCanvas() {
     return el;
 }
 
+/*
+ * Overlay chrome lives in the globe's CSS box, not in the WebGL buffer.
+ * Copying `output.width` made a 13px label 13 texels — half that on a
+ * 2× map, then the bitmap was stretched, so every overlay went small
+ * and soft. Size the backing store to the box × devicePixelRatio, then
+ * draw in CSS pixels so type and hairlines stay screen-sized and sharp.
+ * Captures still paint into the buffer they are compositing.
+ */
+function fitScreenCanvas(el) {
+    if (!el) return null;
+    const host = el.parentElement;
+    if (!host) return null;
+    const width = Math.max(1, host.clientWidth);
+    const height = Math.max(1, host.clientHeight);
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+    const bw = Math.max(1, Math.round(width * dpr));
+    const bh = Math.max(1, Math.round(height * dpr));
+    if (el.width !== bw) el.width = bw;
+    if (el.height !== bh) el.height = bh;
+    const ctx = el.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, bw, bh);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    return {ctx, width, height, dpr};
+}
+
 function clipToCanvas(clip, width, height) {
     return {
         x: (clip.x * 0.5 + 0.5) * width,
@@ -523,23 +551,22 @@ function paint(view) {
         return;
     }
     el.style.display = 'block';
-    if (el.width !== src.width) el.width = src.width;
-    if (el.height !== src.height) el.height = src.height;
-    const ctx = el.getContext('2d');
-    ctx.clearRect(0, 0, el.width, el.height);
+    const space = fitScreenCanvas(el);
+    if (!space) return;
+    const {ctx, width, height} = space;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     if (view.viewMode === 'equirect') {
         for (const shift of [-2, 0, 2]) {
             ctx.save();
-            clipToEquirectCopy(ctx, view, el.width, el.height, shift);
-            for (const crop of pending) paintEquirectCrop(ctx, crop, view, el.width, el.height, shift);
+            clipToEquirectCopy(ctx, view, width, height, shift);
+            for (const crop of pending) paintEquirectCrop(ctx, crop, view, width, height, shift);
             ctx.restore();
         }
     } else {
-        for (const crop of pending) paintGlobeCrop(ctx, crop, view, el.width, el.height);
+        for (const crop of pending) paintGlobeCrop(ctx, crop, view, width, height);
     }
-    if (chrome) paintGridChrome(ctx, view, el.width, el.height);
+    if (chrome) paintGridChrome(ctx, view, width, height);
 }
 
 function clipToEquirectCopy(ctx, view, width, height, xshift) {
@@ -1187,6 +1214,10 @@ module.exports = {
     stillCurrent,
     stillSameWorld,
     paint,
+    projector,
+    paintShifts,
+    strokeLonLatPath,
+    fitScreenCanvas,
     isEnabled,
     setEnabled,
     setCropOn,

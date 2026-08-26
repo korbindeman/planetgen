@@ -165,6 +165,13 @@ const PLATE_ARROW = {
     labelHex: '#ffffff',
 };
 
+const MEASURE = {
+    hex: '#ffe14a',
+    haloHex: '#111111',
+    labelHex: '#ffffff',
+    vertexR: 6,
+};
+
 const NORTH_POLE = {
     rgb: [0.89, 0.18, 0.14],
     alpha: 1,
@@ -421,6 +428,7 @@ module.exports = {
     OVERLAY_LEGEND,
     BOUNDARY_INK,
     PLATE_ARROW,
+    MEASURE,
     NORTH_POLE,
     CROP_COLORS,
     CROP_COLORS_HEX,

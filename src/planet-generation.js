@@ -18,6 +18,7 @@ const Look = require('./look');
 const TdOverlay = require('./td-overlay');
 const TdTile = require('./td-tile');
 const Cubesphere = require('./cubesphere');
+const Measure = require('./measure');
 const Studio = require('./studio');
 const {clamp01} = Tectonics;
 
@@ -1215,24 +1216,36 @@ function restoreViewState() {
     }
 }
 
+function overlayView() {
+    const src = document.getElementById('output');
+    const fit = canvasEquirectFit(src);
+    return {
+        viewMode,
+        globeProjection: globeProjectionMatrix(),
+        equirectPanX,
+        equirectPanY,
+        equirectZoom,
+        equirectFitX: fit.x,
+        equirectFitY: fit.y,
+        seed: studio.seed,
+        project: studio.project,
+        zoom: viewMode === 'equirect' ? equirectZoom : zoom,
+        shaped: isShaped(),
+        radiusKm: (studio.lastResolved && studio.lastResolved.options.world.radiusKm) || 6371,
+    };
+}
+
+function paintMeasureOverlay() {
+    Measure.paint(overlayView());
+}
+
 function finishDraw() {
     _draw_pending = false;
     if (!viewPersistSuspended) {
         paintLivePlateOverlay();
-        const fit = canvasEquirectFit(document.getElementById('output'));
-        TdOverlay.paint({
-            viewMode,
-            globeProjection: globeProjectionMatrix(),
-            equirectPanX,
-            equirectPanY,
-            equirectZoom,
-            equirectFitX: fit.x,
-            equirectFitY: fit.y,
-            seed: studio.seed,
-            project: studio.project,
-            zoom: viewMode === 'equirect' ? equirectZoom : zoom,
-            shaped: isShaped(),
-        });
+        const view = overlayView();
+        TdOverlay.paint(view);
+        Measure.paint(view);
     }
     persistViewState();
     if (!window.__PLANET_READY__) {
@@ -1919,19 +1932,18 @@ function paintLivePlateOverlay() {
         return;
     }
     overlay.style.display = 'block';
-    if (overlay.width !== src.width) overlay.width = src.width;
-    if (overlay.height !== src.height) overlay.height = src.height;
-    const ctx = overlay.getContext('2d');
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    const space = TdOverlay.fitScreenCanvas(overlay);
+    if (!space) return;
+    const {ctx, width, height} = space;
     if (viewMode === 'equirect') {
         for (const shift of [-2, 0, 2]) {
             ctx.save();
-            clipCanvasToEquirectCopy(ctx, overlay.width, overlay.height, shift);
-            paintPlateAnnotations(ctx, overlay.width, overlay.height, 'equirect', null, shift);
+            clipCanvasToEquirectCopy(ctx, width, height, shift);
+            paintPlateAnnotations(ctx, width, height, 'equirect', null, shift);
             ctx.restore();
         }
     } else {
-        paintPlateAnnotations(ctx, overlay.width, overlay.height, 'globe', globeProjectionMatrix());
+        paintPlateAnnotations(ctx, width, height, 'globe', globeProjectionMatrix());
     }
 }
 
@@ -2308,6 +2320,49 @@ function tileAtCanvas(x, y, canvas) {
     return Cubesphere.tileAt(at.lon, at.lat, TdOverlay.getGridLevel());
 }
 
+let measureHint = 0;
+
+function sampleElevM(lon, lat) {
+    if (!mesh || !map || !map.r_xyz) return undefined;
+    if (measureHint >= mesh.numRegions) measureHint = 0;
+    const xyz = Cubesphere.lonLatToXyz(lon, lat);
+    measureHint = Tectonics.nearestRegion(mesh, map.r_xyz, xyz, measureHint, []);
+    if (map.r_meters && Number.isFinite(map.r_meters[measureHint])) {
+        return map.r_meters[measureHint];
+    }
+    if (map.r_elevation && Number.isFinite(map.r_elevation[measureHint])) {
+        return Tectonics.elevationToMeters(map.r_elevation[measureHint]);
+    }
+    return undefined;
+}
+
+function pickAtCanvas(x, y, canvas) {
+    const at = canvasToLonLat(x, y, canvas.width, canvas.height);
+    if (!at) return null;
+    at.elevM = sampleElevM(at.lon, at.lat);
+    return at;
+}
+
+function restCursor(canvas) {
+    if (!canvas) return;
+    canvas.style.cursor = Measure.isActive() ? 'crosshair' : 'grab';
+}
+
+function syncMeasureUi() {
+    const on = Measure.isActive();
+    document.body.classList.toggle('measuring', on);
+    const btn = document.querySelector('.measure-toggle');
+    if (btn) btn.setAttribute('aria-pressed', String(on));
+    const canvas = document.getElementById('output');
+    if (canvas && canvas.style.cursor !== 'grabbing') restCursor(canvas);
+}
+
+function typingTarget(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
+
 function setupDragRotation() {
     const canvas = document.getElementById('output');
     canvas.style.cursor = 'grab';
@@ -2336,6 +2391,7 @@ function setupDragRotation() {
     let moved = false;
     let shiftHeld = false;
     let overCanvas = false;
+    let measuringPress = null;
 
     /* Where the pointer last was, so pressing shift without moving the mouse
      * still lights up the tile under it. */
@@ -2396,7 +2452,8 @@ function setupDragRotation() {
         pointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
         if (pointers.size === 2) {
             dragging = false;
-            canvas.style.cursor = 'grab';
+            measuringPress = null;
+            restCursor(canvas);
             pinchStartDist = pointerDistance();
             pinchStartZoom = currentZoom();
             return;
@@ -2420,6 +2477,13 @@ function setupDragRotation() {
                 draw();
                 return;
             }
+        }
+        if (Measure.isActive()) {
+            measuringPress = {id: event.pointerId, x: event.clientX, y: event.clientY};
+            canvas.setPointerCapture(event.pointerId);
+            canvas.style.cursor = 'crosshair';
+            event.preventDefault();
+            return;
         }
         dragging = true;
         lastX = event.clientX;
@@ -2446,6 +2510,18 @@ function setupDragRotation() {
             draw();
             return;
         }
+        if (measuringPress && measuringPress.id === event.pointerId) {
+            const dist = Math.hypot(event.clientX - measuringPress.x, event.clientY - measuringPress.y);
+            if (dist > 6) {
+                dragging = true;
+                lastX = event.clientX;
+                lastY = event.clientY;
+                measuringPress = null;
+                canvas.style.cursor = 'grabbing';
+            } else {
+                return;
+            }
+        }
         if (picking) {
             const tile = tileAtCanvas(hoverX, hoverY, canvas);
             if (!tile) return;
@@ -2460,6 +2536,9 @@ function setupDragRotation() {
                 draw();
             }
             return;
+        }
+        if (!dragging && Measure.isActive()) {
+            if (Measure.setHover(pickAtCanvas(hoverX, hoverY, canvas))) paintMeasureOverlay();
         }
         if (!dragging && shiftHeld && isShaped()) {
             if (TdOverlay.setHoverTile(tileAtCanvas(hoverX, hoverY, canvas))) draw();
@@ -2492,6 +2571,14 @@ function setupDragRotation() {
     });
 
     function endDrag(event) {
+        if (measuringPress && measuringPress.id === event.pointerId) {
+            const pt = eventCanvasPoint(event, canvas);
+            const at = pickAtCanvas(pt.x, pt.y, canvas);
+            if (at) Measure.addPoint(at);
+            measuringPress = null;
+            restCursor(canvas);
+            paintMeasureOverlay();
+        }
         if (picking) {
             const pt = eventCanvasPoint(event, canvas);
             const tile = tileAtCanvas(pt.x, pt.y, canvas) || anchor;
@@ -2504,7 +2591,7 @@ function setupDragRotation() {
             anchor = null;
             moved = false;
             refreshGrid();
-            canvas.style.cursor = 'grab';
+            restCursor(canvas);
             draw();
         }
         pointers.delete(event.pointerId);
@@ -2518,7 +2605,7 @@ function setupDragRotation() {
         }
         dragging = false;
         pinchStartDist = 0;
-        canvas.style.cursor = 'grab';
+        restCursor(canvas);
     }
 
     canvas.addEventListener('pointerup', endDrag);
@@ -2529,11 +2616,18 @@ function setupDragRotation() {
         const here = eventCanvasPoint(event, canvas);
         hoverX = here.x;
         hoverY = here.y;
-        if (refreshGrid()) draw();
+        const gridChanged = refreshGrid();
+        const hoverChanged = Measure.isActive()
+            && Measure.setHover(pickAtCanvas(hoverX, hoverY, canvas));
+        if (gridChanged) draw();
+        else if (hoverChanged) paintMeasureOverlay();
     });
     canvas.addEventListener('pointerleave', () => {
         overCanvas = false;
-        if (refreshGrid()) draw();
+        const gridChanged = refreshGrid();
+        const hoverCleared = Measure.setHover(null);
+        if (gridChanged) draw();
+        else if (hoverCleared) paintMeasureOverlay();
     });
 
     /*
@@ -2553,9 +2647,37 @@ function setupDragRotation() {
         if (refreshGrid()) draw();
     });
     window.addEventListener('keydown', (event) => {
-        if (event.key !== 'Escape' || !TdOverlay.getPicked().length) return;
-        TdOverlay.clearPicked();
-        draw();
+        if (event.key === 'Escape') {
+            if (Measure.getPoints().length) {
+                Measure.clear();
+                paintMeasureOverlay();
+                return;
+            }
+            if (TdOverlay.getPicked().length) {
+                TdOverlay.clearPicked();
+                draw();
+                return;
+            }
+            if (Measure.isActive()) {
+                Measure.setActive(false);
+                Measure.clear();
+                syncMeasureUi();
+                paintMeasureOverlay();
+            }
+            return;
+        }
+        if ((event.key === 'Backspace' || event.key === 'Delete') && Measure.isActive()) {
+            if (typingTarget(event.target)) return;
+            if (Measure.popPoint()) paintMeasureOverlay();
+            return;
+        }
+        if ((event.key === 'm' || event.key === 'M') && !event.metaKey && !event.ctrlKey && !event.altKey) {
+            if (typingTarget(event.target)) return;
+            event.preventDefault();
+            Measure.setActive(!Measure.isActive());
+            syncMeasureUi();
+            paintMeasureOverlay();
+        }
     });
     window.addEventListener('blur', () => {
         if (!shiftHeld) return;
@@ -2935,6 +3057,11 @@ window.setDetailOption = (key, value) => {
 setupDragRotation();
 document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
 document.querySelector('.view-reset')?.addEventListener('click', resetView);
+document.querySelector('.measure-toggle')?.addEventListener('click', () => {
+    Measure.setActive(!Measure.isActive());
+    syncMeasureUi();
+    paintMeasureOverlay();
+});
 restoreViewState();
 syncViewModeDom();
 {
