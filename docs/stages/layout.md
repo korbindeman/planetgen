@@ -68,6 +68,18 @@ Shape derives Iceland-style plume-on-ridge plateaus and drowned-margin
 islands from these fields plus crust, elevation, and the live boundary.
 Do not add a fifth field until a picture fails.
 
+Save writes these maps, plus `r_elevation`, `r_moisture`,
+`r_temperature`, and the plate records, to `layout.json` on that
+snapshot. `r_meters` is the `meters` row. Opening the variant loads
+that file. It does not rerun the simulation. A new optional field
+still loads: the old maps stay, the new one is empty. A file this
+generator cannot apply (required field gone, or a newer schema) stays
+on disk. It is not overwritten. **Regenerate** writes a current file
+in its place. Same seed, same genes. It does not write a new
+snapshot. A snapshot with no file generates once and then keeps that
+result. `src/layout-artifact.js` is the encode. Bump `SCHEMA` there
+when the contract changes. Do not bump it when the sim changes.
+
 ## Must not regress
 
 **Coasts come from interpolation over a continuous field, never from

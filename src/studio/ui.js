@@ -335,6 +335,11 @@ function LayoutPanel({session}) {
                             onClick=${() => act.enterSearch()}>Explore</button>
                     `}
                 </div>
+                <div class="tool-row">
+                    <button type="button" disabled=${!!session.pipelineLayoutBusy}
+                        title="Rerun Layout and replace the cached plates"
+                        onClick=${() => act.regenerateLayout()}>Regenerate</button>
+                </div>
             </div>
             <${ParamList} session=${session} stage="layout" />
             <${Advanced} session=${session} />

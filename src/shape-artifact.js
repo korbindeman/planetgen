@@ -7,6 +7,8 @@
  */
 'use strict';
 
+const Codec = require('./field-codec');
+
 const F32 = [
     'r_meters', 'r_elevation', 'r_moisture', 'r_temperature',
     'r_arc', 'r_arcPeak', 'r_arcAge',
@@ -16,134 +18,44 @@ const F32 = [
 const PACKED3 = ['r_orogenyDir', 'r_arcDir'];
 const U8 = ['r_crust_type', 'r_boundary'];
 const I32 = ['r_plate'];
+const NAMES = {f32: F32, packed3: PACKED3, u8: U8, i32: I32};
+/* Contract only. Bump when a required field is gone or renamed, or the
+ * packing changes. Do not bump when the sketch pass changes. */
+const SCHEMA = 1;
 
 
-function u8ToB64(u8) {
-    if (typeof Buffer !== 'undefined') {
-        return Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength).toString('base64');
-    }
-    const chunk = 0x8000;
-    let s = '';
-    for (let i = 0; i < u8.length; i += chunk) {
-        s += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
-    }
-    return btoa(s);
-}
-
-
-function b64ToU8(b64) {
-    if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(b64, 'base64'));
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-}
-
-
-function asU8(arr) {
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-}
-
-
-function encodeF32(arr) {
-    return arr ? u8ToB64(asU8(arr)) : null;
-}
-
-
-function decodeF32(b64, n) {
-    if (!b64) return null;
-    const bytes = b64ToU8(b64);
-    const src = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
-    const out = new Float32Array(n);
-    out.set(src.subarray(0, n));
-    return out;
-}
-
-
-function encodeU8(arr) {
-    return arr ? u8ToB64(asU8(arr)) : null;
-}
-
-
-function decodeU8(b64, n) {
-    if (!b64) return null;
-    const src = b64ToU8(b64);
-    const out = new Uint8Array(n);
-    out.set(src.subarray(0, n));
-    return out;
-}
-
-
-function encodeI32(arr) {
-    return arr ? u8ToB64(asU8(arr)) : null;
-}
-
-
-function decodeI32(b64, n) {
-    if (!b64) return null;
-    const bytes = b64ToU8(b64);
-    const src = new Int32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
-    const out = new Int32Array(n);
-    out.set(src.subarray(0, n));
-    return out;
+function usable(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    if (!Codec.schemaReadable(payload, SCHEMA)) return false;
+    const cells = (payload.cells || payload.n) | 0;
+    if (!(cells > 0)) return false;
+    if (!payload.f32 || !payload.f32.r_elevation) return false;
+    return true;
 }
 
 
 function fromMap(map, meta) {
     if (!map || !map.r_elevation) return null;
     const cells = map.r_elevation.length;
-    const payload = {
+    return Object.assign({
+        schema: SCHEMA,
         n: (meta && meta.n) || cells,
         cells,
         jitter: meta && meta.jitter,
         shapeSeed: meta && meta.shapeSeed,
         spacingKm: meta && meta.spacingKm,
-        f32: {},
-        packed3: {},
-        u8: {},
-        i32: {},
-    };
-    for (const name of F32) {
-        if (map[name]) payload.f32[name] = encodeF32(map[name]);
-    }
-    for (const name of PACKED3) {
-        if (map[name]) payload.packed3[name] = encodeF32(map[name]);
-    }
-    for (const name of U8) {
-        if (map[name]) payload.u8[name] = encodeU8(map[name]);
-    }
-    for (const name of I32) {
-        if (map[name]) payload.i32[name] = encodeI32(map[name]);
-    }
-    return payload;
+    }, Codec.encodeNamed(map, NAMES));
 }
 
 
 function toFields(payload) {
-    if (!payload) return null;
+    if (!usable(payload)) return null;
     const cells = (payload.cells || payload.n) | 0;
     if (!(cells > 0)) return null;
-    const fields = {
+    return Object.assign({
         n: (payload.n || cells) | 0,
         cells,
-    };
-    const f32 = payload.f32 || {};
-    const packed3 = payload.packed3 || {};
-    const u8 = payload.u8 || {};
-    const i32 = payload.i32 || {};
-    for (const name of F32) {
-        if (f32[name]) fields[name] = decodeF32(f32[name], cells);
-    }
-    for (const name of PACKED3) {
-        if (packed3[name]) fields[name] = decodeF32(packed3[name], cells * 3);
-    }
-    for (const name of U8) {
-        if (u8[name]) fields[name] = decodeU8(u8[name], cells);
-    }
-    for (const name of I32) {
-        if (i32[name]) fields[name] = decodeI32(i32[name], cells);
-    }
-    return fields;
+    }, Codec.decodeNamed(payload, NAMES, cells));
 }
 
 
@@ -158,7 +70,9 @@ function marker(payload) {
 
 
 module.exports = {
+    SCHEMA,
     F32, PACKED3, U8, I32,
+    usable,
     fromMap,
     toFields,
     marker,

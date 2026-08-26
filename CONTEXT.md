@@ -131,8 +131,10 @@ _Avoid_: Detail seed, the seed
 
 **Variant**:
 One saved snapshot of a **project**: layout seed, shape seed, **body**,
-gene draws, **pins**, **ranges**. Its id is a UTC unix time. Artifacts
-belong to that id. Only an explicit Save writes one.
+gene draws, **pins**, **ranges**, and the stage data on the globe
+(Layout's sim, then the Shape **sketch** if it has run). Its id is a
+UTC unix time. Artifacts belong to that id. Only an explicit Save
+writes one.
 _Avoid_: Version, saved seed, keep, favourite, like, working planet
 
 **Save**:

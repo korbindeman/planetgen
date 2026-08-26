@@ -280,6 +280,9 @@ for (const project of Projects.PROJECTS) {
     check("bakeDir scopes a variant under v/<id>",
         Projects.bakeDir("thalos", variant.id) === `preview/thalos/v/${variant.id}`
         && Projects.bakeDir("earth") === "preview/earth");
+    check("layout and shape artifacts sit on that variant folder",
+        Projects.layoutPath("thalos", variant.id) === `preview/thalos/v/${variant.id}/layout.json`
+        && Projects.shapePath("thalos", variant.id) === `preview/thalos/v/${variant.id}/shape.json`);
     check("isVariantId accepts only v-prefixed ids",
         Projects.isVariantId(variant.id) && !Projects.isVariantId("abc"));
     const seedOnly = Variants.ofWorking({

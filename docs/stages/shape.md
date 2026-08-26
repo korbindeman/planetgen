@@ -64,6 +64,11 @@ The **sketch**: height plus the story maps, cached on the variant.
 Carve stamps below this grain have nowhere to go without them. A doc or
 a cache that keeps height and climate only is broken.
 
+A new optional field still loads. A file this generator cannot apply
+stays on disk. **Regenerate** writes a current sketch in its place.
+Bump `SCHEMA` in `src/shape-artifact.js` when the contract changes.
+Do not bump it when the sketch pass changes.
+
 ### What Terrain wants from this
 
 Shape's output target is a sketch that terrain-diffusion can use. Written

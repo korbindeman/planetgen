@@ -7,6 +7,8 @@
  *   preview/<project>/                 Earth, or a project with no variant
  *   preview/<project>/project.json     a user project (not Thalos or Earth)
  *   preview/<project>/v/<id>/          one variant's folder
+ *   preview/<project>/v/<id>/layout.json   the 10k sim
+ *   preview/<project>/v/<id>/shape.json    the 23 km sketch
  *   preview/<project>/variants.json    the catalog
  *
  * The project root is never a dump of every variant's tiles. Listing
@@ -73,6 +75,11 @@ function shapePath(project, id) {
 }
 
 
+function layoutPath(project, id) {
+    return `${variantDir(project, id)}/layout.json`;
+}
+
+
 function sameSeed(a, b) {
     if (a == null || a === '' || b == null || b === '') return false;
     return String(a).toLowerCase() === String(b).toLowerCase();
@@ -90,5 +97,6 @@ module.exports = {
     projectFile,
     thumbPath,
     shapePath,
+    layoutPath,
     sameSeed,
 };

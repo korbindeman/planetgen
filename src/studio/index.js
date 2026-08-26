@@ -7,6 +7,8 @@
 const Projects = require('../projects');
 const Params = require('../params');
 const Search = require('../search');
+const LayoutArtifact = require('../layout-artifact');
+const ShapeArtifact = require('../shape-artifact');
 const EarthFixture = require('../earth-fixture');
 const TdOverlay = require('../td-overlay');
 const Boot = require('./boot');
@@ -53,6 +55,8 @@ function createSession(startup) {
         seedFromQuery: !!startup.seedFromQuery,
         pipelineFact: null,
         pipelineShapeBusy: false,
+        pipelineLayoutBusy: false,
+        layoutBackfill: false,
         host: null,
         ui: {
             variantsOpen: false,
@@ -152,11 +156,20 @@ function paint(session) {
 }
 
 
+function forgetLayoutCache(session) {
+    if (session.host && session.host.clearLayout) session.host.clearLayout();
+    session.layoutBackfill = false;
+}
+
+
 function applyPins(session, rebuild) {
     session.lastResolved = Projects.resolve({name: session.project, values: effectiveValues(session)});
     paint(session);
     syncContext(session);
-    if (rebuild) session.host.generateMesh();
+    if (rebuild) {
+        forgetLayoutCache(session);
+        session.host.generateMesh();
+    }
 }
 
 
@@ -266,6 +279,95 @@ async function persistShape(session, payload) {
 }
 
 
+function canPersistLayout(session) {
+    return !!(session.variant && session.variant.id
+        && !Projects.isFixture(session.project)
+        && !isWorkingDirty(session));
+}
+
+
+async function persistLayout(session, payload) {
+    if (!payload) return;
+    const id = session.variant && session.variant.id;
+    if (!id || Projects.isFixture(session.project)) return;
+    payload.project = session.project;
+    payload.variant = id;
+    const res = await fetch(`${TdOverlay.TD_API}/layout`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || res.statusText);
+    }
+}
+
+
+async function persistCurrentLayout(session) {
+    if (!session.layoutBackfill) return;
+    if (!canPersistLayout(session) || !session.host || !session.host.captureLayout) return;
+    const payload = session.host.captureLayout();
+    if (!payload) return;
+    await persistLayout(session, payload);
+    if (session.host.loadLayout) session.host.loadLayout(payload);
+    session.layoutBackfill = false;
+}
+
+
+async function dropShape(session) {
+    const id = session.variant && session.variant.id;
+    if (!id || Projects.isFixture(session.project)) return;
+    try {
+        const q = new URLSearchParams({project: session.project, variant: id});
+        await fetch(`${TdOverlay.TD_API}/shape?${q}`, {method: 'DELETE'});
+    } catch {
+        /* file may already be gone */
+    }
+    markShaped(session, id, false);
+    await persistCatalog(session);
+}
+
+
+async function loadVariantLayout(session) {
+    if (!session.host || !session.host.loadLayout) return false;
+    if (Projects.isFixture(session.project)) return false;
+    const id = session.variant && session.variant.id;
+    if (!id) {
+        if (session.host.clearLayout) session.host.clearLayout();
+        session.layoutBackfill = false;
+        return false;
+    }
+    try {
+        const q = new URLSearchParams({project: session.project, variant: id});
+        const res = await fetch(`${TdOverlay.TD_API}/layout?${q}`);
+        if (res.status === 404) {
+            if (session.host.clearLayout) session.host.clearLayout();
+            session.layoutBackfill = true;
+            return false;
+        }
+        if (!res.ok) {
+            if (session.host.clearLayout) session.host.clearLayout();
+            session.layoutBackfill = false;
+            return false;
+        }
+        const payload = await res.json();
+        if (!LayoutArtifact.usable(payload)) {
+            if (session.host.clearLayout) session.host.clearLayout();
+            session.layoutBackfill = false;
+            return false;
+        }
+        session.layoutBackfill = false;
+        session.host.loadLayout(payload);
+        return true;
+    } catch {
+        if (session.host.clearLayout) session.host.clearLayout();
+        session.layoutBackfill = true;
+        return false;
+    }
+}
+
+
 async function loadVariantShape(session) {
     if (!session.host || !session.host.loadShape) return;
     const variantId = session.variant && session.variant.id;
@@ -287,6 +389,11 @@ async function loadVariantShape(session) {
             return;
         }
         const payload = await res.json();
+        if (!ShapeArtifact.usable(payload)) {
+            session.host.clearShape();
+            if (session.host.isShaped && session.host.isShaped()) session.host.showLayout();
+            return;
+        }
         session.host.loadShape(payload);
         if (variantId) {
             markShaped(session, variantId, true);
@@ -326,6 +433,32 @@ async function shapeVariant(session, opts) {
 async function regenerateShape(session) {
     if (!session.host || !session.host.runShape) return;
     await shapeVariant(session, {regenerate: true});
+}
+
+
+async function regenerateLayout(session) {
+    if (!session.host || !session.host.generateMesh) return;
+    if (session.pipelineLayoutBusy) return;
+    session.pipelineLayoutBusy = true;
+    renderPipeline(session);
+    try {
+        forgetLayoutCache(session);
+        if (session.host.clearShape) session.host.clearShape();
+        session.host.generateMesh();
+        if (canPersistLayout(session)) {
+            const payload = session.host.captureLayout && session.host.captureLayout();
+            if (payload) {
+                await persistLayout(session, payload);
+                if (session.host.loadLayout) session.host.loadLayout(payload);
+            }
+            await dropShape(session);
+        }
+    } catch (err) {
+        window.alert(`Layout failed: ${err.message || err}`);
+    } finally {
+        session.pipelineLayoutBusy = false;
+        renderPipeline(session);
+    }
 }
 
 
@@ -416,7 +549,8 @@ async function loadProject(session, name) {
     Boot.writeStoredProject(session.project);
     syncProjectTitle(session);
     session.lastResolved = Projects.resolve({name: session.project, values: effectiveValues(session)});
-    if (session.host && session.host.showLayout) session.host.showLayout();
+    if (session.host && session.host.clearShape) session.host.clearShape();
+    forgetLayoutCache(session);
     applyInitWorking(session, project, project.fixture && project.seed != null ? 1 : 1);
     applyPins(session, false);
 
@@ -429,10 +563,12 @@ async function loadProject(session, name) {
         applyInitWorking(session, project, session.seed);
         applyPins(session, false);
     }
+    if (resumed) await loadVariantLayout(session);
     if (resumed || Projects.isFixture(session.project)) await loadVariantShape(session);
     if (!(session.host && session.host.isShaped && session.host.isShaped())) {
         session.host.generateMesh();
     }
+    if (resumed) await persistCurrentLayout(session);
     if (!resumed) {
         syncContext(session);
         syncVariantsUI(session);
@@ -472,6 +608,7 @@ function commitSeed(session, next) {
         session.seedHistory = session.seedHistory.slice(session.seedHistory.length - SEED_HISTORY_MAX);
     }
     session.seedHistoryIndex = session.seedHistory.length - 1;
+    forgetLayoutCache(session);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
     syncContext(session);
@@ -529,6 +666,7 @@ function undoSeed(session) {
     if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
     if (session.host && session.host.clearShape) session.host.clearShape();
+    forgetLayoutCache(session);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
     syncContext(session);
@@ -541,6 +679,7 @@ function redoSeed(session) {
     if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
     if (session.host && session.host.clearShape) session.host.clearShape();
+    forgetLayoutCache(session);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
     syncContext(session);
@@ -763,7 +902,11 @@ async function hydrateAndResume(session) {
             await persistThumb(session, item.id, item.thumb);
         }
     }
+    if (resumed) await loadVariantLayout(session);
     if (resumed || Projects.isFixture(session.project)) await loadVariantShape(session);
+    if (resumed && session.host && session.host.isShaped && session.host.isShaped()) {
+        await persistCurrentLayout(session);
+    }
 }
 
 
@@ -1300,6 +1443,7 @@ async function saveWorkingVariant(session, opts) {
     const force = !!(opts && opts.force);
     if (!force && !newPlanet && !isWorkingDirty(session) && !isRenamed(session) && head) return head;
     const thumb = captureWorkingThumb(session);
+    const layout = session.host && session.host.captureLayout && session.host.captureLayout();
     const incoming = workingVariant(session, {name, thumb});
     if (!incoming) return session.variant;
     const next = Variants.save(readVariants(session), head, incoming);
@@ -1310,11 +1454,14 @@ async function saveWorkingVariant(session, opts) {
         variants: next,
     };
     await persistCatalog(session);
-    return applySavedVariant(session, saved);
+    if (layout && session.host.loadLayout) session.host.loadLayout(layout);
+    await applySavedVariant(session, saved);
+    if (layout) await persistLayout(session, layout);
+    return saved;
 }
 
 
-function openVariant(session, id, opts) {
+async function openVariant(session, id, opts) {
     const variant = Variants.findById(readVariants(session), id);
     if (!variant || variant.deleted) return;
     if (session.searchSession) exitSearch(session);
@@ -1323,11 +1470,15 @@ function openVariant(session, id, opts) {
     if (!opts || !opts.keepOpen) session.ui.variantsOpen = false;
     session.projectModified = false;
     Boot.writeStoredVariant(session.project, variant.id);
+    applySeed(session, variant.seed);
+    session.seedHistory = [session.seed];
+    session.seedHistoryIndex = 0;
     session.lastResolved = Projects.resolve({name: session.project, values: effectiveValues(session)});
+    await loadVariantLayout(session);
     if (session.host && session.host.showLayout) session.host.showLayout();
     applyPins(session, false);
-    if (session.seed !== variant.seed) commitSeed(session, variant.seed);
-    loadVariantShape(session);
+    await loadVariantShape(session);
+    persistCurrentLayout(session);
     syncContext(session);
     syncVariantsUI(session);
 }
@@ -1654,6 +1805,7 @@ function mount(session, host) {
     session.setPlanetReady = (value) => {
         session.planetReady = !!value;
         if (!value) return;
+        persistCurrentLayout(session);
         ensureCurrentThumb(session);
         if (session.ui.variantsOpen) fillMissingThumbs(session);
         paint(session);
@@ -1681,6 +1833,7 @@ function mount(session, host) {
         goLayout: () => goLayout(session),
         goShape: () => goShape(session),
         regenerateShape: () => regenerateShape(session),
+        regenerateLayout: () => regenerateLayout(session),
         enterSearch: () => enterSearch(session),
         searchNext: () => nextSearch(session),
         searchBack: () => backSearch(session),

@@ -167,10 +167,21 @@ console.log("\ncontracts match the code");
     check(`shape.md documents every field in the cached sketch (${sketch.size})`,
         missing.length === 0, missing.join(", "));
 
+    const layoutArt = readFileSync(join(root, "src", "layout-artifact.js"), "utf8");
+    const layoutCache = new Set();
+    for (const name of ["F32", "PACKED3", "U8", "I32"]) {
+        const block = layoutArt.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`));
+        if (block) for (const m of block[1].matchAll(/'([^']+)'/g)) layoutCache.add(m[1]);
+    }
+
+    const layout = readFileSync(join(root, "docs", "stages", "layout.md"), "utf8");
+    const cacheMissing = [...layoutCache].filter((f) => !layout.includes(`\`${f}\``));
+    check(`layout.md documents every field in the cached sim (${layoutCache.size})`,
+        cacheMissing.length === 0, cacheMissing.join(", "));
+
     const tectonics = readFileSync(join(root, "src", "tectonics.js"), "utf8");
     const ret = tectonics.match(/return \{\s*(r_crust_type[\s\S]*?)\}/);
     const emitted = new Set(ret ? ret[1].match(/\br_[a-zA-Z_]+\b/g) : []);
-    const layout = readFileSync(join(root, "docs", "stages", "layout.md"), "utf8");
     const undocumented = [...emitted].filter((f) => !layout.includes(`\`${f}\``));
     check(`layout.md documents every field the simulation emits (${emitted.size})`,
         undocumented.length === 0, undocumented.join(", "));
@@ -234,7 +245,8 @@ console.log("\nstatus claims match the code");
     }
 
     /* A stage that describes a mechanism must have the module it names. */
-    for (const [stage, file] of [["layout", "src/tectonics.js"], ["shape", "src/detail.js"],
+    for (const [stage, file] of [["layout", "src/tectonics.js"], ["layout", "src/layout-artifact.js"],
+                                 ["shape", "src/detail.js"],
                                  ["shape", "src/shape-artifact.js"], ["climate", "src/climate.js"],
                                  ["terrain", "scripts/td-bake.py"], ["export", "src/cubesphere.js"]]) {
         check(`${stage}: ${file} exists`, exists(file));

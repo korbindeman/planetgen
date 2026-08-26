@@ -45,6 +45,10 @@ function takeLayout(planet, cache) {
         planet.sim = cache.layout.sim;
         return true;
     }
+    if (cache.layoutFields && stages.applyLayoutFields(planet, cache.layoutFields, cache)) {
+        cache.layout = {key, sim: planet.sim};
+        return true;
+    }
     stages.tectonics(planet, cache);
     if (!planet.config.baseOnly) {
         stages.climate(planet, planet.sim.mesh, planet.sim.map);

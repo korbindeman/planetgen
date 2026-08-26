@@ -117,6 +117,59 @@ check("surface is then the sim",
     check("a cached sketch attaches without rerunning Shape",
         applied && laid.detail && laid.mesh === laid.detail.mesh
         && laid.map.r_elevation[0] === ran.detail.map.r_elevation[0]);
+    check("shape artifact stamps schema 1", packed.schema === 1 && Shape.usable(packed));
+    {
+        const additive = JSON.parse(JSON.stringify(packed));
+        delete additive.f32.r_arcPeak;
+        const addFields = Shape.toFields(additive);
+        check("a sketch missing an optional story map still applies",
+            Shape.usable(additive) && addFields && addFields.r_elevation
+            && !addFields.r_arcPeak);
+        const future = Object.assign({}, packed, {schema: 99});
+        check("a newer shape schema is not applied", !Shape.usable(future));
+    }
+}
+
+{
+    const Layout = require(join(root, "src", "layout-artifact.js"));
+    const packed = Layout.fromMap(ran.sim.map, {n: 4000, jitter: 0.75, seed: 7});
+    const fields = Layout.toFields(packed);
+    check("layout artifact round-trips metres",
+        !!(packed && fields && fields.cells === ran.sim.mesh.numRegions
+            && fields.r_elevation && fields.r_elevation[0] === ran.sim.map.r_elevation[0]));
+    check("layout artifact keeps plates and story maps",
+        !!(fields.plates && fields.plates.length
+            && fields.r_plate && fields.r_arcPeak && fields.r_hotspotAge
+            && fields.r_thickness && fields.r_moisture));
+    const empty = Pipeline.createPlanet(Pipeline.freezeConfig({
+        seed: 7, n: 4000, detailPass: false, simSteps: 2, quiet: true,
+    }));
+    const restored = Pipeline.stages.applyLayoutFields(empty, fields, {});
+    Pipeline.toLegacy(empty);
+    check("a cached layout attaches without rerunning tectonics",
+        restored && empty.sim && empty.map.r_elevation[0] === ran.sim.map.r_elevation[0]
+        && empty.sim.map.plates[0].name === ran.sim.map.plates[0].name);
+    const reused = Pipeline.run({
+        seed: 7, n: 4000, detailPass: false, simSteps: 2, quiet: true,
+    }, {layoutFields: fields});
+    check("takeLayout restores a cached sim and skips the generate",
+        reused.sim.map.r_elevation === fields.r_elevation);
+    check("layout artifact stamps schema 1", packed.schema === 1 && Layout.usable(packed));
+    {
+        const additive = JSON.parse(JSON.stringify(packed));
+        delete additive.f32.r_arcPeak;
+        delete additive.schema;
+        const addFields = Layout.toFields(additive);
+        check("an unstamped layout file with a missing optional map still applies",
+            Layout.usable(additive) && addFields && addFields.r_elevation
+            && !addFields.r_arcPeak);
+        const broken = JSON.parse(JSON.stringify(packed));
+        delete broken.f32.r_elevation;
+        check("a layout file missing elevation is not applied",
+            !Layout.usable(broken) && Layout.toFields(broken) == null);
+        const future = Object.assign({}, packed, {schema: 99});
+        check("a newer layout schema is not applied", !Layout.usable(future));
+    }
 }
 
 {

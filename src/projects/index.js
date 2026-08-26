@@ -208,6 +208,7 @@ module.exports = {
     projectFile: Artifacts.projectFile,
     thumbPath: Artifacts.thumbPath,
     shapePath: Artifacts.shapePath,
+    layoutPath: Artifacts.layoutPath,
     isVariantId: Artifacts.isVariantId,
     sameSeed: Artifacts.sameSeed,
     Variants,

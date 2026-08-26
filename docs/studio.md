@@ -109,10 +109,20 @@ saves sits on the card, not as a second variant. Shape reuses that
 variant's layout: plates and `climate.js` do not rerun when you Shape,
 shuffle the shape seed, or move a shape gene.
 
-The Shape tab loads the cached sketch. That cache does not know if the
-Shape code changed. **Regenerate** reruns the pass on this variant and
-replaces the cache. Same seed, same genes. It does not write a new
-snapshot.
+The Shape tab loads the cached sketch. An added story map still
+loads: the old height stays, the new map is empty. A file this
+generator cannot apply stays on disk. **Regenerate** reruns the pass
+on this variant and replaces the cache. Same seed, same genes. It
+does not write a new snapshot. A code change that does not touch the
+file format still needs **Regenerate** if you want the new pass.
+
+Save also writes the 10k sim onto that snapshot (`layout.json`).
+Opening the card loads that cache. The recipe (layout seed, genes,
+body) is how **Regenerate** remakes it. A later Layout-code change
+does not rewrite saved plates. **Regenerate** on Layout reruns the
+sim on this variant and replaces the cache. Same seed, same genes.
+It does not write a new snapshot. If this variant had a sketch, that
+sketch is dropped. It was sampled from the old plates.
 
 Layout keeps the tectonic story Shape and Finish need, not only the
 last height. Present strength is not enough: an extinct arc and an old
@@ -168,9 +178,10 @@ that line's history; you can open one and the globe follows. Status is
 not indent under each other.
 
 A **variant** snapshot still has its own id. Artifacts
-(`preview/<project>/v/<id>/`) belong to that id. A snapshot's Shape
-sketch does not go stale: a later save is a different snapshot and
-starts unshaped until you run Shape on it.
+(`preview/<project>/v/<id>/`) belong to that id. A snapshot's Layout
+sim and Shape sketch do not go stale: a later save is a different
+snapshot. The new snapshot starts with its own Layout cache. It is
+unshaped until you run Shape on it.
 
 Every **Save** writes a **new snapshot**. Its id is UTC unix time.
 Uncommitted work stays on the working planet until Save. Likes still
@@ -179,10 +190,12 @@ save with no new name, continue the active name. A new name is another
 card; the previous name stays.
 
 On disk: the catalog is `preview/<project>/variants.json` and a
-variant's folder is `preview/<project>/v/<id>/`. Earth, and a project
-with no variant yet, stay at `preview/<project>/` — `preview/earth/`.
-Listing without a variant id does not walk `v/`. User projects live at
-`preview/<name>/project.json`; Thalos and Earth stay shipped modules.
+variant's folder is `preview/<project>/v/<id>/`. Layout's sim is
+`layout.json` in that folder. The sketch is `shape.json`. Earth, and
+a project with no variant yet, stay at `preview/<project>/` —
+`preview/earth/`. Listing without a variant id does not walk `v/`.
+User projects live at `preview/<name>/project.json`; Thalos and Earth
+stay shipped modules.
 
 The catalog is **append-only**. Delete marks a snapshot (`deleted`).
 The id stays. A badge offers **Undo**. A load merges disk with the

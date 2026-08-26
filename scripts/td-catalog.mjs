@@ -7,7 +7,7 @@
  * The browser hydrates from GET /variants and writes through PUT.
  * Thumbs are files, not data URLs in the catalog.
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -66,6 +66,49 @@ export async function readShape(root, project, id) {
         return await Bun.file(shapeFile(root, project, id)).json();
     } catch {
         return null;
+    }
+}
+
+
+export function layoutFile(root, project, id) {
+    return join(root, Projects.layoutPath(project, id));
+}
+
+
+export async function hasLayout(root, project, id) {
+    if (!id || Projects.isFixture(project) || id === "earth") return false;
+    try {
+        return await Bun.file(layoutFile(root, project, id)).exists();
+    } catch {
+        return false;
+    }
+}
+
+
+export async function writeLayout(root, project, id, payload) {
+    const path = layoutFile(root, project, id);
+    await mkdir(dirname(path), {recursive: true});
+    await Bun.write(path, JSON.stringify(payload) + "\n");
+    return true;
+}
+
+
+export async function readLayout(root, project, id) {
+    try {
+        return await Bun.file(layoutFile(root, project, id)).json();
+    } catch {
+        return null;
+    }
+}
+
+
+export async function deleteShape(root, project, id) {
+    try {
+        await unlink(shapeFile(root, project, id));
+        return true;
+    } catch (err) {
+        if (err && err.code === "ENOENT") return false;
+        throw err;
     }
 }
 

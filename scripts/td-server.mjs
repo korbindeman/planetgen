@@ -12,7 +12,7 @@ import {
 } from "./td-jobs.mjs";
 import {
   attachThumbs, decodeDataUrl, readCatalog, writeCatalog, writeThumb,
-  readShape, writeShape,
+  readShape, writeShape, deleteShape, readLayout, writeLayout,
 } from "./td-catalog.mjs";
 import { createUserProject, loadUserProjects } from "./td-projects.mjs";
 
@@ -28,7 +28,7 @@ await loadUserProjects(root, Projects);
 function cors(res) {
   const headers = new Headers(res.headers);
   headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type");
   headers.set("Cache-Control", "no-store");
   return new Response(res.body, {status: res.status, headers});
@@ -148,6 +148,34 @@ const server = Bun.serve({
       }
       if (!body.n || !body.f32) return json({error: "shape payload required"}, 400);
       await writeShape(root, body.project, id, body);
+      return json({ok: true});
+    }
+    if (url.pathname === "/shape" && req.method === "DELETE") {
+      const q = query(url);
+      if (!q.project || !q.variant) return json({error: "project and variant required"}, 400);
+      try { Projects.byName(q.project); } catch { return json({error: "unknown project"}, 400); }
+      if (!Projects.isVariantId(q.variant)) return json({error: "bad variant"}, 400);
+      await deleteShape(root, q.project, q.variant);
+      return json({ok: true});
+    }
+    if (url.pathname === "/layout" && req.method === "GET") {
+      const q = query(url);
+      if (!q.project || !q.variant) return json({error: "project and variant required"}, 400);
+      try { Projects.byName(q.project); } catch { return json({error: "unknown project"}, 400); }
+      if (!Projects.isVariantId(q.variant)) return json({error: "bad variant"}, 400);
+      const payload = await readLayout(root, q.project, q.variant);
+      if (!payload) return json({error: "no layout"}, 404);
+      return json(payload);
+    }
+    if (url.pathname === "/layout" && req.method === "PUT") {
+      let body;
+      try { body = await req.json(); }
+      catch { return json({error: "invalid json"}, 400); }
+      try { Projects.byName(body.project); } catch { return json({error: "unknown project"}, 400); }
+      const id = body.variant;
+      if (!id || !Projects.isVariantId(id)) return json({error: "bad variant"}, 400);
+      if (!body.n || !body.f32 || !body.plates) return json({error: "layout payload required"}, 400);
+      await writeLayout(root, body.project, id, body);
       return json({ok: true});
     }
     if (url.pathname === "/overlays.json") {

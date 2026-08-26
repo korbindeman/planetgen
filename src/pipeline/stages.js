@@ -127,6 +127,42 @@ function geometry(planet) {
 }
 
 
+function applyLayoutFields(planet, fields, cache) {
+    if (!planet || !fields || !fields.r_elevation || !fields.plates) return false;
+    const {seed, n, jitter} = planet.config;
+    const built = Planet.ensureSimMesh({seed, n, jitter}, cache);
+    if (built.mesh.numRegions !== fields.r_elevation.length) return false;
+    if (!fields.r_plate || fields.r_plate.length !== built.mesh.numRegions) return false;
+    const map = Planet.emptySimMap(built.mesh, built.r_xyz, built.t_xyz);
+    const skip = {
+        n: true, cells: true, jitter: true, seed: true, schema: true,
+        plates: true, plate_is_ocean: true, hotspots: true,
+        extra_ocean_seeds: true, nextPlateId: true, elapsedMyr: true,
+        targetPlateCount: true,
+    };
+    for (const key of Object.keys(fields)) {
+        if (skip[key] || fields[key] == null) continue;
+        map[key] = fields[key];
+    }
+    map.plates = fields.plates;
+    map.plate_is_ocean = new Set(fields.plate_is_ocean || []);
+    map.hotspots = fields.hotspots || [];
+    map.extra_ocean_seeds = fields.extra_ocean_seeds || [];
+    map.nextPlateId = fields.nextPlateId;
+    map.elapsedMyr = fields.elapsedMyr;
+    map.targetPlateCount = fields.targetPlateCount;
+    map.plate_centroid = Planet.plateCentroids(built.mesh, map.r_xyz, map.plates, map.r_plate);
+    const plate_vec = [];
+    for (let p = 0; p < map.plates.length; p++) {
+        plate_vec[p] = Tectonics.plateVelocity(
+            [], map.plates[p].pole, map.plates[p].omega, map.plate_centroid[p]);
+    }
+    map.plate_vec = plate_vec;
+    planet.sim = {mesh: built.mesh, map};
+    return true;
+}
+
+
 function applyShapeFields(planet, fields, cache) {
     if (!planet || !planet.sim || !fields || !fields.r_elevation) return false;
     const meshN = fields.n || fields.cells || fields.r_elevation.length;
@@ -149,7 +185,7 @@ function applyShapeFields(planet, fields, cache) {
         t_moisture: new Float32Array(built.mesh.numTriangles),
         t_temperature: new Float32Array(built.mesh.numTriangles),
     };
-    const skip = {n: true, cells: true};
+    const skip = {n: true, cells: true, schema: true};
     for (const key of Object.keys(fields)) {
         if (skip[key] || fields[key] == null) continue;
         map[key] = fields[key];
@@ -167,5 +203,6 @@ module.exports = {
     erosion,
     seaLevel,
     geometry,
+    applyLayoutFields,
     applyShapeFields,
 };

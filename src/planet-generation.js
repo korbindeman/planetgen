@@ -14,6 +14,7 @@ const {BOUNDARY_CONVERGENT, BOUNDARY_DIVERGENT, BOUNDARY_TRANSFORM} = Tectonics;
 const Planet = require('./planet');
 const Pipeline = require('./pipeline');
 const ShapeArtifact = require('./shape-artifact');
+const LayoutArtifact = require('./layout-artifact');
 const Look = require('./look');
 const TdOverlay = require('./td-overlay');
 const TdTile = require('./td-tile');
@@ -63,6 +64,7 @@ let simulate_tectonics = true;
 let detail_pass = false;
 let shape_seed = 0;
 let pending_shape = null;
+let pending_layout = null;
 let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate' | 'relief'
 let previewYaw = 0;
 
@@ -114,6 +116,8 @@ function setProcess(key, value) {
     else if (key === 'mergeOceanPlates') merge_ocean_plates = !!value;
     else if (key === 'connectOceans') connect_oceans = !!value;
     else return;
+    pending_layout = null;
+    planetCache.layout = null;
     generateMap();
 }
 
@@ -464,6 +468,8 @@ function generateMap() {
      * generate (boot generateMesh, N, a process toggle) put the 10k sim
      * on the globe while the Shape tab was still selected. */
     const reuseSketch = !detail_pass && pending_shape;
+    if (pending_layout) planetCache.layoutFields = pending_layout;
+    else delete planetCache.layoutFields;
     const result = Planet.generatePlanet({
         seed: studio.seed,
         shapeSeed: shape_seed || studio.shapeSeed || studio.seed,
@@ -481,6 +487,11 @@ function generateMap() {
         values: studio.generateValues ? studio.generateValues() : studio.pins,
     }, planetCache);
     last_detail_n = result.config.options.detail.n;
+    if (pending_layout && result.sim && result.sim.map
+        && result.sim.map.r_elevation !== pending_layout.r_elevation) {
+        pending_layout = null;
+        delete planetCache.layoutFields;
+    }
     if (reuseSketch) {
         const fields = ShapeArtifact.toFields(pending_shape);
         const ok = Pipeline.stages.applyShapeFields(result, fields, planetCache);
@@ -2936,6 +2947,34 @@ function renderSearchTile(ind) {
     return paintSearchEquirect(planet, SEARCH_TILE_W, SEARCH_TILE_H);
 }
 
+function captureLayout() {
+    if (!simMap || !simMap.r_elevation) return null;
+    return LayoutArtifact.fromMap(simMap, {
+        n: N,
+        jitter,
+        seed: studio.seed,
+    });
+}
+
+
+function loadLayout(payload) {
+    pending_layout = LayoutArtifact.usable(payload) ? LayoutArtifact.toFields(payload) : null;
+    planetCache.layout = null;
+}
+
+
+function clearLayout() {
+    pending_layout = null;
+    planetCache.layout = null;
+    delete planetCache.layoutFields;
+}
+
+
+function hasLayoutCache() {
+    return !!pending_layout;
+}
+
+
 function captureShape() {
     if (!map || !map.r_elevation || mesh === simMesh) return null;
     const spacing = shapeSpacingKm;
@@ -2963,8 +3002,12 @@ function isShaped() {
 
 
 function loadShape(payload) {
+    if (!ShapeArtifact.usable(payload)) {
+        pending_shape = null;
+        return;
+    }
     pending_shape = payload;
-    if (payload && payload.shapeSeed) shape_seed = payload.shapeSeed | 0;
+    if (payload.shapeSeed) shape_seed = payload.shapeSeed | 0;
     generateMap();
 }
 
@@ -3005,8 +3048,8 @@ Studio.mount(studio, {
     setDrawMode: applyDrawMode,
     setDrawPlateVectors(flag) { draw_plateVectors = flag; draw(); },
     setDrawPlateBoundaries(flag) { draw_plateBoundaries = flag; draw(); },
-    setN(n) { N = n; generateMesh(); },
-    setJitter(value) { jitter = value; generateMesh(); },
+    setN(n) { N = n; clearLayout(); generateMesh(); },
+    setJitter(value) { jitter = value; clearLayout(); generateMesh(); },
     setShapeSpacing(km) {
         shapeSpacingKm = Math.max(10, km | 0);
         pending_shape = null;
@@ -3026,6 +3069,10 @@ Studio.mount(studio, {
     captureShape,
     isShaped,
     showLayout,
+    captureLayout,
+    loadLayout,
+    clearLayout,
+    hasLayoutCache,
     setTdCrops,
     enableTdCrops,
     startTdJobPoll,
@@ -3034,8 +3081,8 @@ Studio.mount(studio, {
 });
 
 /* Embed + capture adapter. The sidebar does not go through these. */
-window.setN = newN => { N = newN; generateMesh(); };
-window.setJitter = newJitter => { jitter = newJitter; generateMesh(); };
+window.setN = newN => { N = newN; clearLayout(); generateMesh(); };
+window.setJitter = newJitter => { jitter = newJitter; clearLayout(); generateMesh(); };
 window.setP = newP => studio.setParam('plates', newP);
 window.setRotation = newRotation => { rotation = newRotation; draw(); };
 window.setDrawMode = newMode => {
