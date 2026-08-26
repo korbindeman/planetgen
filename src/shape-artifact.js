@@ -7,8 +7,14 @@
  */
 'use strict';
 
-const F32 = ['r_meters', 'r_elevation', 'r_moisture', 'r_temperature'];
-const U8 = ['r_crust_type'];
+const F32 = [
+    'r_meters', 'r_elevation', 'r_moisture', 'r_temperature',
+    'r_arc', 'r_arcPeak', 'r_arcAge',
+    'r_hotspot', 'r_hotspotPeak', 'r_hotspotAge',
+    'r_orogeny', 'r_crust_age',
+];
+const PACKED3 = ['r_orogenyDir', 'r_arcDir'];
+const U8 = ['r_crust_type', 'r_boundary'];
 const I32 = ['r_plate'];
 
 
@@ -93,11 +99,15 @@ function fromMap(map, meta) {
         shapeSeed: meta && meta.shapeSeed,
         spacingKm: meta && meta.spacingKm,
         f32: {},
+        packed3: {},
         u8: {},
         i32: {},
     };
     for (const name of F32) {
         if (map[name]) payload.f32[name] = encodeF32(map[name]);
+    }
+    for (const name of PACKED3) {
+        if (map[name]) payload.packed3[name] = encodeF32(map[name]);
     }
     for (const name of U8) {
         if (map[name]) payload.u8[name] = encodeU8(map[name]);
@@ -118,10 +128,14 @@ function toFields(payload) {
         cells,
     };
     const f32 = payload.f32 || {};
+    const packed3 = payload.packed3 || {};
     const u8 = payload.u8 || {};
     const i32 = payload.i32 || {};
     for (const name of F32) {
         if (f32[name]) fields[name] = decodeF32(f32[name], cells);
+    }
+    for (const name of PACKED3) {
+        if (packed3[name]) fields[name] = decodeF32(packed3[name], cells * 3);
     }
     for (const name of U8) {
         if (u8[name]) fields[name] = decodeU8(u8[name], cells);
@@ -144,7 +158,7 @@ function marker(payload) {
 
 
 module.exports = {
-    F32, U8, I32,
+    F32, PACKED3, U8, I32,
     fromMap,
     toFields,
     marker,

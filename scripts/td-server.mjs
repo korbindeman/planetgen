@@ -14,6 +14,7 @@ import {
   attachThumbs, decodeDataUrl, readCatalog, writeCatalog, writeThumb,
   readShape, writeShape,
 } from "./td-catalog.mjs";
+import { createUserProject, loadUserProjects } from "./td-projects.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
@@ -21,6 +22,8 @@ const Params = require(join(root, "src", "params.js"));
 const Projects = require(join(root, "src", "projects"));
 const rangesPath = join(root, "src", "params-ranges.json");
 const port = Number(process.env.TD_PORT) || 3748;
+
+await loadUserProjects(root, Projects);
 
 function cors(res) {
   const headers = new Headers(res.headers);
@@ -69,6 +72,28 @@ const server = Bun.serve({
       Params.setOverlay(body);
       await Bun.write(rangesPath, JSON.stringify(body, null, 2) + "\n");
       return json({ok: true});
+    }
+    if (url.pathname === "/projects" && req.method === "GET") {
+      return json({
+        projects: Projects.list().filter((p) => !Projects.isShipped(p.name)).map((p) => ({
+          name: p.name,
+          label: p.label,
+          pipeline: p.pipeline,
+          init: p.init || null,
+          body: p.body || null,
+        })),
+      });
+    }
+    if (url.pathname === "/projects" && req.method === "POST") {
+      let body;
+      try { body = await req.json(); }
+      catch { return json({error: "invalid json"}, 400); }
+      try {
+        const project = await createUserProject(root, Projects, body);
+        return json({project}, 201);
+      } catch (err) {
+        return json({error: String(err.message || err)}, err.status || 400);
+      }
     }
     if (url.pathname === "/variants" && req.method === "GET") {
       const q = query(url);

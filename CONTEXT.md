@@ -5,7 +5,7 @@ The studio that discovers one complete planet. The generator is shared; the work
 ## Language
 
 **Project**:
-The named world being made. A project is an evolutionary tree of **variants**, plus an optional **adopted body**. It does not hold a seed or a range box. Thalos is the one being discovered.
+The named world being made. A project is an evolutionary tree of **variants**, plus an optional **adopted body**. It does not hold a seed or a gene range box. During **initialize** it holds **body** buckets. Thalos is the one being discovered.
 _Avoid_: World (the generated body), seed, preset, Earth (that is the fixture)
 
 **Fixture**:
@@ -21,28 +21,44 @@ How full the ocean basin is. A **body** fact. Initialize as buckets (dry, Earth 
 _Avoid_: landFraction, sea level percentage, ocean fraction
 
 **Adopted body**:
-A **body** the **project** has chosen as the default for new **working planets**. Existing variants are not rewritten. A variant whose body differs is a fork.
+A **body** the **project** has chosen as the default for new **working planets**. Existing variants are not rewritten. A variant whose body differs is a fork. Not set during **initialize**.
 _Avoid_: Pin (the old project-wide lock)
+
+**Initialize**:
+The start of a **project**. Name it, then pick **body** buckets (size, age, day, **water**). Buckets are **ranges**, not exact values. The project stores those buckets until an **adopted body** is set. Each generate is a **working planet**. **Save** writes a **variant** with its own body.
+_Avoid_: Wizard, setup, new planet (say new project)
+
+**Bucket**:
+A named interval on a **body** parameter, shown with a real body next to it. Picking Small clamps radius; it does not write 3186.
+_Avoid_: Preset, exact value
 
 **Discover**:
 Layout then Shape. Search, Save, iterate. The tree lives here. The artifact is the **sketch**.
 _Avoid_: Pipeline, authoring (too vague), base
 
 **Finish**:
-Climate → Terrain → Hydrology → Export on a kept **variant**. Overnight and GPU work. Not a place you shuffle.
+Climate → Terrain → Carve → Export on a kept **variant**. Overnight and GPU work. Not a place you shuffle.
 _Avoid_: Pipeline, bake (Terrain is the bake), production, export chain
 
 **Layout**:
-The 10k sim: plates, continents, `climate.js`. Search and shuffle run here. **Body**, tectonics genes, and climate genes live here. A **variant** that has not entered Shape opens here. You can return here to change plates; **Save** writes a child, the parent keeps its **sketch**.
+The 10k sim: plates, continents, `climate.js`. Search and shuffle run here. **Body**, tectonics genes, and climate genes live here. The Layout tab is this map. A **variant** that has not entered Shape opens here. You can return here to change plates; **Save** writes a child, the parent keeps its **sketch**. Layout owes Shape the tectonic story — where trenches, arcs, plumes, and belts are, and how old they are — not only a height field. It keeps the history those maps need. Each later stage adds only the features that belong at its grain.
 _Avoid_: Base, coarse, tectonics (the module), branch (that is a child in the tree)
 
 **Shape**:
-Explicit pass on a saved **variant** that writes the **sketch**. Shape seed, shape genes (warp, ridges, erosion, ice), later sculpting, preview tiles. Cached on that node. A child starts unshaped.
+Explicit pass on a saved **variant** that writes the **sketch**. Reads Layout's story. Writes 23 km features: coasts, island bodies, belt grain, drainage texture. A body here is at least two cells; one-cell cones wait for **Carve**. Shape seed, shape genes (warp, ridges, erosion, ice), later sculpting, preview tiles. Cached on that node. **Regenerate** reruns Shape and overwrites that cache. A child starts unshaped. The Shape tab is this map. It is on only while the sketch is on the globe.
 _Avoid_: Detail pass, regional DEM, 23 km (that is the grain, not the stage), mode (as something you pick)
 
+**Carve**:
+Cuts and stamps on the baked DEM after **Terrain**: rivers, lakes, canyons, fjords, atolls, reefs, islets. **Hydrology** is the drainage work inside it.
+_Avoid_: Landforms, post-diffusion, polish, hydrology (as the stage)
+
+**Hydrology**:
+Drainage on that DEM: rivers, lakes, canyons. Lives inside **Carve**. A consistency pass on already-eroded 90 m terrain, not a second landscape-evolution. How hard to cut is open; see [docs/preparing-for-diffusion.md](docs/preparing-for-diffusion.md).
+_Avoid_: Calling the Finish stage this; treating it as Shape's erosion run again
+
 **Sketch**:
-The height (+ climate channels) at the terrain model's grain (23 km today). Discover writes it. Finish reads it. Spacing is a shipped value, not a gene.
-_Avoid_: Conditioning, coarse map, DEM
+The height, climate, and Layout story maps at the terrain model's grain (23 km today). Discover writes it. Finish reads it — including maps later stamps still need. Spacing is a shipped value, not a gene.
+_Avoid_: Conditioning, coarse map, DEM, height-only
 
 **Layout seed**:
 RNG key for plates and continents. Shuffle this → a **different planet**.
@@ -111,7 +127,7 @@ How tight a **variant**'s **ranges** are versus the vouched intervals. That numb
 _Avoid_: Fitness, generation count, search depth
 
 **Pipeline**:
-Discover then Finish. Stages are Layout, Shape, Climate, Terrain, Hydrology, Export. The UI flow is that order. Preview tiles are a tool, not a stage.
+Discover then Finish. Stages are Layout, Shape, Climate, Terrain, Carve, Export. The UI flow is that order. Preview tiles are a tool, not a stage.
 _Avoid_: Build, export chain, cubesphere, regional DEM, coarse planet, conditioning, base (as a stage), Progress (as a workspace panel)
 
 **Progress**:
@@ -121,6 +137,10 @@ _Avoid_: Pipeline widget, stage list, sidebar rows
 ## Flagged ambiguities
 
 **Seed** is two keys. **Layout seed** is the planet identity. **Shape seed** is coasts. A variant includes both and is more than a seed. Do not say "save this seed" when you mean save a variant.
+
+**Sketch** is not height alone. Finish still needs Layout's story maps (old tracks, extinct arcs) or later stamps have nowhere to go.
+
+**The pipeline is not frozen.** Layout, Shape, **Carve**, and the rest will keep changing for realism. Compact story maps (present, peak, age, strike) are the current handoff, not a lock. Iceland and drowned-margin islands are derived from those maps plus crust and the live boundary; do not add a fifth Layout field until a picture fails.
 
 **Base** is this repo's job (the generator), not a pipeline stage. The Discover stages are **Layout** and **Shape**.
 
@@ -165,11 +185,14 @@ _Avoid_: Pipeline widget, stage list, sidebar rows
 — If I change radius on the working planet, do the old variants change?
 — No. Each snapshot keeps the body it was saved with. Their bakes stay valid.
 
+— I named a project, picked Small and Dry, and hit Create. What is in the file?
+— The **project**: that name and those **buckets**. No **adopted body** yet. The globe is a **working planet** drawn from the buckets.
+
 — I want an ocean world. Do I set land fraction to 5%?
 — No. That is **water**: drowned. Land fraction is not a parameter.
 
 — When do we run the 90 m bake?
-— In **Finish**, after **commit**. Preview tiles can run earlier, per variant, so they do not follow you onto the next candidate.
+— In **Finish**, on the variant you name. Preview tiles can run earlier, per variant, so they do not follow you onto the next candidate.
 
 — Is Earth a root variant of a project?
 — No. Earth is the **fixture**. We know its tectonics; it exists so shaping can be tested on that base.

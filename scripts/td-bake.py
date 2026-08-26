@@ -6,8 +6,9 @@ is why adjacent preview tiles seamed: each U-Net saw a repeated rim, and each
 job had its own origin so they did not share noise at the edge.
 
 This script takes the pad as already-sampled neighbouring ground, places the
-import at the face-grid origin the exporter computed, and writes only the
-interior. Same WorldPipeline, same cost as tiff-export's internal pad.
+import at the face-grid origin the exporter computed, and writes the interior
+plus a one-cell halo past any cube fold. Same-face neighbours share the origin
+plane; a face edge still needs that halo so a later stitch can resample it.
 """
 from __future__ import annotations
 
@@ -57,10 +58,15 @@ def _load(path: Path, internal_scale: float, default_value: float | None) -> np.
 @click.option("--origin-j", type=int, required=True)
 @click.option("--crop-w", type=int, required=True)
 @click.option("--crop-h", type=int, required=True)
+@click.option("--halo-north", type=int, default=0)
+@click.option("--halo-east", type=int, default=0)
+@click.option("--halo-south", type=int, default=0)
+@click.option("--halo-west", type=int, default=0)
 def main(
     tiff_dir, output, model_path, snr, hdf5_file, cache_size, seed, device,
     batch_size, torch_compile, dtype, caching_strategy, chunk_size,
     pad, origin_i, origin_j, crop_w, crop_h,
+    halo_north, halo_east, halo_south, halo_west,
 ):
     tiff_dir = Path(tiff_dir)
     output = Path(output)
@@ -70,6 +76,12 @@ def main(
         raise click.UsageError("--pad must be a positive cell count (use tiff-export for an unpadded crop)")
     if crop_w < 1 or crop_h < 1:
         raise click.UsageError("--crop-w and --crop-h must be positive")
+    for name, value in (
+        ("halo-north", halo_north), ("halo-east", halo_east),
+        ("halo-south", halo_south), ("halo-west", halo_west),
+    ):
+        if value < 0:
+            raise click.UsageError(f"--{name} must be >= 0")
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -106,7 +118,8 @@ def main(
         world.bind(resolve_hdf5_path(hdf5_file) if hdf5_file else "TEMP")
 
     print(f"World seed: {world.seed}")
-    print(f"  origin ({origin_i}, {origin_j})  interior {crop_w}×{crop_h}  pad {pad}")
+    print(f"  origin ({origin_i}, {origin_j})  interior {crop_w}×{crop_h}  pad {pad}"
+          f"  halo n{halo_north} e{halo_east} s{halo_south} w{halo_west}")
 
     ref_transform = None
     ref_crs = None
@@ -151,40 +164,59 @@ def main(
     if chunk_size % PIXELS_PER_CELL != 0:
         raise click.UsageError(f"--chunk-size must be a multiple of {PIXELS_PER_CELL}.")
     chunk_cells = chunk_size // PIXELS_PER_CELL
-    row_chunks = (crop_h + chunk_cells - 1) // chunk_cells
-    col_chunks = (crop_w + chunk_cells - 1) // chunk_cells
 
     interior_i = origin_i + pad
     interior_j = origin_j + pad
+    gen_h = crop_h + halo_north + halo_south
+    gen_w = crop_w + halo_west + halo_east
+    start_i = interior_i - halo_north
+    start_j = interior_j - halo_west
+    ppc = PIXELS_PER_CELL
+    full = np.zeros((gen_h * ppc, gen_w * ppc), dtype=np.int16)
+    row_chunks = (gen_h + chunk_cells - 1) // chunk_cells
+    col_chunks = (gen_w + chunk_cells - 1) // chunk_cells
 
-    with world:
+    def write_tif(path, arr):
+        h, w = arr.shape
+        tiled = h >= 256 and w >= 256
         with rasterio.open(
-            output, "w",
-            driver="GTiff", height=out_h, width=out_w,
+            path, "w",
+            driver="GTiff", height=h, width=w,
             count=1, dtype="int16",
             crs=ref_crs, transform=out_transform,
-            compress="lzw", tiled=True, blockxsize=256, blockysize=256,
+            compress="lzw",
+            tiled=tiled,
+            **({"blockxsize": 256, "blockysize": 256} if tiled else {}),
         ) as dst:
-            with tqdm(total=row_chunks * col_chunks, desc="Generating") as pbar:
-                for ci in range(0, crop_h, chunk_cells):
-                    for cj in range(0, crop_w, chunk_cells):
-                        ci2 = min(ci + chunk_cells, crop_h)
-                        cj2 = min(cj + chunk_cells, crop_w)
+            dst.write(arr, 1)
 
-                        pi1 = (interior_i + ci) * PIXELS_PER_CELL
-                        pi2 = (interior_i + ci2) * PIXELS_PER_CELL
-                        pj1 = (interior_j + cj) * PIXELS_PER_CELL
-                        pj2 = (interior_j + cj2) * PIXELS_PER_CELL
+    with world:
+        with tqdm(total=row_chunks * col_chunks, desc="Generating") as pbar:
+            for ci in range(0, gen_h, chunk_cells):
+                for cj in range(0, gen_w, chunk_cells):
+                    ci2 = min(ci + chunk_cells, gen_h)
+                    cj2 = min(cj + chunk_cells, gen_w)
+                    result = world.get(
+                        (start_i + ci) * ppc, (start_j + cj) * ppc,
+                        (start_i + ci2) * ppc, (start_j + cj2) * ppc,
+                        with_climate=False,
+                    )
+                    elev = np.clip(result["elev"].numpy(), -32768, 32767).astype(np.int16)
+                    full[ci * ppc:ci2 * ppc, cj * ppc:cj2 * ppc] = elev
+                    pbar.update(1)
 
-                        result = world.get(pi1, pj1, pi2, pj2, with_climate=False)
-                        elev = np.clip(result["elev"].numpy(), -32768, 32767).astype(np.int16)
-
-                        window = rasterio.windows.Window(
-                            cj * PIXELS_PER_CELL, ci * PIXELS_PER_CELL,
-                            elev.shape[1], elev.shape[0],
-                        )
-                        dst.write(elev, 1, window=window)
-                        pbar.update(1)
+    hn, hw = halo_north * ppc, halo_west * ppc
+    write_tif(output, full[hn:hn + out_h, hw:hw + out_w])
+    folder = output.parent
+    # Halo column/row 0 is the first sample past the tile, matching td-seam.
+    if halo_east:
+        write_tif(folder / "halo-east.tif", np.ascontiguousarray(full[hn:hn + out_h, hw + out_w:]))
+    if halo_west:
+        write_tif(folder / "halo-west.tif", np.ascontiguousarray(np.fliplr(full[hn:hn + out_h, :hw])))
+    if halo_south:
+        write_tif(folder / "halo-south.tif", np.ascontiguousarray(full[hn + out_h:, hw:hw + out_w]))
+    if halo_north:
+        write_tif(folder / "halo-north.tif", np.ascontiguousarray(np.flipud(full[:hn, hw:hw + out_w])))
 
 
 if __name__ == "__main__":

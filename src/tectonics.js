@@ -606,6 +606,36 @@ function addOrogenyDir(dir, r, r_xyz, plates, mine, other, amount, va, vb, rel) 
 addOrogenyDir._pos = [0, 0, 0];
 
 
+/* Present strength decays. Peak and age-since-refresh do not: Shape still
+ * needs an extinct arc and an old hotspot track after the volcanoes stop.
+ * `before` is present as it was after advection, before this step's paint. */
+function refreshLifetime(present, peak, age, before, dtMyr, n) {
+    for (let r = 0; r < n; r++) {
+        if (present[r] > before[r] + 1e-6) age[r] = 0;
+        else if (peak[r] > 0 || present[r] > 0) age[r] += dtMyr;
+        if (present[r] > peak[r]) peak[r] = present[r];
+    }
+}
+
+
+/* Earth has no step log. After authored paint, peak is whatever present is. */
+function stampLifetime(map) {
+    const n = (map.r_arc && map.r_arc.length) || 0;
+    if (!map.r_arcPeak) map.r_arcPeak = new Float32Array(n);
+    if (!map.r_arcAge) map.r_arcAge = new Float32Array(n);
+    if (!map.r_arcDir) map.r_arcDir = new Float32Array(n * 3);
+    if (!map.r_hotspotPeak) map.r_hotspotPeak = new Float32Array(n);
+    if (!map.r_hotspotAge) map.r_hotspotAge = new Float32Array(n);
+    for (let r = 0; r < n; r++) {
+        if (map.r_arc && map.r_arc[r] > map.r_arcPeak[r]) map.r_arcPeak[r] = map.r_arc[r];
+        if (map.r_hotspot && map.r_hotspot[r] > map.r_hotspotPeak[r]) {
+            map.r_hotspotPeak[r] = map.r_hotspot[r];
+        }
+    }
+    return map;
+}
+
+
 /* Rotate v about a unit axis by `angle` radians (Rodrigues). */
 function rotateAbout(out, v, axis, angle) {
     const c = Math.cos(angle), s = Math.sin(angle);
@@ -860,6 +890,9 @@ const DEFAULTS = {
     hotspotStrength: 0.6,         // per step, while a cell sits over the plume
     hotspotDecay: 0.965,          // per step; an old chain subsides into seamounts
     hotspotUpliftM: 6000,         // crest height over a full-strength hotspot
+    arcRibbonM: 420,              // extinct-arc island body (Curaçao), not a cone
+    ridgePlateauM: 1100,          // plume sitting on a spreading ridge (Iceland)
+    arcRemnantMyr: 40,            // after this, an arc is a ribbon even if present lingers
     orogenyAndean: 0.5,
     orogenyCollision: 1.0,
     weldContact: 0.30,            // accumulated contact needed to fuse two plates,
@@ -1321,7 +1354,12 @@ function initCrust(mesh, r_xyz, seed, opts) {
     const r_orogeny = new Float32Array(numRegions);
     const r_orogenyDir = new Float32Array(numRegions * 3);
     const r_arc = new Float32Array(numRegions);
+    const r_arcPeak = new Float32Array(numRegions);
+    const r_arcAge = new Float32Array(numRegions);
+    const r_arcDir = new Float32Array(numRegions * 3);
     const r_hotspot = new Float32Array(numRegions);
+    const r_hotspotPeak = new Float32Array(numRegions);
+    const r_hotspotAge = new Float32Array(numRegions);
 
     const placement = placeCratons(mesh, r_xyz, opts.cratons, randFloat, opts);
     const plan = opts.cratonPlacement
@@ -1492,7 +1530,11 @@ function initCrust(mesh, r_xyz, seed, opts) {
             : base;
     }
     applyBasins(r_xyz, r_thickness, r_crust_type, opts, null);
-    return {r_crust_type, r_crust_age, r_thickness, r_orogeny, r_orogenyDir, r_arc, r_hotspot};
+    return {
+        r_crust_type, r_crust_age, r_thickness, r_orogeny, r_orogenyDir,
+        r_arc, r_arcPeak, r_arcAge, r_arcDir,
+        r_hotspot, r_hotspotPeak, r_hotspotAge,
+    };
 }
 
 
@@ -1663,7 +1705,7 @@ function advectTangent(out, v, pole, angle, pos) {
 function paintConvergentMargins(mesh, fields, opts) {
     const {
         r_xyz, plates, r_plate, r_crust_type, r_crust_age,
-        r_thickness, r_orogeny, r_orogenyDir, r_arc,
+        r_thickness, r_orogeny, r_orogenyDir, r_arc, r_arcDir,
     } = fields;
     const {numRegions} = mesh;
     const {r_boundary} = classifyBoundaries(mesh, {r_xyz, r_plate, plates});
@@ -1694,6 +1736,7 @@ function paintConvergentMargins(mesh, fields, opts) {
         } else if (r_crust_type[r] === CRUST_CONTINENTAL && facingOceanic) {
             /* ocean going down beneath a continent: an Andean margin */
             r_arc[r] = Math.min(2, r_arc[r] + opts.arcContinental);
+            if (r_arcDir) addOrogenyDir(r_arcDir, r, r_xyz, plates, mine, other, opts.arcContinental, va, vb, rel);
             const added = Math.min(opts.orogenyAndean, 2 - r_orogeny[r]);
             r_orogeny[r] += added;
             if (added > 0) addOrogenyDir(r_orogenyDir, r, r_xyz, plates, mine, other, added, va, vb, rel);
@@ -1701,6 +1744,7 @@ function paintConvergentMargins(mesh, fields, opts) {
         } else if (r_crust_type[r] === CRUST_OCEANIC && facingOceanic && r_crust_age[r] < oldestFacing) {
             /* the younger, lighter slab stays up and carries the arc */
             r_arc[r] = Math.min(2, r_arc[r] + opts.arcOceanic);
+            if (r_arcDir) addOrogenyDir(r_arcDir, r, r_xyz, plates, mine, other, opts.arcOceanic, va, vb, rel);
         }
     }
     return collisions;
@@ -1723,11 +1767,17 @@ function stepTectonics(mesh, map, opts) {
     const {numRegions} = mesh;
     const dtMyr = opts.stepMyr;
 
-    const prevPlate = map.r_plate;
+    const zeros = new Float32Array(numRegions);
+    const zeros3 = new Float32Array(numRegions * 3);
     const prevType = map.r_crust_type, prevAge = map.r_crust_age,
           prevThickness = map.r_thickness, prevOrogeny = map.r_orogeny, prevArc = map.r_arc,
           prevHotspot = map.r_hotspot,
-          prevOrogenyDir = map.r_orogenyDir || new Float32Array(numRegions * 3);
+          prevOrogenyDir = map.r_orogenyDir || zeros3,
+          prevArcPeak = map.r_arcPeak || zeros,
+          prevArcAge = map.r_arcAge || zeros,
+          prevArcDir = map.r_arcDir || zeros3,
+          prevHotPeak = map.r_hotspotPeak || zeros,
+          prevHotAge = map.r_hotspotAge || zeros;
 
     /* Which way is each boundary moving, before anything turns? */
     const {r_boundary} = classifyBoundaries(mesh, map);
@@ -1745,7 +1795,12 @@ function stepTectonics(mesh, map, opts) {
     const nextOrogeny = new Float32Array(numRegions);
     const nextOrogenyDir = new Float32Array(numRegions * 3);
     const nextArc = new Float32Array(numRegions);
+    const nextArcPeak = new Float32Array(numRegions);
+    const nextArcAge = new Float32Array(numRegions);
+    const nextArcDir = new Float32Array(numRegions * 3);
     const nextHotspot = new Float32Array(numRegions);
+    const nextHotPeak = new Float32Array(numRegions);
+    const nextHotAge = new Float32Array(numRegions);
 
     const collisions = new Map();     // "a,b" -> cells of continent-continent contact
     const gained = new Int32Array(plates.length);
@@ -1798,6 +1853,19 @@ function stepTectonics(mesh, map, opts) {
                 nextOrogenyDir[3 * r]     = rotatedDir[0] * opts.orogenyDecay;
                 nextOrogenyDir[3 * r + 1] = rotatedDir[1] * opts.orogenyDecay;
                 nextOrogenyDir[3 * r + 2] = rotatedDir[2] * opts.orogenyDecay;
+                nextArc[r] = prevArc[source_r] * opts.orogenyDecay;
+                nextArcPeak[r] = prevArcPeak[source_r];
+                nextArcAge[r] = prevArcAge[source_r];
+                sampledDir[0] = prevArcDir[3 * source_r];
+                sampledDir[1] = prevArcDir[3 * source_r + 1];
+                sampledDir[2] = prevArcDir[3 * source_r + 2];
+                advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
+                nextArcDir[3 * r]     = rotatedDir[0];
+                nextArcDir[3 * r + 1] = rotatedDir[1];
+                nextArcDir[3 * r + 2] = rotatedDir[2];
+                nextHotspot[r] = prevHotspot[source_r] * opts.hotspotDecay;
+                nextHotPeak[r] = prevHotPeak[source_r];
+                nextHotAge[r] = prevHotAge[source_r];
             } else {
                 nextType[r] = CRUST_OCEANIC;
                 nextAge[r] = 0;
@@ -1813,17 +1881,27 @@ function stepTectonics(mesh, map, opts) {
         nextThickness[r] = sampleField(prevThickness, cells, weights);
         nextOrogeny[r] = sampleField(prevOrogeny, cells, weights) * opts.orogenyDecay;
         nextArc[r] = sampleField(prevArc, cells, weights) * opts.orogenyDecay;
+        nextArcPeak[r] = sampleField(prevArcPeak, cells, weights);
+        nextArcAge[r] = sampleField(prevArcAge, cells, weights);
         nextHotspot[r] = sampleField(prevHotspot, cells, weights) * opts.hotspotDecay;
+        nextHotPeak[r] = sampleField(prevHotPeak, cells, weights);
+        nextHotAge[r] = sampleField(prevHotAge, cells, weights);
         samplePacked3(prevOrogenyDir, cells, weights, sampledDir);
         advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
         nextOrogenyDir[3 * r]     = rotatedDir[0] * opts.orogenyDecay;
         nextOrogenyDir[3 * r + 1] = rotatedDir[1] * opts.orogenyDecay;
         nextOrogenyDir[3 * r + 2] = rotatedDir[2] * opts.orogenyDecay;
+        samplePacked3(prevArcDir, cells, weights, sampledDir);
+        advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
+        nextArcDir[3 * r]     = rotatedDir[0];
+        nextArcDir[3 * r + 1] = rotatedDir[1];
+        nextArcDir[3 * r + 2] = rotatedDir[2];
         if (r_boundary[r] === BOUNDARY_CONVERGENT) lost[nextPlate[r]]++;
     }
 
     /* Mantle plumes sit still while the plates slide over them, which is what
      * writes an age-progressive chain of volcanoes onto the moving floor. */
+    const hotBefore = Float32Array.from(nextHotspot);
     if (map.hotspots) {
         const cosR = Math.cos(opts.hotspotRadius);
         for (const plume of map.hotspots) {
@@ -1834,6 +1912,7 @@ function stepTectonics(mesh, map, opts) {
             }
         }
     }
+    refreshLifetime(nextHotspot, nextHotPeak, nextHotAge, hotBefore, dtMyr, numRegions);
 
     /* Crust type follows from how thick the column is, rather than being
      * carried along as its own label. Oceanic crust is a few kilometres
@@ -1850,6 +1929,7 @@ function stepTectonics(mesh, map, opts) {
      * band a cell or two wide per step, so tying mountain building to that
      * band alone leaves a planet with almost no relief. The Andes are raised
      * continuously above a subducting slab; so are these. */
+    const arcBefore = Float32Array.from(nextArc);
     const painted = paintConvergentMargins(mesh, {
         r_xyz, plates,
         r_plate: nextPlate,
@@ -1859,7 +1939,9 @@ function stepTectonics(mesh, map, opts) {
         r_orogeny: nextOrogeny,
         r_orogenyDir: nextOrogenyDir,
         r_arc: nextArc,
+        r_arcDir: nextArcDir,
     }, opts);
+    refreshLifetime(nextArc, nextArcPeak, nextArcAge, arcBefore, dtMyr, numRegions);
     for (const [key, count] of painted) collisions.set(key, (collisions.get(key) || 0) + count);
 
     /* Continental crust against brand new ocean floor is a rifting margin:
@@ -1913,7 +1995,12 @@ function stepTectonics(mesh, map, opts) {
     map.r_orogeny = nextOrogeny;
     map.r_orogenyDir = nextOrogenyDir;
     map.r_arc = nextArc;
+    map.r_arcPeak = nextArcPeak;
+    map.r_arcAge = nextArcAge;
+    map.r_arcDir = nextArcDir;
     map.r_hotspot = nextHotspot;
+    map.r_hotspotPeak = nextHotPeak;
+    map.r_hotspotAge = nextHotAge;
     return collisions;
 }
 
@@ -2515,19 +2602,37 @@ function crustToMeters(mesh, map, opts) {
  * with `crestFrequency` raised to match, which is the size it was written
  * for. Frequency 8 on the unit sphere is the original 10k tuning. */
 function applyIslandCrests(mesh, r_xyz, meters, r_crust_type, r_arc, r_hotspot, seed, opts) {
-    if (!r_arc) return meters;
+    if (!r_arc && !r_hotspot) return meters;
     const {numRegions} = mesh;
+    const ribbon = opts.islandBody === 'ribbon';
+    const plateau = opts.islandBody === 'plateau';
+    const body = ribbon || plateau;
     const crestNoise = makeFbm(new SimplexNoise(makeRandFloat(seed ^ 0x1c8f4a2d)), 3, 0.5);
     const freq = opts.crestFrequency != null ? opts.crestFrequency : 8;
+    const emerge = body ? 0 : opts.arcEmergeThreshold;
+    const ampArc = ribbon ? opts.arcRibbonM : opts.arcCrestM;
+    const ampHot = plateau ? opts.ridgePlateauM : opts.hotspotUpliftM;
     for (let r = 0; r < numRegions; r++) {
         if (r_crust_type && r_crust_type[r] !== CRUST_OCEANIC) continue;
-        const arc = Math.max(0, r_arc[r] - opts.arcEmergeThreshold);
-        const hot = r_hotspot ? Math.max(0, r_hotspot[r] - opts.arcEmergeThreshold) : 0;
+        const arc = r_arc ? Math.max(0, r_arc[r] - emerge) : 0;
+        const hot = r_hotspot ? Math.max(0, r_hotspot[r] - emerge) : 0;
         if (arc === 0 && hot === 0) continue;
         const x = freq * r_xyz[3 * r], y = freq * r_xyz[3 * r + 1], z = freq * r_xyz[3 * r + 2];
-        const ridge = 1.6 * crestNoise(x, y, z);
-        if (ridge <= 0) continue;
-        meters[r] += ridge * (opts.arcCrestM * arc + opts.hotspotUpliftM * hot);
+        const n = crestNoise(x, y, z);
+        /* A ribbon or plateau is a body, not a peak. Negative noise must
+         * not punch a hole in the sausage. */
+        const ridge = body ? 0.72 + 0.28 * n : 1.6 * n;
+        if (!body && ridge <= 0) continue;
+        if (body) {
+            /* A Curaçao ribbon is a few hundred metres above the sea, not
+             * 420 m on top of the abyss — that never emerges. Lift the
+             * cell to that height. */
+            const dest = ridge * (
+                ampArc * Math.min(1, arc) + ampHot * Math.min(1, hot));
+            if (dest > meters[r]) meters[r] = dest;
+        } else {
+            meters[r] += ridge * (ampArc * arc + ampHot * hot);
+        }
     }
     return meters;
 }
@@ -2799,7 +2904,7 @@ module.exports = {
     sampleWeights, sampleField, samplePacked3,
     generatePlates, removeNetRotation, absorbEnclaves,
     plateVelocity, rotateAbout, nearestRegion,
-    classifyBoundaries, paintConvergentMargins,
+    classifyBoundaries, paintConvergentMargins, stampLifetime,
     placeCratons, initCrust, applyBasins,
     oceanDepthMeters, continentHeightMeters,
     crustToMeters, applyIslandCrests, crustToElevation, polarStraits, solveSeaLevel,

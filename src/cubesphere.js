@@ -389,6 +389,77 @@ function tileBBox(tile) {
     return {west, east, south, north};
 }
 
+const EDGES = ['east', 'north', 'west', 'south'];
+
+/* Which sides of the face this tile sits on. Empty when the tile is
+ * interior to its face. Two entries is a face corner — three faces meet. */
+function faceEdges(tile) {
+    const n = tiles(tile.level);
+    const out = [];
+    if (tile.i === n - 1) out.push('east');
+    if (tile.j === n - 1) out.push('north');
+    if (tile.i === 0) out.push('west');
+    if (tile.j === 0) out.push('south');
+    return out;
+}
+
+/*
+ * One step past the named edge, as a direction. 0.51 of the tile from the
+ * centre is 0.01 into the neighbour, so faceOf is unambiguous — the exact
+ * edge is a tie.
+ */
+function stepPastEdge(tile, edge) {
+    const e = tileExtent(tile);
+    const aMid = (e.a0 + e.a1) / 2;
+    const bMid = (e.b0 + e.b1) / 2;
+    const da = e.a1 - e.a0;
+    const db = e.b1 - e.b0;
+    const k = 0.51;
+    if (edge === 'east') return faceDirection(tile.face, aMid + da * k, bMid);
+    if (edge === 'west') return faceDirection(tile.face, aMid - da * k, bMid);
+    if (edge === 'north') return faceDirection(tile.face, aMid, bMid + db * k);
+    if (edge === 'south') return faceDirection(tile.face, aMid, bMid - db * k);
+    return null;
+}
+
+/*
+ * The tile across a given edge. Interior edges stay on the face (i, j
+ * step). Face edges land on the neighbouring face with that face's own
+ * (i, j) — polar attachments rotate, which is why this goes through ECEF
+ * rather than a hand-coded index map.
+ */
+function neighborTile(tile, edge) {
+    if (!tile || EDGES.indexOf(edge) < 0) return null;
+    const n = tiles(tile.level);
+    if (edge === 'east' && tile.i < n - 1) {
+        return makeTile(tile.face, tile.level, tile.i + 1, tile.j);
+    }
+    if (edge === 'west' && tile.i > 0) {
+        return makeTile(tile.face, tile.level, tile.i - 1, tile.j);
+    }
+    if (edge === 'north' && tile.j < n - 1) {
+        return makeTile(tile.face, tile.level, tile.i, tile.j + 1);
+    }
+    if (edge === 'south' && tile.j > 0) {
+        return makeTile(tile.face, tile.level, tile.i, tile.j - 1);
+    }
+    const p = stepPastEdge(tile, edge);
+    if (!p) return null;
+    const ll = xyzToLonLat(p);
+    return tileAt(ll.lon, ll.lat, tile.level);
+}
+
+/* Named edge of `from` that lands on `to`, or null. Polar joins are not
+ * opposite names: face 1's north is face 4's east. */
+function sharedEdge(from, to) {
+    if (!from || !to) return null;
+    for (let i = 0; i < EDGES.length; i++) {
+        const n = neighborTile(from, EDGES[i]);
+        if (n && sameTile(n, to)) return EDGES[i];
+    }
+    return null;
+}
+
 /* Every tile in the (i, j) rectangle spanned by two tiles on one face. */
 function tileRange(a, b) {
     if (!a || !b || a.face !== b.face || a.level !== b.level) return a ? [a] : [];
@@ -420,9 +491,9 @@ function tileCells(level, radiusKm, scaleKm) {
 }
 
 /*
- * Levels worth offering: a tile has to carry enough coarse cells to be worth
- * conditioning, and few enough that one bake stays a preview rather than a
- * job. Deepest first is deliberate — callers list them coarse to fine.
+ * Bakeable cube levels: enough coarse cells to condition on, few enough that
+ * one bake stays a preview. The picker uses one of these (see bestLevel);
+ * cover more ground by picking more tiles. Coarse to fine.
  */
 function usableLevels(radiusKm, scaleKm, minCells, maxCells) {
     const out = [];
@@ -436,8 +507,8 @@ function usableLevels(radiusKm, scaleKm, minCells, maxCells) {
 }
 
 /*
- * The level to pick tiles at on a planet of this size: the one landing
- * nearest a target ground width, out of those a bake will actually accept.
+ * The one level the picker uses on a planet of this size: nearest the
+ * target ground width, out of those a bake will actually accept.
  *
  * Choosing from the usable set rather than filtering afterwards is the point.
  * The same level covers different ground on different planets — level 4 is
@@ -501,6 +572,10 @@ module.exports = {
     tileCorners,
     tileOutline,
     tileBBox,
+    EDGES,
+    faceEdges,
+    neighborTile,
+    sharedEdge,
     tileRange,
     faceEdgeKm,
     tileEdgeKm,

@@ -50,8 +50,8 @@ collisions. Plates rotate about Euler poles in a no-net-rotation frame; the crus
 
 ## Downstream
 
-1. **Hydrology** — real river networks, discharge, lakes and canyons. The detail pass does a first-stage shaping (priority-flood, stream power, glacial fjords) so slopes and coasts have drainage texture; the fine network is cut after diffusion.
-2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of the sketch. Preview tiles are a Discover **tool**: pick them on the cubesphere grid, bake, drape. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster. How Discover and Finish fit together: [`docs/studio.md`](docs/studio.md).
+1. **Carve** — rivers, lakes, canyons, fjords, and sub-23 km stamps (atolls, reefs, islets) on the baked DEM. Hydrology is the drainage work inside it. The detail pass only roughs drainage texture on the sketch; the fine network is cut after Terrain.
+2. **[terrain-diffusion](https://github.com/xandergos/terrain-diffusion)** — fine-scale terrain on top of the sketch. Preview tiles are a Shape **tool**: pick them on the cubesphere grid, bake, drape. CLI: `bun run export:td` writes `preview/<name>/`. Do not vendor the model; do not `tiff-export` the whole-world raster. How Discover and Finish fit together: [`docs/studio.md`](docs/studio.md).
 
    Tiles are picked on the **cubesphere grid** (`src/cubesphere.js`), the same
    grid the planet-scale bake will use: six equal-angle faces, a quadtree per
@@ -91,12 +91,12 @@ The original 1843 distance-field blend is still available for comparison: the **
 - Elevation (land relief, ocean bathymetry)
 - Climate (temperature, moisture, biomes) as fields on the sphere
 - A globe view that shows those fields clearly
-- Regional terrain-diffusion preview tiles, overlaid on the project (a Discover tool, not a Progress stage)
-- Pipeline status: Layout, Shape, Climate, Terrain, Hydrology, Export
+- Regional terrain-diffusion preview tiles, overlaid on the project (a Shape tool, not a Progress stage)
+- Pipeline status: Layout, Shape, Climate, Terrain, Carve, Export
 
 ## Out of scope
 
-- Real river networks, discharge, lakes and canyons (those wait for the post-diffusion hydrology pass)
+- Real river networks, discharge, lakes, canyons, fjords, atolls (those wait for **Carve**)
 - Photographic globe effects (atmosphere, clouds, specular water) unless we are judging the base
 - Vendoring terrain-diffusion or the hydrology sim into this tree. The studio orchestrates the sibling checkout.
 

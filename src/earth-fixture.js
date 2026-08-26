@@ -559,6 +559,7 @@ function buildEarthMap(mesh, map, options) {
     applyIceDomes(map.r_xyz, map.r_thickness, map.r_crust_type, opts);
 
     Object.assign(map, Tectonics.classifyBoundaries(mesh, map));
+    Tectonics.stampLifetime(map);
     Tectonics.crustToElevation(mesh, map, seed, opts);
     return map;
 }

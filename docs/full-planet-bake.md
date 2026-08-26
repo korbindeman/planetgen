@@ -16,7 +16,7 @@ Bake **90 m globally**. Do not bake a 30 m planet.
 | Layer | Who | Scale | When |
 |---|---|---|---|
 | Landform statistics | terrain-diffusion 90 m | ridges, valley spacing, coast crenulation | offline bake |
-| Drainage | hydrology on that DEM | real rivers, lakes; sub-cell carve if a 90 m channel is too wide | offline, after height freezes |
+| Drainage | hydrology on that DEM | real rivers, lakes, large meander belts and oxbows; creeks stay a reach graph. Consistency pass — do not re-erode the bake, do not D8-straighten floodplains. How hard is open. | offline, after height freezes |
 | Human scale | analytic octaves (HMF, biome/slope-conditioned) | ~90 m → ~0.5 m | lazy, in game |
 
 Aerial is shape at 100 m–few km. That is the 90 m model's job, plus a drainage

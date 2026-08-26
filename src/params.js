@@ -3,14 +3,15 @@
  *
  * Every knob the generator has, in one table, with the metadata the values
  * themselves cannot carry: what unit it is in, what range of it produces a
- * plausible planet, and whether it belongs in the default interface.
+ * plausible planet, and the pretty name the interface shows. A label is
+ * what puts a knob in the default interface.
  *
  * This is deliberately a leaf. It reads DEFAULTS from each module and adds
  * a layer on top; no module requires it back. Values and their reasoning
  * stay where they are, next to the code that uses them. Nothing here can
  * change what the generator produces.
  *
- * Two invariants, both checked on load:
+ * Three invariants, all checked on load:
  *
  *   1. The registry's key set equals the module's DEFAULTS key set. Add a
  *      parameter without registering it and requiring this file throws, so
@@ -18,6 +19,8 @@
  *   2. A parameter with no calibrated `range` cannot be sampled. That is
  *      what makes "shuffle always looks good" structural rather than hoped
  *      for: the sampler can only reach values somebody has vouched for.
+ *   3. Every exposed knob has a unique pretty name. The interface shows
+ *      that, never the camelCase key.
  *
  * `range: null` therefore means "not calibrated yet", not "no limits". It
  * is the worklist, and it is most of the table today.
@@ -52,13 +55,18 @@ const UNITS = [
     '/cell',
 ];
 
-/* p(unit, range, exposed) — range null means uncalibrated, so unshufflable. */
-function p(unit, range = null, exposed = false) {
+/* p(unit, range, label) — range null means uncalibrated, so unshufflable.
+ * A label puts the knob in the default interface. No label, not shown. */
+function p(unit, range = null, label = null) {
     if (!UNITS.includes(unit)) throw new Error(`params: unknown unit "${unit}"`);
     if (range && !(range.length === 2 && range[0] < range[1])) {
         throw new Error(`params: bad range ${JSON.stringify(range)}`);
     }
-    return {unit, range, exposed};
+    if (label != null && (typeof label !== 'string' || !label.trim())) {
+        throw new Error(`params: label must be a non-empty string`);
+    }
+    const trimmed = label ? label.trim() : '';
+    return {unit, range, exposed: !!trimmed, label: trimmed};
 }
 
 
@@ -66,8 +74,8 @@ function p(unit, range = null, exposed = false) {
 
 const TECTONICS = {
     history: {
-        steps:   p('step', [10, 60], true),
-        plates:  p('count', [5, 40], true),
+        steps:   p('step', [10, 60], 'Steps'),
+        plates:  p('count', [5, 40], 'Plates'),
         stepMyr: p('Myr'),
     },
 
@@ -93,7 +101,7 @@ const TECTONICS = {
     },
 
     continents: {
-        cratons:            p('count', [3, 10], true),
+        cratons:            p('count', [3, 10], 'Cratons'),
         cratonSigma:        p('1'),
         cratonWarp:         p('1'),
         cratonElongation:   p('1'),
@@ -113,7 +121,7 @@ const TECTONICS = {
          * some of it over the run and only `emergentFraction` of what is
          * left stands above water, so this is not the land fraction you see.
          * Earth is ~0.41; the range spans that with room either side. */
-        continentFraction:  p('frac', [0.30, 0.60], true),
+        continentFraction:  p('frac', [0.30, 0.60], 'Continent fraction'),
     },
 
     coast: {
@@ -127,9 +135,15 @@ const TECTONICS = {
         detailNoise:    p('1'),
     },
 
+    water: {
+        /* How full the ocean basin is. Dry share is an output. Initialize
+         * as buckets (dry, Earth seas, ocean world); this number is the
+         * dial those buckets clamp. */
+        seaLevelThicknessKm: p('km', [24, 34], 'Water'),
+    },
+
     crust: {
         crustReferenceKm:    p('km'),
-        seaLevelThicknessKm: p('km'),
         crustOceanKm:        p('km'),
         crustMinKm:          p('km'),
         crustShelfKm:        p('km'),
@@ -160,15 +174,18 @@ const TECTONICS = {
         arcEmergeThreshold:  p('1'),
         /* Earth carries roughly ten major plumes. Zero is a legitimate
          * planet, not a degenerate one: no plumes means no island chains. */
-        hotspots:            p('count', [0, 8], true),
+        hotspots:            p('count', [0, 8], 'Hotspots'),
         hotspotRadius:       p('rad'),
         hotspotStrength:     p('/step'),
         hotspotDecay:        p('/step'),
         hotspotUpliftM:      p('m'),
+        arcRibbonM:          p('m'),
+        ridgePlateauM:       p('m'),
+        arcRemnantMyr:       p('Myr'),
     },
 
     polar: {
-        polarStraits:       p('bool', null, true),
+        polarStraits:       p('bool', null, 'Polar straits'),
         polarCapLat:        p('deg'),
         polarCapLand:       p('frac'),
         polarStraitLat:     p('deg'),
@@ -238,7 +255,9 @@ const DETAIL = {
     },
 
     warp: {
-        warpStrength:          p('1'),
+        /* World Orogen Terrain Warp. 0 leaves coasts as the sim drew
+         * them; past ~1 the lookup starts dissolving the layout. */
+        warpStrength:          p('1', [0, 1.2], 'Warp strength'),
         warpFreq:              p('1'),
         warpOctaves:           p('count'),
         warpMaxAmp:            p('rad'),
@@ -246,7 +265,9 @@ const DETAIL = {
         warpBiasStrengthScale: p('1'),
         warpHotspotDampen:     p('1'),
         warpCoastKeep:         p('1'),
-        islandWavelengthKm:    p('km'),
+        /* Octave 0 of the island-crest noise. Shorter breaks chains
+         * into speckle at this grain; longer makes a wall. */
+        islandWavelengthKm:    p('km', [300, 2000], 'Island wavelength'),
     },
 
     ridges: {
@@ -254,7 +275,8 @@ const DETAIL = {
         ridgeWavelengthKm: p('km'),
         ridgeBandwidthKm:  p('km'),
         ridgeJitter:       p('rad'),
-        ridgeAmpM:         p('m'),
+        /* Extra metres of phasor grain on collision belts. */
+        ridgeAmpM:         p('m', [0, 1800], 'Ridge amplitude'),
         ridgeBias:         p('1'),
         ridgeOrogenyMin:   p('1'),
         ridgeElevRampM:    p('m'),
@@ -265,7 +287,9 @@ const DETAIL = {
     },
 
     fluvial: {
-        hydraulicIters: p('index'),
+        /* How many stream-power steps the sketch runs. 0 is no fluvial
+         * texture; this grain cannot hold a real river network. */
+        hydraulicIters: p('index', [0, 12], 'Erosion steps'),
         streamK:        p('1'),
         streamM:        p('1'),
         streamDt:       p('1'),
@@ -283,7 +307,9 @@ const DETAIL = {
 
     glacial: {
         glacialIters:        p('index'),
-        glacialStrength:     p('1'),
+        /* Ice-carve gain on the sketch. 0 is no U-valleys or drowned
+         * high-latitude coasts. */
+        glacialStrength:     p('1', [0, 1], 'Ice carve'),
         iceTemp:             p('temp'),
         iceRamp:             p('temp'),
         paleoIceTemp:        p('temp'),
@@ -339,15 +365,15 @@ const DETAIL = {
  * for, not what looks good, and narrowing them is the calibration work. */
 const WORLD = {
     body: {
-        radiusKm:      p('km',   [1000, 20000], true),
-        gravityG:      p('1',    [0.1, 3], true),
+        radiusKm:      p('km',   [1000, 20000], 'Radius'),
+        gravityG:      p('1',    [0.1, 3], 'Gravity'),
         /* Not a parameter. Dry share is an output of crust and water.
          * The solver still accepts a number if a test asks; default null
          * leaves sea level where the crust puts it. */
         landFraction:  p('frac'),
-        rotationHours: p('h',    [4, 200], true),
-        axialTiltDeg:  p('deg',  [0, 90], true),
-        ageGyr:        p('Gyr',  [0.5, 10], true),
+        rotationHours: p('h',    [4, 200], 'Day length'),
+        axialTiltDeg:  p('deg',  [0, 90], 'Tilt'),
+        ageGyr:        p('Gyr',  [0.5, 10], 'Age'),
     },
 };
 
@@ -499,6 +525,13 @@ function exposed() {
 }
 
 
+/* Pretty name for the interface. The key stays the identifier. */
+function label(name) {
+    const meta = all()[name];
+    return (meta && meta.label) || name;
+}
+
+
 /* Rates written per simulation step or per mesh cell rather than per Myr
  * or per km. These change meaning when the history length, the mesh size
  * or the planet's radius changes, so a range written against one of them
@@ -534,6 +567,27 @@ function checkKeys() {
 }
 
 
+/* An exposed knob must have a unique pretty name. That is what the
+ * interface shows; the key stays the identifier. */
+function checkLabels() {
+    const problems = [];
+    const seen = new Map();
+    for (const [name, meta] of Object.entries(all())) {
+        if (!meta.exposed) continue;
+        if (!meta.label) {
+            problems.push(`${name}: exposed with no label`);
+            continue;
+        }
+        if (seen.has(meta.label)) {
+            problems.push(`${name}: label "${meta.label}" already used by ${seen.get(meta.label)}`);
+        } else {
+            seen.set(meta.label, name);
+        }
+    }
+    return problems;
+}
+
+
 /* Invariant 2: nothing the sampler can reach is uncalibrated. Enforced by
  * construction — `freeable()` filters on `range` — so this only catches a
  * range that is present but nonsense for its unit. */
@@ -556,10 +610,11 @@ function checkRanges() {
 }
 
 
-/* Catalogue body. landFraction is not among these. Water is not a
- * registered parameter yet — seaLevelThicknessKm is still the dial. */
+/* Catalogue body. landFraction is not among these. Water is the basin
+ * fill dial (`seaLevelThicknessKm`). */
 const BODY_NAMES = [
     'radiusKm', 'gravityG', 'rotationHours', 'axialTiltDeg', 'ageGyr',
+    'seaLevelThicknessKm',
 ];
 
 
@@ -653,7 +708,7 @@ function checkValues(label, values) {
 }
 
 
-const problems = checkKeys().concat(checkRanges()).concat(checkOverlay(overlay));
+const problems = checkKeys().concat(checkRanges()).concat(checkOverlay(overlay)).concat(checkLabels());
 if (problems.length) {
     throw new Error('params registry is out of date:\n  ' + problems.join('\n  '));
 }
@@ -676,9 +731,11 @@ module.exports = {
     pickBody,
     freeable,
     exposed,
+    label,
     needsNormalisation,
     checkKeys,
     checkRanges,
+    checkLabels,
     checkValue,
     checkProject,
     checkValues,

@@ -25,6 +25,9 @@ const Planet = require(join(root, "src", "planet.js"));
 const Render = require(join(root, "src", "software-render.js"));
 const Projects = require(join(root, "src", "projects"));
 const Params = require(join(root, "src", "params.js"));
+const { loadUserProjects } = await import("./td-projects.mjs");
+
+await loadUserProjects(root, Projects);
 
 const args = Object.fromEntries(
   process.argv.slice(2)

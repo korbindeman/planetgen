@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { listTdOverlays } from "./td-overlays.mjs";
+import { loadUserProjects, writeUserProject } from "./td-projects.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
@@ -87,12 +88,19 @@ check("resolving does not mutate the pristine snapshot",
 
 /* 5. The panel resolves every exposed parameter's default from the pristine
       snapshot, so a module missing from it would render "free" forever. */
+const labels = new Set();
 for (const name of Params.exposed()) {
     const meta = Params.all()[name];
     const snapshot = Projects.PRISTINE[meta.module];
     check(`${name} has a pristine default (${meta.module})`,
         snapshot !== undefined && name in snapshot,
         snapshot === undefined ? `no snapshot for module ${meta.module}` : "missing key");
+    const pretty = Params.label(name);
+    check(`${name} has a pretty name`,
+        typeof pretty === "string" && pretty.length > 0 && pretty !== name,
+        pretty === name ? "still the camelCase key" : `got ${JSON.stringify(pretty)}`);
+    check(`${name} pretty name is unique`, !labels.has(pretty), pretty);
+    labels.add(pretty);
 }
 
 /* 6. A caller overlay replaces the authored bag. A missing key is free. */
@@ -157,7 +165,7 @@ for (const project of Projects.PROJECTS) {
     const ids = Projects.STAGES.map(s => s.id);
     check("pipeline stages are unique", new Set(ids).size === ids.length);
     check("pipeline stages are layout → export",
-        ids.join(",") === "layout,shape,climate,terrain,hydrology,export",
+        ids.join(",") === "layout,shape,climate,terrain,carve,export",
         ids.join(","));
     for (const project of Projects.PROJECTS) {
         const problems = Projects.checkPipeline(project);
@@ -178,7 +186,7 @@ for (const project of Projects.PROJECTS) {
 {
     const Variants = Projects.Variants;
     const pins = Object.assign({}, Projects.authored("thalos"));
-    const sampled = {plates: 17, continentFraction: 0.44, radiusKm: pins.radiusKm};
+    const sampled = {plates: 17, continentFraction: 0.44, warpStrength: 0.9, radiusKm: pins.radiusKm};
     const variant = Variants.ofWorking({
         project: "thalos",
         seed: 4242,
@@ -190,7 +198,8 @@ for (const project of Projects.PROJECTS) {
         variant && !("radiusKm" in variant.values)
         && variant.body.radiusKm === pins.radiusKm
         && variant.values.plates === 17
-        && variant.values.continentFraction === 0.44);
+        && variant.values.continentFraction === 0.44
+        && variant.values.warpStrength === 0.9);
     check("variant pins are body-only",
         variant.pins.radiusKm === pins.radiusKm && !("plates" in variant.pins));
     check("variant keeps the seed and project",
@@ -670,8 +679,70 @@ for (const project of Projects.PROJECTS) {
     }
 }
 
-/* 11. Startup has one implementation. The first-paint script only
- * toggles the picker from the same keys. */
+/* 11. Initialize: buckets are ranges, user projects register, shipped names
+ * stay reserved. */
+{
+    const Init = Projects.Init;
+    check("Small does not write an exact radius",
+        Init.rangesOf({size: "small"}).radiusKm[0] !== 3186
+        && Init.rangesOf({size: "small"}).radiusKm[1] !== 3186);
+    const drawn = Init.draw({init: {size: "small", age: "earth", day: "earth", water: "dry"}}, 1);
+    const small = Init.rangesOf({size: "small"}).radiusKm;
+    const dry = Init.rangesOf({water: "dry"}).seaLevelThicknessKm;
+    check("a draw from Small stays in the Small box",
+        drawn.radiusKm >= small[0] && drawn.radiusKm <= small[1]);
+    check("a draw from Dry stays in the Dry box",
+        drawn.seaLevelThicknessKm >= dry[0] && drawn.seaLevelThicknessKm <= dry[1]);
+    check("initialize pins gravity and tilt at Earth",
+        drawn.gravityG === Projects.PRISTINE.world.gravityG
+        && drawn.axialTiltDeg === Projects.PRISTINE.world.axialTiltDeg);
+    try {
+        Init.buildRecord({label: "Thalos", init: Init.DEFAULTS});
+        check("Thalos is reserved", false);
+    } catch (err) {
+        check("Thalos is reserved", /already a project/.test(err.message));
+    }
+    try {
+        Init.buildRecord({label: "Earth", init: Init.DEFAULTS});
+        check("Earth is reserved", false);
+    } catch (err) {
+        check("Earth is reserved", /already a project/.test(err.message));
+    }
+    const record = Init.buildRecord({label: "Kephos", init: {size: "small", water: "ocean"}});
+    check("Create slugs the name and keeps the buckets",
+        record.name === "kephos" && record.label === "Kephos"
+        && record.init.size === "small" && record.init.water === "ocean"
+        && !record.body);
+    check("water is a body parameter",
+        Params.isBody("seaLevelThicknessKm") && Params.phase("seaLevelThicknessKm") === "body");
+
+    Projects.resetRegistry();
+    const tmp = join(tmpdir(), `planetgen-init-${Date.now()}`);
+    try {
+        await mkdir(join(tmp, "preview", "kephos"), {recursive: true});
+        const saved = await writeUserProject(tmp, Projects, record);
+        check("a user project registers under its slug",
+            saved.name === "kephos" && Projects.byName("kephos").init.water === "ocean");
+        Projects.resetRegistry();
+        const loaded = await loadUserProjects(tmp, Projects);
+        check("loadUserProjects picks up preview/<name>/project.json",
+            loaded.length === 1 && loaded[0].name === "kephos"
+            && Boot.knownProject("kephos") === "kephos");
+        const authored = Projects.authored("kephos");
+        check("authored draw of an initializing project stays in its buckets",
+            authored.radiusKm >= small[0] && authored.radiusKm <= small[1]
+            && authored.seaLevelThicknessKm >= Init.rangesOf({water: "ocean"}).seaLevelThicknessKm[0]);
+        const opened = Boot.resolveStartup({search: "?project=kephos", stored: null});
+        check("a registered user project is a deep link",
+            opened.skipPicker === true && opened.project === "kephos");
+    } finally {
+        Projects.resetRegistry();
+        await rm(tmp, {recursive: true, force: true});
+    }
+}
+
+/* 12. Startup has one implementation. The first-paint script only
+ * skips the picker for shipped names plus seed/variant query keys. */
 {
     const fresh = Boot.resolveStartup({search: "", stored: null});
     check("no query and no store opens the picker",
@@ -720,8 +791,37 @@ for (const project of Projects.PROJECTS) {
         Boot.storedVariantsOf({thalos: "vabc123"}).thalos === "vabc123");
 }
 
+{
+    const {discoverStage} = require(join(root, "src/studio/stage.js"));
+    check("explore is layout even if the globe is shaped",
+        discoverStage({searchSession: {}, host: {isShaped: () => true}}) === "layout");
+    check("the Shape tab follows the globe, not a stored intent",
+        discoverStage({ui: {stageIntent: "shape"}, host: {isShaped: () => false}}) === "layout");
+    check("a shaped globe is the Shape tab",
+        discoverStage({host: {isShaped: () => true}}) === "shape");
+    check("an unshaped globe is the Layout tab even if the variant is marked shaped",
+        discoverStage({host: {isShaped: () => false}, variant: {shaped: true}}) === "layout");
+}
+
 check("polarStraits is an exposed parameter",
     Params.exposed().includes("polarStraits"));
+check("water is exposed on Layout as a body fact",
+    Params.exposed().includes("seaLevelThicknessKm")
+    && Params.phase("seaLevelThicknessKm") === "body");
+
+{
+    const shapeGenes = Params.exposed().filter((name) => Params.phase(name) === "shape").sort();
+    const expected = [
+        "glacialStrength", "hydraulicIters", "islandWavelengthKm",
+        "ridgeAmpM", "warpStrength",
+    ];
+    check("shape genes are the exposed detail knobs",
+        shapeGenes.join() === expected.join(),
+        `got ${shapeGenes.join(", ")}`);
+    for (const name of expected) {
+        check(`${name} has a vouched range`, !!Params.vouchedRange(name));
+    }
+}
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall passed");
 process.exit(failures.length ? 1 : 0);

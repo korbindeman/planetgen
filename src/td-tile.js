@@ -37,6 +37,15 @@ const MAX_CELLS = 24;
 const CONTEXT_PAD = 64;
 
 /*
+ * Coarse cells of 90 m output generated past a *face* edge, then stripped
+ * from the draped interior. Same-face tiles do not need this — they already
+ * share WorldPipeline coordinates. A cube fold does: the halo is that
+ * neighbour's ground in this face's continuation, so a stitch can resample
+ * it instead of averaging two different noise fields at a cut.
+ */
+const SEAM_HALO_CELLS = 1;
+
+/*
  * WorldPipeline cell of the padded raster's top-left. Adjacent tiles on
  * one face share this plane, so they share noise at the edge instead of
  * each starting at (0, 0) with a repeated rim. Row 0 is north (high j):
@@ -50,9 +59,23 @@ function contextOrigin(tile, cells, pad = CONTEXT_PAD) {
     };
 }
 
-/* What a picked tile should cover on the ground, give or take. The level that
- * lands nearest this is the default, per planet — a tile is a fixed slice of
- * the sphere, so the same level means different ground on a smaller planet. */
+/* Output halo only on cube folds. Same-face edges already share a plane. */
+function haloCellsFor(tile, cells = SEAM_HALO_CELLS) {
+    if (!tile) return {north: 0, east: 0, south: 0, west: 0};
+    const n = 1 << tile.level;
+    const h = Math.max(0, cells | 0);
+    return {
+        north: tile.j === n - 1 ? h : 0,
+        east: tile.i === n - 1 ? h : 0,
+        south: tile.j === 0 ? h : 0,
+        west: tile.i === 0 ? h : 0,
+    };
+}
+
+/* What a preview tile covers on the ground. The picker uses this one size:
+ * the bakeable cube level nearest it, per planet. Cover more ground by
+ * picking more tiles, not a coarser level. A tile is a fixed slice of the
+ * sphere, so the same level means different ground on a smaller planet. */
 const TARGET_TILE_KM = 310;
 /* 1 is the whole planet. 512 is enough that a 90 m cell is a couple of
  * screen pixels — Maps-style inspect, not a street view. */
@@ -72,9 +95,11 @@ module.exports = {
     MIN_CELLS,
     MAX_CELLS,
     CONTEXT_PAD,
+    SEAM_HALO_CELLS,
     TARGET_TILE_KM,
     ZOOM_MIN,
     ZOOM_MAX,
     wrapLon,
     contextOrigin,
+    haloCellsFor,
 };

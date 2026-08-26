@@ -348,18 +348,18 @@ function arc(p, q) {
         Cube.tileRange(a, {face: 3, level: 4, i: 0, j: 0}).length === 1);
 }
 
-/* 11. The levels offered are the ones that make a sane bake. */
+/* 11. The picker uses one tile size: the bakeable level nearest 310 km. */
 {
     const scaleKm = 23;
-    for (const [name, radiusKm] of [["thalos", 3186], ["earth", 6371]]) {
-        const levels = Cube.usableLevels(radiusKm, scaleKm, 6, 24);
-        const detail = levels
-            .map((l) => `L${l} ${Cube.tileEdgeKm(l, radiusKm).toFixed(0)}km ${Cube.tileCells(l, radiusKm, scaleKm)}cells`)
-            .join(", ");
-        check(`${name} offers usable levels`, levels.length >= 2, detail);
-        console.log(`        ${detail}`);
-        const cells = levels.map((l) => Cube.tileCells(l, radiusKm, scaleKm));
-        check(`${name} levels stay inside the job cap`, cells.every((c) => c >= 6 && c <= 24));
+    for (const [name, radiusKm, want] of [["thalos", 3186, 4], ["earth", 6371, 5]]) {
+        const level = Cube.bestLevel(310, radiusKm, scaleKm, 6, 24);
+        const cells = Cube.tileCells(level, radiusKm, scaleKm);
+        const km = Cube.tileEdgeKm(level, radiusKm);
+        const window = Cube.usableLevels(radiusKm, scaleKm, 6, 24);
+        check(`${name} picker is L${want}`, level === want, `got L${level}`);
+        check(`${name} picker stays inside the job cap`, cells >= 6 && cells <= 24, `${cells} cells`);
+        check(`${name} picker is in the bakeable window`, window.includes(level), `${window}`);
+        console.log(`        ${name}: L${level}, ${cells} cells, ${km.toFixed(0)} km`);
     }
     check("a 310 km target picks one level per radius",
         Cube.levelForKm(310, 3186) === 4 && Cube.levelForKm(310, 6371) === 5,
@@ -384,7 +384,7 @@ function arc(p, q) {
             `L${level} is ${cells} cells, cap is ${TdTile.MIN_CELLS}-${TdTile.MAX_CELLS}`);
         console.log(`        ${name}: L${level}, ${cells} cells, ${Cube.tileEdgeKm(level, radiusKm).toFixed(0)} km`);
     }
-    /* And every level the stepper offers, not just the default. */
+    /* The bakeable window bestLevel chooses from has to stay in cap too. */
     let bad = 0;
     for (let radiusKm = 1000; radiusKm <= 20000; radiusKm += 250) {
         for (const level of Cube.usableLevels(radiusKm, TdTile.SCALE_KM, TdTile.MIN_CELLS, TdTile.MAX_CELLS)) {
@@ -392,7 +392,7 @@ function arc(p, q) {
             if (cells < TdTile.MIN_CELLS || cells > TdTile.MAX_CELLS) bad++;
         }
     }
-    check("every offered level is bakeable, at every radius", bad === 0, `${bad} out of range`);
+    check("every bakeable level stays in cap, at every radius", bad === 0, `${bad} out of range`);
 }
 
 /*
@@ -443,6 +443,146 @@ function arc(p, q) {
         oN.originI === oL.originI - cells, `${oN.originI} vs ${oL.originI - cells}`);
     check("CONTEXT_PAD is the U-Net window tiff-export uses",
         TdTile.CONTEXT_PAD === 64);
+}
+
+/*
+ * 14. Face adjacency. A cube edge is a 90° fold in WorldPipeline space, so
+ * the neighbour is another face's (i, j), sometimes rotated. Polar joins
+ * are not opposite names. Every border tile must point at someone, and
+ * that someone must point back.
+ */
+{
+    let missing = 0;
+    let oneWay = 0;
+    let sameFace = 0;
+    let pairs = 0;
+    for (let level = 0; level <= 4; level++) {
+        const n = 1 << level;
+        for (let face = 0; face < 6; face++) {
+            for (let j = 0; j < n; j++) {
+                for (let i = 0; i < n; i++) {
+                    const tile = {face, level, i, j};
+                    for (const edge of Cube.faceEdges(tile)) {
+                        const nb = Cube.neighborTile(tile, edge);
+                        if (!nb) { missing++; continue; }
+                        if (nb.face === tile.face) { sameFace++; continue; }
+                        pairs++;
+                        if (Cube.sharedEdge(nb, tile) == null) oneWay++;
+                    }
+                }
+            }
+        }
+    }
+    check("every face-edge tile has a neighbour on another face",
+        missing === 0 && sameFace === 0,
+        `${missing} missing, ${sameFace} stayed on face`);
+    check("face-edge neighbours point back", oneWay === 0, `${oneWay} of ${pairs} one-way`);
+
+    const eq = Cube.neighborTile({face: 0, level: 2, i: 3, j: 1}, "east");
+    check("equatorial east keeps j and lands on +y",
+        eq && eq.face === 1 && eq.i === 0 && eq.j === 1,
+        eq ? Cube.tileName(eq) : "null");
+    const polar = Cube.neighborTile({face: 1, level: 2, i: 2, j: 3}, "north");
+    check("face 1 north rotates onto +z east",
+        polar && polar.face === 4 && polar.i === 3,
+        polar ? Cube.tileName(polar) : "null");
+    check("a face-interior east step stays on the face",
+        Cube.neighborTile({face: 0, level: 2, i: 1, j: 1}, "east").face === 0);
+}
+
+/*
+ * 15. Face-edge stitch, against a spherical field — no GPU. If the warp
+ * from one face's continuation into the other's UV is right, resampling
+ * a halo of p.z (smooth on the sphere) lands on the neighbour's own
+ * samples. Independent noise then has to follow that halo at the fold,
+ * or the join is still a cut.
+ */
+{
+    const Seam = require(join(root, "src", "td-seam.js"));
+    const TdTile = require(join(root, "src", "td-tile.js"));
+    const field = (p) => p[2];
+    const W = 48;
+    const haloPx = 12;
+    const aTile = {face: 0, level: 2, i: 3, j: 2};
+    const bTile = Cube.neighborTile(aTile, "east");
+    check("the stitch fixture is a face fold", bTile && bTile.face === 1, Cube.tileName(bTile || {}));
+
+    const src = {
+        tile: aTile,
+        width: W,
+        height: W,
+        elev: Seam.rasterizeTile(aTile, W, W, field),
+        halo: {east: Seam.rasterizeHalo(aTile, "east", W, W, haloPx, field)},
+    };
+    let worst = 0;
+    let hits = 0;
+    for (let y = 0; y < W; y++) {
+        const d = Cube.tileDirection(bTile, 0.5 / W, (y + 0.5) / W);
+        const ll = Cube.xyzToLonLat(d);
+        const got = Seam.sampleSrc(src, ll.lon, ll.lat);
+        const want = field(d);
+        if (got == null || !Number.isFinite(got)) continue;
+        hits++;
+        worst = Math.max(worst, Math.abs(got - want));
+    }
+    check("east halo resamples onto +y west at the field's own values",
+        hits > W * 0.8 && worst < 0.02,
+        `hits ${hits}/${W}, err ${worst.toFixed(4)}`);
+
+    const dest = {
+        tile: bTile,
+        width: W,
+        height: W,
+        elev: Seam.rasterizeTile(bTile, W, W, (p) => field(p) + 0.4),
+    };
+    const moved = Seam.blendFromNeighbor(dest, src);
+    let edgeErr = 0;
+    for (let y = 0; y < W; y++) {
+        edgeErr = Math.max(edgeErr, Math.abs(dest.elev[y * W] - field(
+            Cube.tileDirection(bTile, 0.5 / W, (y + 0.5) / W),
+        )));
+    }
+    check("a biased neighbour follows the halo at the fold",
+        moved > 0 && edgeErr < 0.05,
+        `moved ${moved}, edge err ${edgeErr.toFixed(4)}`);
+
+    const cTile = {face: 1, level: 2, i: 2, j: 3};
+    const dTile = Cube.neighborTile(cTile, "north");
+    const polarSrc = {
+        tile: cTile,
+        width: W,
+        height: W,
+        elev: Seam.rasterizeTile(cTile, W, W, field),
+        halo: {north: Seam.rasterizeHalo(cTile, "north", W, W, haloPx, field)},
+    };
+    const polarDest = {
+        tile: dTile,
+        width: W,
+        height: W,
+        elev: Seam.rasterizeTile(dTile, W, W, (p) => field(p) + 0.4),
+    };
+    Seam.blendFromNeighbor(polarDest, polarSrc);
+    const pEdge = Cube.sharedEdge(dTile, cTile);
+    let polarErr = 0;
+    for (let k = 0; k < W; k++) {
+        const x = pEdge === "east" ? W - 1 : pEdge === "west" ? 0 : k;
+        const y = pEdge === "south" ? W - 1 : pEdge === "north" ? 0 : k;
+        polarErr = Math.max(polarErr, Math.abs(polarDest.elev[y * W + x] - field(
+            Cube.tileDirection(dTile, (x + 0.5) / W, (y + 0.5) / W),
+        )));
+    }
+    check("a rotated polar fold stitches the same way",
+        pEdge && polarErr < 0.05,
+        `edge ${pEdge}, err ${polarErr.toFixed(4)}`);
+    check("SEAM_HALO_CELLS is one coarse cell of overlap",
+        TdTile.SEAM_HALO_CELLS === 1);
+    const interiorHalo = TdTile.haloCellsFor({face: 0, level: 3, i: 3, j: 3});
+    const foldHalo = TdTile.haloCellsFor({face: 0, level: 3, i: 7, j: 4});
+    check("an interior tile generates no face-edge halo",
+        interiorHalo.east === 0 && interiorHalo.west === 0
+        && interiorHalo.north === 0 && interiorHalo.south === 0);
+    check("a +x east fold generates an east halo only",
+        foldHalo.east === 1 && foldHalo.west === 0 && foldHalo.north === 0 && foldHalo.south === 0);
 }
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall good");

@@ -14,7 +14,7 @@ planetgen layout (~10k) then Shape (23 km sketch)
     → optional polish            fill sinks, lapse-rate climate, stitch tiles
 ```
 
-Do not try to finish coasts, river valleys, or eroded slopes inside planetgen. The 1843 distance-field heightmap is supposed to stay a blobby continental sketch. Terrain-diffusion redraws local shape. Hydrology then cuts channels.
+Do not try to finish coasts, river valleys, or eroded slopes inside planetgen. The 1843 distance-field heightmap is supposed to stay a blobby continental sketch. Terrain-diffusion redraws local shape. Hydrology then makes drainage coherent — it does not re-erode that shape. How hard is open.
 
 Sibling checkout (not vendored here): `~/dev/terrain-diffusion`. Weights: Hugging Face `xandergos/terrain-diffusion-90m` or `…-30m`.
 
@@ -69,7 +69,9 @@ Consequences:
 - Features that exist only as a thin anomaly in a tiny crop get healed. A hand-drawn canyon one or two cells wide does not survive.
 - Prefer windows where the landform of interest is a **large fraction** of the crop, or use a bigger crop.
 
-Cube-grid preview tiles do not use that edge-repeat. The exporter rasterizes 64 cells of real neighbouring ground (including across a face edge) and `scripts/td-bake.py` feeds that pad to WorldPipeline at a face-grid origin, so adjacent tiles share coordinates at the seam instead of each starting at (0, 0). Isolated lon/lat crops still go through `tiff-export`.
+Cube-grid preview tiles do not use that edge-repeat. The exporter rasterizes 64 cells of real neighbouring ground (including across a face edge) and `scripts/td-bake.py` feeds that pad to WorldPipeline at a face-grid origin, so adjacent tiles **on one face** share coordinates at the seam instead of each starting at (0, 0). A cube fold is a 90° turn in that plane, so those jobs also generate a one-cell halo past the edge; when the neighbour is already baked, the new tile's DEM is resampled and blended against that halo. Isolated lon/lat crops still go through `tiff-export`.
+
+**Needs a real bake.** `bun run check:tiles` proves the warp on a spherical field, not 90 m noise. Pick two tiles that share a **cube edge** (not two on the same face), bake both, and crop the join from orbit and at Maps-style zoom. Same-face pairs are a different path (shared origin). A cube corner (three faces) is the ugly case and still unchecked.
 
 ### SNR (how hard to lock the sketch)
 
@@ -190,18 +192,32 @@ Think **Azgaar-style painted map**, not SRTM.
 
 Canyons in the Grand Canyon sense need **relief + concentrated drainage + dryness**. Diffusion will etch dendritic gorges into an escarpment. It will not invent a master canyon on a flat.
 
-## Hydrology pass (after diffusion)
+## Hydrology pass (after diffusion) — open
 
-This is the stage that **actually cuts rivers**. Planetgen's detail pass only roughs in drainage texture on a 50 km mesh; this pass belongs on the DEM, and it is not what `tiff-export` does (that only paints drainage *texture*).
+This pass is how the planet gets **believable drainage**: rivers that reach the sea, lakes in real basins, a trunk you can follow. Diffusion cannot give that. It is trained on Earth DEMs, so local landform statistics (ridge sharpness, valley spacing, crenulation) already look eroded. What it does not have is non-local coherence — a catchment, a mouth, a hanging valley that actually joins the next. That is why Carve exists, and it is a large part of whether the finished planet feels interesting.
 
-Run it on the **90 m / 30 m DEM**, sea level still at 0.
+**Open research question.** How hard to touch the bake. A second landscape-evolution pass (Shape's stream-power recipe, a real hillslope `K`, uncapped incision on every high-area cell) will slot valley floors, round ridges, and spend the high frequencies the U-Net just drew. The bake table already splits the jobs: diffusion owns landform statistics; hydrology owns drainage. Those must not use the same knobs.
 
-A useful split:
+Working stance, not a settled method:
 
-1. **Fill or breach sinks** so flow can reach the ocean (priority-flood; terrain-diffusion already has `fill_depressions_priority_flood` in `inference/postprocessing.py`). Cap fill depth if you want real endorheic basins.
+- Consistency, not landform creation. D8 on an already-dissected DEM follows the model's valleys. The defects are pits, hanging segments, false divides, a trunk that never reaches the sea. Measure those first. The carve budget is the defects, not “10 Fastscape steps.”
+- Breach, do not fill, except where a lake is the feature. Cap fill depth for endorheic basins. Filling a pit to the spill and painting a river across it is how the model's interior dies.
+- Incise to hydraulic geometry, then stop. Target a channel depth/width from discharge. If the model's valley is already deeper, leave it. Most cells should take `Δz = 0`.
+- Mask. `z_out = z_diff + Δ` with `Δ` nonzero only on the channel (and maybe a one-cell bank). No global hillslope term on inherited terrain. Optional hillslope is only for slots *this* pass just cut.
+- Most of the network never enters the DEM. A 90 m cell is already a wide river. Order-1–3 streams stay a reach graph. Only trunks and real canyons edit height. Creek meanders are that graph (a spline at runtime), not extra pixels.
+- The one heavy cut is a false divide: a ridge the model treated as a watershed that hydrology says is a pass. Surgical, a few cells, not a planet-wide `K`.
+- Meanders are a floodplain process, not more incision. Do not D8-carve a floodplain “so the river drains.” Steepest descent through a meander belt is a cutoff and straightens it. Bedrock gorges stay dendritic; alluvial valleys keep or get a planform.
+
+Do not reuse Shape's priority-flood + stream-power recipe on the bake. That recipe is for a 23 km blob so the model sees valleys.
+
+Judge a trial the same way as everything else: crop a bake, run a light pass, crop the same valley. If the ridges moved, `K` is too high.
+
+Candidate operations (structure only; strength is the open part). Run on the **90 m / 30 m DEM**, sea level still at 0.
+
+1. **Fill or breach sinks** so flow can reach the ocean (priority-flood; terrain-diffusion already has `fill_depressions_priority_flood` in `inference/postprocessing.py`). Prefer breach. Cap fill depth if you want real endorheic basins.
 2. **Route flow** (D8 or similar) and accumulate contributing area. Same file has `d8_flow` / `flow_accumulation`. Ocean (`z <= 0`) is the sink.
-3. **Incise** along the network. Stream-power style: carve more where area × slope is high. This is the river / gorge / canyon step.
-4. **Hillslope** (optional): mild diffusion or debris-slope on steep walls so you do not keep infinitely sharp slots. Weak diffusion in dry rock keeps canyon walls; strong diffusion in wet soil opens V-valleys.
+3. **Incise** along the network, only where the existing valley is shallower than the hydraulic target, or a saddle blocks a trunk. Stream-power style: carve more where area × slope is high.
+4. **Hillslope** (optional, and off on inherited slopes): mild diffusion or debris-slope on walls this pass just cut, so you do not keep infinitely sharp slots. Weak diffusion in dry rock keeps canyon walls; strong diffusion in wet soil opens V-valleys.
 
 Canyons vs ordinary valleys is a ratio, not a flag:
 
@@ -209,7 +225,21 @@ Canyons vs ordinary valleys is a ratio, not a flag:
 - **Valley:** same process, more smoothing or less drop.
 - **Wash:** dryness and no drop. Hydrology will not turn the pancake interior into Grand Canyon.
 
-A single Colorado-style trench needs one master river capturing a large plateau while the rims stay high. Equal carving of every tributary gives a dissected plateau (closer to what diffusion already sketches). You can bias the trunk (pour point, extra area, higher K on one path) if you want that look.
+A single Colorado-style trench needs one master river capturing a large plateau while the rims stay high. Equal carving of every tributary gives a dissected plateau (closer to what diffusion already sketches). Bias the trunk (pour point, extra area, higher `K` on one path) if you want that look — do not raise `K` everywhere.
+
+### Meanders and oxbows
+
+In scope. Stream-power does not grow them: incision deepens, it does not wander.
+
+Meander wavelength is about **10–12× channel width**. A loop train that reads as geology, not noise, wants λ ≳ 1 km, so bankfull width ≳ 70–100 m. That is a river. Oxbows are abandoned loops of that size — a Mississippi-class cutoff is a 1–5 km lake, inside the 90 m bake. A 30 m creek’s meanders are not: they live on the reach graph and in the analytic octaves below 90 m.
+
+Three grains:
+
+- **Aerial (90 m DEM).** Large meander belts and oxbow lakes. First keep what diffusion already drew (Earth 90 m DEMs are full of these; the U-Net will paint them in low-gradient wet valleys). Hydrology follows that centerline. `Δz` only where the channel is hanging or blocked, and stay inside the existing belt. Then, on alluvial reaches that came out too straight (large area, low slope, not a bedrock canyon), synthesize a kinematic meander (sine-generated curve, or Howard–Humber / Lancaster–Bras) and incise a narrow channel; leave the floodplain from the bake. Oxbows are cutoffs: when a neck is thin, abandon the loop and leave it as a capped lake. Graph edit plus a few metres of height, not another erosion pass.
+- **Approach (optional 30 m, local).** Medium rivers, wavelength a few hundred metres. Only if low flight still looks like a canal after the 90 m belt. Not a global bake.
+- **Walking (analytic, 90 m → ~0.5 m).** Creek meanders as a centerline spline with displacement, draped at runtime.
+
+Do not grow meanders with more 90 m stream-power. Do not store every creek as extra pixels. Do not D8-carve a floodplain so it “drains” — drainage there is the belt’s own path, plus a cutoff graph for oxbows.
 
 Do **not** carve on planetgen’s ~220 km mesh. Valleys would be hundreds of kilometres wide.
 

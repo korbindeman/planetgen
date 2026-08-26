@@ -62,7 +62,6 @@ let simulate_tectonics = true;
 let detail_pass = false;
 let shape_seed = 0;
 let pending_shape = null;
-let apply_pending_shape = false;
 let previewOverlay = null;   // null | 'plates' | 'crust' | 'climate' | 'relief'
 let previewYaw = 0;
 
@@ -459,8 +458,11 @@ function generateMesh() {
 
 function generateMap() {
     const tectonics = studio.lastResolved.options.tectonics;
-    const keepShape = apply_pending_shape;
-    apply_pending_shape = false;
+    /* A cached sketch stays the visible map until showLayout drops it.
+     * Re-apply it on every generate. A one-shot flag let a later layout
+     * generate (boot generateMesh, N, a process toggle) put the 10k sim
+     * on the globe while the Shape tab was still selected. */
+    const reuseSketch = !detail_pass && pending_shape;
     const result = Planet.generatePlanet({
         seed: studio.seed,
         shapeSeed: shape_seed || studio.shapeSeed || studio.seed,
@@ -478,10 +480,11 @@ function generateMap() {
         values: studio.generateValues ? studio.generateValues() : studio.pins,
     }, planetCache);
     last_detail_n = result.config.options.detail.n;
-    if (!detail_pass && keepShape && pending_shape) {
+    if (reuseSketch) {
         const fields = ShapeArtifact.toFields(pending_shape);
-        Pipeline.stages.applyShapeFields(result, fields, planetCache);
-        Pipeline.toLegacy(result);
+        const ok = Pipeline.stages.applyShapeFields(result, fields, planetCache);
+        if (ok) Pipeline.toLegacy(result);
+        else pending_shape = null;
     }
     simMesh = result.simMesh;
     simMap = result.simMap;
@@ -498,6 +501,7 @@ function generateMap() {
     syncTdGridLevel();
     refreshTdCropList();
     studio.refreshPipeline();
+    if (studio.syncModeButtons) studio.syncModeButtons();
     draw();
 }
 
@@ -1117,6 +1121,8 @@ function drawBakedTiles(u_projection, mode) {
         pruneBakedGpu(new Set());
         return;
     }
+    /* The bake conditions on the sketch. Do not drape tiles on Layout. */
+    if (!isShaped()) return;
     const crops = TdOverlay.visibleCrops().slice().sort((a, b) => (
         TdOverlay.cropRank(a) - TdOverlay.cropRank(b)
     ));
@@ -1225,6 +1231,7 @@ function finishDraw() {
             seed: studio.seed,
             project: studio.project,
             zoom: viewMode === 'equirect' ? equirectZoom : zoom,
+            shaped: isShaped(),
         });
     }
     persistViewState();
@@ -2110,22 +2117,16 @@ function exportTdTile(tile) {
 }
 
 /*
- * Put the picker on a level this planet can actually bake. A tile is a fixed
- * slice of the sphere, so switching to a bigger planet turns the same level
- * into a bigger tile — on Earth, level 4 is 27 cells a side, past what the
- * bake takes. Called whenever the planet or the project changes.
+ * One preview size: the bakeable cube level nearest 310 km. A tile is a
+ * fixed slice of the sphere, so that level moves with radius — 4 on Thalos,
+ * 5 on Earth. Hard-coding 4 made Earth tiles 27 cells, past what the bake
+ * takes. Called whenever the planet or the project changes.
  */
 function syncTdGridLevel() {
-    const level = Cubesphere.bestLevel(
+    TdOverlay.setGridLevel(Cubesphere.bestLevel(
         TdTile.TARGET_TILE_KM, tdRadiusKm(), TdTile.SCALE_KM,
         TdTile.MIN_CELLS, TdTile.MAX_CELLS,
-    );
-    const levels = Cubesphere.usableLevels(
-        tdRadiusKm(), TdTile.SCALE_KM, TdTile.MIN_CELLS, TdTile.MAX_CELLS,
-    );
-    /* Leave a level the user chose alone, as long as it still bakes here. */
-    if (levels.includes(TdOverlay.getGridLevel())) return;
-    TdOverlay.setGridLevel(level);
+    ));
 }
 
 /* Conditioning cells across a tile, from the planet's own radius — a tile is
@@ -2145,10 +2146,10 @@ function tdRadiusKm() {
  */
 async function bakeTdDraft() {
     const tiles = TdOverlay.getPicked();
-    if (!tiles.length) return;
+    if (!tiles.length || !isShaped()) return;
     if (studio.ensureVariant) await studio.ensureVariant();
     const asked = TdOverlay.snapshot();
-    const bakeBtn = document.querySelector('#td-crop-list button');
+    const bakeBtn = document.querySelector('#td-crop-list .stage-forward');
     if (bakeBtn) bakeBtn.disabled = true;
     const failed = [];
     for (const tile of tiles) {
@@ -2343,9 +2344,9 @@ function setupDragRotation() {
 
     /* The grid belongs to the pointer, not the keyboard: it appears when
      * shift is held *over the canvas*, so a shift-something shortcut typed
-     * elsewhere does not flash it. */
+     * elsewhere does not flash it. Preview tiles live on Shape. */
     function refreshGrid() {
-        const show = picking || (shiftHeld && overCanvas);
+        const show = isShaped() && (picking || (shiftHeld && overCanvas));
         let changed = TdOverlay.setGridShown(show);
         const tile = show && !picking ? tileAtCanvas(hoverX, hoverY, canvas) : null;
         if (TdOverlay.setHoverTile(show ? tile : null)) changed = true;
@@ -2401,7 +2402,7 @@ function setupDragRotation() {
             return;
         }
         if (event.button !== 0) return;
-        if (event.shiftKey) {
+        if (event.shiftKey && isShaped()) {
             const pt = eventCanvasPoint(event, canvas);
             const tile = tileAtCanvas(pt.x, pt.y, canvas);
             if (tile) {
@@ -2460,7 +2461,7 @@ function setupDragRotation() {
             }
             return;
         }
-        if (!dragging && shiftHeld) {
+        if (!dragging && shiftHeld && isShaped()) {
             if (TdOverlay.setHoverTile(tileAtCanvas(hoverX, hoverY, canvas))) draw();
             return;
         }
@@ -2600,8 +2601,6 @@ function refreshTdCropList() {
         seed: studio.seed,
         radiusKm: tdRadiusKm(),
         scaleKm: TdTile.SCALE_KM,
-        minCells: TdTile.MIN_CELLS,
-        maxCells: TdTile.MAX_CELLS,
         onToggle: (name, on) => {
             TdOverlay.setCropOn(name, on);
             if (mesh) draw();
@@ -2610,10 +2609,6 @@ function refreshTdCropList() {
         onBake: bakeTdDraft,
         onClearDraft: () => {
             TdOverlay.clearPicked();
-            draw();
-        },
-        onLevel: (level) => {
-            TdOverlay.setGridLevel(level);
             draw();
         },
     });
@@ -2847,7 +2842,6 @@ function isShaped() {
 
 function loadShape(payload) {
     pending_shape = payload;
-    apply_pending_shape = !!payload;
     if (payload && payload.shapeSeed) shape_seed = payload.shapeSeed | 0;
     generateMap();
 }
@@ -2855,12 +2849,12 @@ function loadShape(payload) {
 
 function clearShape() {
     pending_shape = null;
-    apply_pending_shape = false;
 }
 
 function showLayout() {
     pending_shape = null;
-    apply_pending_shape = false;
+    TdOverlay.setGridShown(false);
+    TdOverlay.setHoverTile(null);
     generateMap();
 }
 
@@ -2893,10 +2887,7 @@ Studio.mount(studio, {
     setJitter(value) { jitter = value; generateMesh(); },
     setShapeSpacing(km) {
         shapeSpacingKm = Math.max(10, km | 0);
-        if (pending_shape) {
-            pending_shape = null;
-            apply_pending_shape = false;
-        }
+        pending_shape = null;
         generateMap();
     },
     setRotation(value) { rotation = value; draw(); },
@@ -2965,7 +2956,8 @@ function startWorkspace() {
             Studio.syncAddressBar(studio.project, studio.seed, studio.variant && studio.variant.id);
             Studio.showWorkspace(studio);
         }
-        generateMesh();
+        if (isShaped()) studio.setPlanetReady(true);
+        else generateMesh();
     } else {
         Studio.showProjectPage(studio);
     }

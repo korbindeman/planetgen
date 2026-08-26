@@ -1,9 +1,9 @@
 /*
  * Startup: URL, stored project, skip-picker.
  *
- * The first-paint script in index.html only toggles `html.is-picker` from
- * the same keys — `?project=`, `?seed=`, `?variant=`, `planetgen.activeProject`.
- * Labels, title, and which project actually opens live here.
+ * The first-paint script in index.html only toggles `html.is-picker` for
+ * shipped names (thalos, earth) plus `?seed=` / `?variant=`. User
+ * projects wait until the studio has registered them.
  */
 'use strict';
 

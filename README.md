@@ -4,7 +4,7 @@ Planetgen builds a coarse planetary base: tectonic plates, a heightmap, and clim
 
 This repo stops at that base. Fine terrain comes from [terrain-diffusion](https://github.com/xandergos/terrain-diffusion). Rivers come after that. Later stages need a planet they can treat as real: continents carried by plates, mountain belts at collisions, and coasts that come from elevation.
 
-Work happens in a **project**. Thalos is the default, the world being discovered. Earth is a present-day fixture used as a reference. Discover is layout then shape; Finish is climate through export. [docs/studio.md](docs/studio.md).
+Work happens in a **project**. Thalos is the default, the world being discovered. Earth is a present-day fixture used as a reference. A new project starts with a name and body buckets, then Discover (layout then shape). Finish is climate through export. [docs/studio.md](docs/studio.md).
 
 ## Run
 

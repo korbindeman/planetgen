@@ -244,6 +244,34 @@ function keepRidgeLine(mesh, field) {
 }
 
 
+function dropSpecks(mesh, field, minCells) {
+    if (!field || minCells <= 1) return;
+    const n = mesh.numRegions;
+    const seen = new Uint8Array(n);
+    const neighbors = [];
+    for (let r = 0; r < n; r++) {
+        if (field[r] <= 0 || seen[r]) continue;
+        const stack = [r];
+        seen[r] = 1;
+        const cells = [r];
+        while (stack.length) {
+            const at = stack.pop();
+            mesh.r_circulate_r(neighbors, at);
+            for (let i = 0; i < neighbors.length; i++) {
+                const nb = neighbors[i];
+                if (seen[nb] || field[nb] <= 0) continue;
+                seen[nb] = 1;
+                stack.push(nb);
+                cells.push(nb);
+            }
+        }
+        if (cells.length < minCells) {
+            for (let i = 0; i < cells.length; i++) field[cells[i]] = 0;
+        }
+    }
+}
+
+
 function smoothOrogenyDir(mesh, r_orogeny, r_orogenyDir, floor, passes) {
     if (passes <= 0 || !r_orogenyDir) return r_orogenyDir;
     const n = mesh.numRegions;
@@ -426,7 +454,12 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
 
     const meters = new Float32Array(numRegions);
     const r_arc = new Float32Array(numRegions);
+    const r_arcPeak = new Float32Array(numRegions);
+    const r_arcAge = new Float32Array(numRegions);
+    const r_arcDir = new Float32Array(numRegions * 3);
     const r_hotspot = new Float32Array(numRegions);
+    const r_hotspotPeak = new Float32Array(numRegions);
+    const r_hotspotAge = new Float32Array(numRegions);
     const r_orogeny = new Float32Array(numRegions);
     const r_orogenyDir = new Float32Array(numRegions * 3);
     const r_crust_age = new Float32Array(numRegions);
@@ -443,7 +476,12 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
     const here = [0, 0, 0];
 
     const hasArc = !!simMap.r_arc;
+    const hasArcPeak = !!simMap.r_arcPeak;
+    const hasArcAge = !!simMap.r_arcAge;
+    const hasArcDir = !!simMap.r_arcDir;
     const hasHot = !!simMap.r_hotspot;
+    const hasHotPeak = !!simMap.r_hotspotPeak;
+    const hasHotAge = !!simMap.r_hotspotAge;
     const hasOrogeny = !!simMap.r_orogeny;
     const hasOrogenyDir = !!simMap.r_orogenyDir;
     const hasAge = !!simMap.r_crust_age;
@@ -463,7 +501,17 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
         Tectonics.sampleWeights(simMesh, simXyz, here, at, out_r, cells, weights);
         meters[r] = Tectonics.sampleField(simMeters, cells, weights);
         if (hasArc) r_arc[r] = Tectonics.sampleField(simMap.r_arc, cells, weights);
+        if (hasArcPeak) r_arcPeak[r] = Tectonics.sampleField(simMap.r_arcPeak, cells, weights);
+        if (hasArcAge) r_arcAge[r] = Tectonics.sampleField(simMap.r_arcAge, cells, weights);
+        if (hasArcDir) {
+            Tectonics.samplePacked3(simMap.r_arcDir, cells, weights, dirScratch);
+            r_arcDir[3 * r] = dirScratch[0];
+            r_arcDir[3 * r + 1] = dirScratch[1];
+            r_arcDir[3 * r + 2] = dirScratch[2];
+        }
         if (hasHot) r_hotspot[r] = Tectonics.sampleField(simMap.r_hotspot, cells, weights);
+        if (hasHotPeak) r_hotspotPeak[r] = Tectonics.sampleField(simMap.r_hotspotPeak, cells, weights);
+        if (hasHotAge) r_hotspotAge[r] = Tectonics.sampleField(simMap.r_hotspotAge, cells, weights);
         if (hasOrogeny) r_orogeny[r] = Tectonics.sampleField(simMap.r_orogeny, cells, weights);
         if (hasOrogenyDir) {
             Tectonics.samplePacked3(simMap.r_orogenyDir, cells, weights, dirScratch);
@@ -491,20 +539,55 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
     }
 
     /* The transferred arc field is as wide as a sim cell (~226 km). Crests
-     * along that whole blob would be a wall of islands. Keep only the ridge
-     * line — cells that stand above their neighbours — so the same noise
-     * that used to pick stretches of a 226 km front now picks stretches of
-     * a one-cell chain. */
-    const crestArc = Float32Array.from(r_arc);
+     * along that whole blob would be a wall of islands. Live volcanoes keep
+     * the ridge line. Isolated 1-cell cones wait for Carve. A plume on a
+     * spreading ridge is a plateau. Extinct-arc ribbons stay on the story
+     * maps until those cells join into a sausage — lifting them here makes
+     * a field of icy specks. */
+    const emerge = tectOpts.arcEmergeThreshold;
+    const crestLive = new Float32Array(numRegions);
     const crestHot = Float32Array.from(r_hotspot);
-    keepRidgeLine(detailMesh, crestArc);
-    keepRidgeLine(detailMesh, crestHot);
+    const crestPlateau = new Float32Array(numRegions);
+    const nb = [];
+    const DIVERGENT = Tectonics.BOUNDARY_DIVERGENT;
+    const OCEANIC = Tectonics.CRUST_OCEANIC;
+    for (let r = 0; r < numRegions; r++) {
+        if (r_crust_type[r] !== OCEANIC) {
+            crestHot[r] = 0;
+            continue;
+        }
+        crestLive[r] = r_arc[r];
 
+        if (crestHot[r] < emerge) {
+            crestHot[r] = 0;
+            continue;
+        }
+        let onRidge = hasBoundary && r_boundary[r] === DIVERGENT;
+        if (!onRidge && hasBoundary) {
+            detailMesh.r_circulate_r(nb, r);
+            for (let i = 0; i < nb.length; i++) {
+                if (r_boundary[nb[i]] === DIVERGENT) { onRidge = true; break; }
+            }
+        }
+        if (onRidge) {
+            crestPlateau[r] = crestHot[r];
+            crestHot[r] = 0;
+        }
+    }
+    keepRidgeLine(detailMesh, crestLive);
+    dropSpecks(detailMesh, crestLive, 2);
+    keepRidgeLine(detailMesh, crestHot);
+    dropSpecks(detailMesh, crestHot, 2);
+    dropSpecks(detailMesh, crestPlateau, 6);
+
+    const crestOpts = Object.assign({}, tectOpts, {
+        crestFrequency: noiseFrequency(opts.islandWavelengthKm, opts),
+    });
     Tectonics.applyIslandCrests(
-        detailMesh, detailXyz, meters, r_crust_type, crestArc, crestHot, seed,
-        Object.assign({}, tectOpts, {
-            crestFrequency: noiseFrequency(opts.islandWavelengthKm, opts),
-        }));
+        detailMesh, detailXyz, meters, r_crust_type, crestLive, crestHot, seed, crestOpts);
+    Tectonics.applyIslandCrests(
+        detailMesh, detailXyz, meters, r_crust_type, null, crestPlateau, seed,
+        Object.assign({}, crestOpts, {islandBody: 'plateau'}));
 
     applyPhasorRidges(
         detailMesh, detailXyz, meters, hasOrogeny ? r_orogeny : null,
@@ -534,7 +617,12 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
         r_temperature,
         r_meters: meters,
         r_arc: hasArc ? r_arc : null,
+        r_arcPeak: hasArcPeak ? r_arcPeak : null,
+        r_arcAge: hasArcAge ? r_arcAge : null,
+        r_arcDir: hasArcDir ? r_arcDir : null,
         r_hotspot: hasHot ? r_hotspot : null,
+        r_hotspotPeak: hasHotPeak ? r_hotspotPeak : null,
+        r_hotspotAge: hasHotAge ? r_hotspotAge : null,
         r_orogeny: hasOrogeny ? r_orogeny : null,
         r_orogenyDir: hasOrogenyDir ? r_orogenyDir : null,
         r_crust_age: hasAge ? r_crust_age : null,

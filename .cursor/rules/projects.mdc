@@ -19,6 +19,10 @@ the **fixture**, not a tree.
 - The app starts on a project page. Opening a project persists it
   (`planetgen.activeProject`); a restart resumes that project. Switching
   means going back to the project page — there is no in-workspace dropdown.
+  **New project** names the world and picks **body** buckets (size, age,
+  day, water). Those buckets are ranges, stored on the project until an
+  **adopted body** is set. User projects live at
+  `preview/<name>/project.json`. Thalos and Earth stay shipped modules.
 - A **variant** is a saved snapshot: layout seed, shape seed, body, gene
   draws, body **pins**, **ranges**, and a **name**. Its id is UTC unix
   time. Every **Save** writes a new snapshot. The same name continues

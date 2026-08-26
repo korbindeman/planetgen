@@ -448,11 +448,17 @@ function shortParam(name) {
         rotationHours: 'day',
         axialTiltDeg: 'tilt',
         ageGyr: 'age',
+        seaLevelThicknessKm: 'water',
         continentFraction: 'crust',
         plates: 'plates',
         cratons: 'cratons',
         steps: 'steps',
         hotspots: 'hotspots',
+        warpStrength: 'warp',
+        islandWavelengthKm: 'islands',
+        ridgeAmpM: 'ridges',
+        hydraulicIters: 'erosion',
+        glacialStrength: 'ice',
     };
     return names[name] || name;
 }

@@ -133,19 +133,27 @@ function applyShapeFields(planet, fields, cache) {
     const built = Planet.ensureDetailMesh(meshN, planet.config.jitter, cache);
     if (built.mesh.numRegions !== fields.r_elevation.length) return false;
     const simMap = planet.sim.map;
-    const map = Object.assign({}, simMap, {
+    const map = {
+        plates: simMap.plates,
+        plate_is_ocean: simMap.plate_is_ocean,
+        plate_centroid: simMap.plate_centroid,
+        plate_vec: simMap.plate_vec,
+        extra_ocean_seeds: simMap.extra_ocean_seeds,
+        hotspots: simMap.hotspots,
+        nextPlateId: simMap.nextPlateId,
+        elapsedMyr: simMap.elapsedMyr,
+        targetPlateCount: simMap.targetPlateCount,
         r_xyz: built.r_xyz,
         t_xyz: built.t_xyz,
-        r_elevation: fields.r_elevation,
-        r_meters: fields.r_meters || null,
-        r_moisture: fields.r_moisture || simMap.r_moisture,
-        r_temperature: fields.r_temperature || simMap.r_temperature,
-        r_crust_type: fields.r_crust_type || simMap.r_crust_type,
-        r_plate: fields.r_plate || simMap.r_plate,
         t_elevation: new Float32Array(built.mesh.numTriangles),
         t_moisture: new Float32Array(built.mesh.numTriangles),
         t_temperature: new Float32Array(built.mesh.numTriangles),
-    });
+    };
+    const skip = {n: true, cells: true};
+    for (const key of Object.keys(fields)) {
+        if (skip[key] || fields[key] == null) continue;
+        map[key] = fields[key];
+    }
     planet.detail = {mesh: built.mesh, map};
     geometry(planet);
     return true;

@@ -10,7 +10,7 @@ this one wins.
 here. The artifact is a **sketch** at the terrain model's grain (23 km
 today).
 
-**Finish** — Climate → Terrain → Hydrology → Export. Overnight and GPU
+**Finish** — Climate → Terrain → Carve → Export. Overnight and GPU
 work on a variant you already kept. Not another place you shuffle.
 
 Do not call Finish "the pipeline" or "the bake." The whole product is the
@@ -18,6 +18,28 @@ pipeline. Terrain is the bake. Finish is the phase.
 
 Finish runs on a variant you already kept — whichever node you name.
 There is no Adopt/Commit step. Earth has no variants.
+
+## New project
+
+The picker is **Projects**, then a workspace. **New project** is a real
+step: name the world, then pick **body** buckets (size, age, day, water).
+Each bucket is a named interval with a real body next to it. Picking
+Small clamps radius; it does not write 3186. Gravity and tilt start at
+Earth and are pinned until you free them.
+
+Create writes `preview/<name>/project.json` with those buckets and no
+**adopted body**. The globe is a **working planet** drawn from the
+buckets. Explore samples the still-free body from that box. **Save**
+writes a **variant** with its own body. The project can sit in that
+state — accepted variants, size still in play.
+
+An **adopted body** is later, and optional. It becomes the default for
+new working planets. Old variants are not rewritten.
+
+Earth is not created this way. It is the fixture on the picker.
+
+Thalos and Earth stay shipped modules. A name that slugs to `thalos` or
+`earth` is refused.
 
 ## Stages
 
@@ -27,23 +49,28 @@ There is no Adopt/Commit step. Earth has no variants.
 | **Shape** | Discover | Detail + later sculpting frozen as the sketch. |
 | **Climate** | Finish | Bake-time climate on that height (ExoPlaSim). Skip if the sketch keeps `climate.js`. |
 | **Terrain** | Finish | Whole-planet diffusion (cheap pass then 90 m). Cube faces and seams are internal. |
-| **Hydrology** | Finish | Rivers, lakes, canyons on that DEM. |
+| **Carve** | Finish | Rivers, fjords, and stamps on that DEM. Hydrology is the drainage work inside it. |
 | **Export** | Finish | Residual pyramid for the game. |
 
-Preview tiles are a Discover **tool**, not a stage. Pick them on the
-cubesphere grid, bake, drape. Cubesphere, conditioning, and "coarse
-planet" are not stages.
+Preview tiles are a Shape **tool**, not a stage. They read the sketch.
+Pick them on the cubesphere grid, bake, drape. Cubesphere, conditioning,
+and "coarse planet" are not stages. Layout has no tile picker.
 
 There is no Progress panel. The UI flow *is* the progression: Layout,
-then Shape. Layout's forward action is Shape. Shape has a back to Layout.
+then Shape. Those two are tabs. The Shape tab still runs Shape when the
+variant has no sketch or the working planet is dirty.
 A variant's place in the pipeline sits on that node in the tree — the
 only place you read per-variant progress.
 
-The current Discover stage is **derived** from how far the open variant
-has got. Opening **head** lands you in Layout or Shape. You can still
-return to Layout to change plates; that work is uncommitted until
-**Save**, which writes a **child**. The parent keeps its sketch. Finish
-is not something you browse to from here.
+The current Discover stage **is** the globe. Layout is the 10k sim.
+Shape is the sketch. The Shape tab is on only when that mesh is up —
+not because a variant is marked shaped, and not because you clicked
+the tab. Opening a shaped **head** loads the sketch; the Shape tab
+comes on when the load is on the globe. **Save** writes an unshaped
+**child**, so the globe returns to Layout. You can still return to
+Layout to change plates; that work is uncommitted until **Save**. The
+parent keeps its sketch. Finish is not something you browse to from
+here.
 
 The workspace shell is always: back to projects, the project name,
 **Save**, and **Variants**. The globe and look stay on the canvas. Workspace chrome is Preact; the
@@ -52,10 +79,10 @@ canvases and generator are not.
 the tree. The name field next to it shows the active variant. Save
 continues that name. Change the name and Save starts another variant,
 keeping the ranges you were on. Save never opens **Variants**. Layout's panel is the layout seed, **body** (with **pins**),
-tectonics genes, `climate.js` genes, Explore, and Shape. Advanced folds
+tectonics genes, `climate.js` genes, and Explore. Advanced folds
 on Layout only: mesh `N`, shape spacing, jitter, the 1843 toggles —
 shipped values, not genes. Shape's panel is the shape seed, shape genes
-(warp, ridges, erosion, ice), preview tiles, and back to Layout.
+(warp, ridges, erosion, ice), and preview tiles.
 
 **Explore** covers the globe with a sheet. The shell stays. Layout's
 panel becomes next / back / Done and the range readout. Done returns to
@@ -74,10 +101,38 @@ an explicit action on a saved variant. The first Shape writes a **child**
 that becomes **head** of that lineage — same name, shape thumbnail —
 and the layout snapshot stays behind it. Later Shape on a dirty head
 does the same. Opening the card opens that head (the cached sketch).
-Back on the Shape panel is Layout of this variant. Lineage of earlier
+The Layout tab is Layout of this variant. Lineage of earlier
 saves sits on the card, not as a second variant. Shape reuses that
 variant's layout: plates and `climate.js` do not rerun when you Shape,
 shuffle the shape seed, or move a shape gene.
+
+The Shape tab loads the cached sketch. That cache does not know if the
+Shape code changed. **Regenerate** reruns the pass on this variant and
+replaces the cache. Same seed, same genes. It does not write a new
+snapshot.
+
+Layout keeps the tectonic story Shape and Finish need, not only the
+last height. Present strength is not enough: an extinct arc and an old
+hotspot track must still be on the map after the volcanoes stop. Shape
+reads those maps and adds 23 km features. A body here is at least two
+cells. Shape already does coast warp, volcanic crests, belt grain, and
+drainage texture. It also claims: young hotspot islands, old/weak arc
+ribbons, plume-on-ridge plateaus, the forearc trough, drowned-margin
+islands, ria inlets, and fracture-zone scars. Isolated 1-cell cones,
+atolls, reefs, islets, and real fjords wait for **Carve**. Not Shape:
+abyssal hills, a second continental-shelf pass, large lakes, rift
+grabens. Finish reads the same maps on the sketch for stamps below that
+grain in **Carve**. Each stage adds only what belongs at its scale. Do
+not ask terrain-diffusion to invent a landform the sketch never marked.
+The cached sketch stores those maps with the height, not height and
+climate alone.
+
+The current Layout handoff is compact maps: present strength, peak,
+age since last refresh, and strike. Not a step log. Iceland plateaus
+and drowned-margin islands are derived from those maps plus crust,
+elevation, and the live boundary — no extra Layout field until a
+picture fails. That set, and what **Carve** actually does, are still
+open. Layout, Shape, and Carve will keep changing for realism.
 
 Shape always lands on the model's sketch grain, independent of planet
 size. Cell count is derived: `N ≈ π (2r / spacingKm)²`. On Thalos at
@@ -130,6 +185,6 @@ joins. The UI word is **Save**, never Update.
 
 ## Finish reads the sketch
 
-Climate, Terrain, hydrology, and export consume the 23 km sketch on that
-variant. They do not re-run Shape. Preview tiles may run earlier, still
+Climate, Terrain, Carve, and export consume the 23 km sketch on that
+variant. They do not re-run Shape. Preview tiles run from Shape, still
 keyed to the variant, so they do not follow you onto the next candidate.

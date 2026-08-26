@@ -13,6 +13,7 @@ const Search = require('../search');
 const TdOverlay = require('../td-overlay');
 
 const Variants = Projects.Variants;
+const {discoverStage} = require('./stage');
 
 const MODULE_ORDER = ['world', 'tectonics', 'climate', 'detail'];
 const GROUP_LABEL = {
@@ -21,11 +22,15 @@ const GROUP_LABEL = {
     continents: 'Continents',
     volcanism: 'Volcanism',
     polar: 'Poles',
-    warp: 'Shape',
+    water: 'Water',
+    warp: 'Warp',
     ridges: 'Ridges',
     fluvial: 'Erosion',
     glacial: 'Ice',
 };
+const GROUP_ORDER = Object.keys(GROUP_LABEL);
+const INTEGER_UNITS = new Set(['count', 'step', 'index', 'km', 'm']);
+const INTEGER_STEPS = new Set(['count', 'step', 'index']);
 
 
 function actionsOf(session) {
@@ -52,36 +57,30 @@ function variantHasSketch(variant) {
 }
 
 
-function discoverStage(session) {
-    if (session.searchSession) return 'layout';
-    if (session.ui && session.ui.stageIntent) return session.ui.stageIntent;
-    if (isFixture(session)) {
-        return session.host && session.host.isShaped && session.host.isShaped() ? 'shape' : 'layout';
-    }
-    if (variantHasSketch(session.variant)) return 'shape';
-    const fact = session.pipelineFact && (session.pipelineFact.stages || []).find((s) => s.id === 'shape');
-    if (fact && (fact.shaped || fact.fact === 'sketched')) return 'shape';
-    return 'layout';
-}
-
-
 function formatValue(meta, value) {
     if (value == null) return 'free';
     if (typeof value === 'boolean') return value ? 'on' : 'off';
-    if (meta.unit === 'count' || meta.unit === 'step' || meta.unit === 'km' || meta.unit === 'm') {
-        return String(Math.round(value));
-    }
+    if (INTEGER_UNITS.has(meta.unit)) return String(Math.round(value));
     if (meta.unit === 'frac' || meta.unit === '1') return value.toFixed(3);
     return String(Math.round(value * 10) / 10);
 }
 
 
+function groupRank(group) {
+    const i = GROUP_ORDER.indexOf(group);
+    return i < 0 ? 99 : i;
+}
+
+
 function paramValue(session, name) {
-    const bag = Object.assign({}, session.workingValues || {}, session.pins || {});
-    if (isFixture(session)) return Projects.authored(session.project)[name];
-    if (name in bag) return bag[name];
     const meta = Params.all()[name];
-    return Projects.PRISTINE[meta.module][name];
+    const fallback = Projects.PRISTINE[meta.module][name];
+    if (isFixture(session)) {
+        const bag = Object.assign({}, Projects.authored(session.project), session.workingValues || {});
+        return name in bag ? bag[name] : fallback;
+    }
+    const bag = Object.assign({}, session.workingValues || {}, session.pins || {});
+    return name in bag ? bag[name] : fallback;
 }
 
 
@@ -94,7 +93,9 @@ function paramsForStage(stage) {
     }).sort((a, b) => {
         const ma = MODULE_ORDER.indexOf(registry[a].module);
         const mb = MODULE_ORDER.indexOf(registry[b].module);
-        return ma - mb || a.localeCompare(b);
+        const ga = groupRank(registry[a].group);
+        const gb = groupRank(registry[b].group);
+        return ma - mb || ga - gb;
     });
 }
 
@@ -116,13 +117,13 @@ function ParamRow({session, name}) {
                     <button type="button" class="param-pin"
                         aria-pressed=${String(pinned)}
                         title=${pinned
-                            ? `${name} is pinned on this variant — click to free it`
-                            : `${name} is free — click to pin it at its current value`}
+                            ? `${Params.label(name)} is pinned on this variant — click to free it`
+                            : `${Params.label(name)} is free — click to pin it at its current value`}
                         onClick=${() => act.togglePin(name)}>
                         ${pinned ? '◉' : '○'}
                     </button>
                 `}
-                <span class="param-name">${name}</span>
+                <span class="param-name" title=${name}>${Params.label(name)}</span>
                 <span class="param-value">${formatValue(meta, live)}</span>
             </div>
             ${meta.unit === 'bool' ? html`
@@ -130,7 +131,7 @@ function ParamRow({session, name}) {
                     onChange=${(event) => act.setParam(name, event.currentTarget.checked)} />
             ` : meta.range ? html`
                 <input type="range" min=${meta.range[0]} max=${meta.range[1]}
-                    step=${(meta.unit === 'count' || meta.unit === 'step') ? '1' : String((meta.range[1] - meta.range[0]) / 200)}
+                    step=${INTEGER_STEPS.has(meta.unit) ? '1' : String((meta.range[1] - meta.range[0]) / 200)}
                     value=${live == null ? (meta.range[0] + meta.range[1]) / 2 : live}
                     onInput=${(event) => setLive(event.currentTarget.valueAsNumber)}
                     onChange=${(event) => act.setParam(name, event.currentTarget.valueAsNumber)} />
@@ -172,12 +173,33 @@ function CropListHost({session}) {
 }
 
 
-function StageHead({title, back, forward}) {
+function StageHead({title, forward}) {
     return html`
         <div class="stage-head">
-            ${back || null}
             <h2>${title}</h2>
             ${forward || null}
+        </div>
+    `;
+}
+
+
+function StageTabs({session}) {
+    const act = actionsOf(session);
+    const stage = discoverStage(session);
+    const shaping = session.pipelineShapeBusy;
+    return html`
+        <div class="stage-tabs" role="tablist" aria-label="Discover stage">
+            <button type="button" role="tab" class="stage-tab"
+                aria-selected=${String(stage === 'layout')}
+                onClick=${() => { if (stage !== 'layout') act.goLayout(); }}>
+                Layout
+            </button>
+            <button type="button" role="tab" class="stage-tab"
+                aria-selected=${String(stage === 'shape')}
+                disabled=${shaping}
+                onClick=${() => { if (stage !== 'shape') act.goShape(); }}>
+                ${shaping ? 'Shaping…' : 'Shape'}
+            </button>
         </div>
     `;
 }
@@ -286,22 +308,16 @@ function LayoutPanel({session}) {
                     <p class="muted">${status}</p>
                     <div id="search-ranges">
                         ${s.genes.map((name) => html`
-                            <div class="search-range" key=${name}>${name}  ${Search.formatRange(name, s.ranges[name])}</div>
+                            <div class="search-range" key=${name} title=${name}>${Params.label(name)}  ${Search.formatRange(name, s.ranges[name])}</div>
                         `)}
                     </div>
                 </div>
             </div>
         `;
     }
-    const shaping = session.pipelineShapeBusy;
     return html`
         <div class="stage-panel">
-            <${StageHead} title="Layout" forward=${html`
-                <button type="button" class="stage-forward" disabled=${shaping}
-                    onClick=${() => act.goShape()}>
-                    ${shaping ? 'Shaping…' : 'Shape'}
-                </button>
-            `} />
+            <${StageTabs} session=${session} />
             <div class="stage-tools">
                 <${SeedField} label="Layout seed" value=${session.seed}
                     onChange=${act.setSeed} onShuffle=${act.shuffleSeed}
@@ -329,27 +345,18 @@ function LayoutPanel({session}) {
 
 function ShapePanel({session}) {
     const act = actionsOf(session);
-    const shaped = isFixture(session)
-        ? (session.host && session.host.isShaped && session.host.isShaped())
-        : variantHasSketch(session.variant);
-    const shaping = session.pipelineShapeBusy;
-    const forward = !shaped ? html`
-        <button type="button" class="stage-forward" disabled=${shaping}
-            onClick=${() => act.goShape()}>
-            ${shaping ? 'Shaping…' : 'Shape'}
-        </button>
-    ` : null;
     return html`
         <div class="stage-panel">
-            <${StageHead} title="Shape"
-                back=${html`
-                    <button type="button" class="stage-back" onClick=${() => act.goLayout()}>Layout</button>
-                `}
-                forward=${forward} />
+            <${StageTabs} session=${session} />
             <div class="stage-tools">
                 <${SeedField} label="Shape seed" value=${session.shapeSeed || session.seed}
                     onChange=${act.setShapeSeed} onShuffle=${act.shuffleShapeSeed}
                     shuffleTitle="Shuffle the shape seed — same planet" />
+                <div class="tool-row">
+                    <button type="button" disabled=${!!session.pipelineShapeBusy}
+                        title="Rerun Shape and replace the cached sketch"
+                        onClick=${() => act.regenerateShape()}>Regenerate</button>
+                </div>
             </div>
             <${ParamList} session=${session} stage="shape" />
             <section class="preview-tiles">
@@ -410,19 +417,71 @@ function Picker({session}) {
     const act = actionsOf(session);
     const picker = typeof document !== 'undefined'
         && document.documentElement.classList.contains('is-picker');
+    const creating = session.ui.pickerView === 'create';
+    const draft = session.ui.createDraft || Object.assign({name: ''}, Projects.Init.DEFAULTS);
+    const Init = Projects.Init;
     useEffect(() => {
         if (!picker) return;
+        if (creating) {
+            const input = document.querySelector('.project-create-name');
+            if (input) input.focus();
+            return;
+        }
         const current = document.querySelector('.project-card.is-current')
             || document.querySelector('.project-card');
         current && current.focus();
-    }, [picker, session.project, session.planetReady]);
+    }, [picker, creating, session.project, session.planetReady]);
     if (!picker) return null;
+    if (creating) {
+        return html`
+            <div class="project-page-inner">
+                <h1>New project</h1>
+                <p class="project-page-lead">Name the project. Pick size, age, day, and water.</p>
+                <form class="project-create" onSubmit=${(e) => { e.preventDefault(); act.createProject(); }}>
+                    <label class="project-create-field">
+                        <span>Name</span>
+                        <input type="text" class="project-create-name" maxlength=${Init.NAME_MAX}
+                            autocomplete="off" spellcheck=${false}
+                            value=${draft.name}
+                            onInput=${(e) => act.setCreateDraft({name: e.currentTarget.value})} />
+                    </label>
+                    ${Object.keys(Init.AXES).map((axis) => {
+                        const spec = Init.AXES[axis];
+                        return html`
+                            <div class="bucket-axis" key=${axis}>
+                                <div class="bucket-label">${spec.label}</div>
+                                <div class="bucket-list" role="radiogroup" aria-label=${spec.label}>
+                                    ${spec.options.map((opt) => html`
+                                        <button type="button" key=${opt.id}
+                                            class=${'bucket' + (draft[axis] === opt.id ? ' is-on' : '')}
+                                            role="radio"
+                                            aria-checked=${String(draft[axis] === opt.id)}
+                                            title=${opt.hint}
+                                            onClick=${() => act.setCreateDraft({[axis]: opt.id})}>
+                                            <span>${opt.label}</span>
+                                            <span class="bucket-hint">${opt.hint}</span>
+                                        </button>
+                                    `)}
+                                </div>
+                            </div>
+                        `;
+                    })}
+                    ${session.ui.createError ? html`<p class="project-create-error">${session.ui.createError}</p>` : null}
+                    <div class="project-create-actions">
+                        <button type="button" onClick=${() => act.cancelCreateProject()}>Back</button>
+                        <button type="submit" class="stage-forward"
+                            disabled=${session.ui.createBusy}>Create</button>
+                    </div>
+                </form>
+            </div>
+        `;
+    }
     return html`
         <div class="project-page-inner">
             <h1>Projects</h1>
-            <p class="project-page-lead">Open a project.</p>
+            <p class="project-page-lead">Open a project, or start one.</p>
             <div class="project-list">
-                ${Projects.PROJECTS.map((project) => {
+                ${Projects.list().map((project) => {
                     const current = project.name === session.project && session.planetReady;
                     return html`
                         <button type="button" key=${project.name}
@@ -433,6 +492,10 @@ function Picker({session}) {
                         </button>
                     `;
                 })}
+                <button type="button" class="project-card is-new"
+                    onClick=${() => act.beginCreateProject()}>
+                    New project
+                </button>
             </div>
         </div>
     `;

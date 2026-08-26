@@ -5,8 +5,10 @@
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { loadUserProjects } from "./td-projects.mjs";
 
 export async function resolveRun(root, Projects, projectName, seedArg, variantId) {
+  await loadUserProjects(root, Projects);
   const project = Projects.byName(projectName || Projects.DEFAULT);
   if (project.fixture) {
     return {

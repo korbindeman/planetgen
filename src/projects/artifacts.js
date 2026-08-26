@@ -5,6 +5,7 @@
  * tree. Captures, crops and bakes belong to a variant:
  *
  *   preview/<project>/                 Earth, or a project with no variant
+ *   preview/<project>/project.json     a user project (not Thalos or Earth)
  *   preview/<project>/v/<id>/          one variant's folder
  *   preview/<project>/variants.json    the catalog
  *
@@ -57,6 +58,11 @@ function catalogPath(project) {
 }
 
 
+function projectFile(project) {
+    return `${dir(project)}/project.json`;
+}
+
+
 function thumbPath(project, id) {
     return `${variantDir(project, id)}/thumb.jpg`;
 }
@@ -81,6 +87,7 @@ module.exports = {
     variantDir,
     bakeDir,
     catalogPath,
+    projectFile,
     thumbPath,
     shapePath,
     sameSeed,

@@ -68,6 +68,17 @@ const ran = Planet.generatePlanet({
 });
 check("run writes sim and geometry", !!(ran.sim && ran.sim.mesh && ran.geometry));
 check("run writes detail when detailN > n", !!(ran.detail && ran.detail.mesh));
+{
+    const m = ran.sim.map;
+    let peakOk = !!(m.r_arcPeak && m.r_arcAge && m.r_hotspotPeak && m.r_hotspotAge && m.r_arcDir);
+    if (peakOk) {
+        for (let r = 0; r < m.r_arc.length; r++) {
+            if (m.r_arcPeak[r] + 1e-5 < m.r_arc[r]) peakOk = false;
+            if (m.r_hotspotPeak[r] + 1e-5 < m.r_hotspot[r]) peakOk = false;
+        }
+    }
+    check("Layout keeps lifetime peak at least present", peakOk);
+}
 check("legacy aliases still point at the visible layer",
     ran.mesh === ran.detail.mesh && ran.map === ran.detail.map && ran.simMesh === ran.sim.mesh);
 check("DEFAULTS stay pristine after a run",
@@ -94,6 +105,10 @@ check("surface is then the sim",
     check("shape artifact round-trips metres",
         !!(packed && fields && fields.cells === ran.detail.mesh.numRegions
             && fields.r_elevation && fields.r_elevation[0] === ran.detail.map.r_elevation[0]));
+    check("shape artifact keeps Layout story maps",
+        !!(fields.r_arcPeak && fields.r_arcAge && fields.r_hotspotPeak
+            && fields.r_hotspotAge && fields.r_arcDir && fields.r_orogenyDir
+            && fields.r_boundary));
     const laid = Planet.generatePlanet({
         seed: 7, n: 4000, detailPass: false, simSteps: 2, quiet: true,
     });

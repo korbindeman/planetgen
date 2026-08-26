@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
@@ -15,6 +15,7 @@ const require = createRequire(join(here, "..", "package.json"));
 const Projects = require(join(here, "..", "src", "projects"));
 const Cubesphere = require(join(here, "..", "src", "cubesphere.js"));
 const TdTile = require(join(here, "..", "src", "td-tile.js"));
+const Seam = require(join(here, "..", "src", "td-seam.js"));
 
 const DEFAULT_SNR = "0.2,0.2,1.0,0.2,1.0";
 const DEFAULT_MODEL = "xandergos/terrain-diffusion-90m";
@@ -203,6 +204,7 @@ export async function submitJob(root, body) {
       padCells,
       originI,
       originJ,
+      halo: TdTile.haloCellsFor(tile),
       nominalBounds: bounds,
     }, null, 2));
   }
@@ -328,6 +330,69 @@ function tdDevice() {
   return process.platform === "darwin" ? "mps" : "cuda";
 }
 
+function copyF32(buf, n) {
+  const src = new Float32Array(buf.buffer, buf.byteOffset, n);
+  return new Float32Array(src);
+}
+
+async function loadSeamTile(dir, tile) {
+  let meta;
+  try {
+    meta = JSON.parse(await readFile(join(dir, "output.elev.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const w = meta.width | 0;
+  const h = meta.height | 0;
+  if (!(w > 0 && h > 0)) return null;
+  let raw;
+  try {
+    raw = await readFile(join(dir, "output.elev"));
+  } catch {
+    return null;
+  }
+  if (raw.byteLength < w * h * 4) return null;
+  const halo = {};
+  for (const edge of Cubesphere.EDGES) {
+    try {
+      const hm = JSON.parse(await readFile(join(dir, `halo-${edge}.elev.json`), "utf8"));
+      const hw = hm.width | 0;
+      const hh = hm.height | 0;
+      const hb = await readFile(join(dir, `halo-${edge}.elev`));
+      if (!(hw > 0 && hh > 0) || hb.byteLength < hw * hh * 4) continue;
+      halo[edge] = {data: copyF32(hb, hw * hh), width: hw, height: hh};
+    } catch {
+      /* neighbour baked before halo, or this edge is not a fold */
+    }
+  }
+  return {tile, width: w, height: h, elev: copyF32(raw, w * h), halo};
+}
+
+/*
+ * The tile that just finished conforms to any already-baked neighbour
+ * across a cube fold. Same-face joins are left to WorldPipeline. The
+ * first tile at an edge stays native; the second follows its halo.
+ */
+async function stitchFaceEdges(job) {
+  if (!job.tile) return;
+  const dest = await loadSeamTile(job.dir, job.tile);
+  if (!dest) return;
+  let moved = 0;
+  for (const edge of Cubesphere.faceEdges(job.tile)) {
+    const nb = Cubesphere.neighborTile(job.tile, edge);
+    if (!nb) continue;
+    const src = await loadSeamTile(join(job.dir, "..", `crop-${Cubesphere.tileName(nb)}`), nb);
+    if (!src) continue;
+    moved += Seam.blendFromNeighbor(dest, src);
+  }
+  if (!moved) return;
+  await writeFile(
+    join(job.dir, "output.elev"),
+    Buffer.from(dest.elev.buffer, dest.elev.byteOffset, dest.elev.byteLength),
+  );
+  job.log.push(`stitched ${moved} face-edge pixels`);
+}
+
 async function bakeJob(root, job) {
   const python = tdPython();
   const tdRootDir = tdCheckout();
@@ -338,8 +403,10 @@ async function bakeJob(root, job) {
    * those to tiff-export would pad again (edge-repeat of the pad) and
    * generate the whole thing as a crop starting at (0,0). td-bake.py
    * uses the pad as the U-Net context and the face-grid origin so
-   * adjacent tiles share noise at the seam.
+   * adjacent tiles on one face share noise at the seam. A cube fold also
+   * generates a one-cell halo so the stitch can resample it.
    */
+  const halo = TdTile.haloCellsFor(job.tile);
   const args = pad > 0
     ? [
         "-u",
@@ -355,6 +422,10 @@ async function bakeJob(root, job) {
         "--origin-j", String(job.originJ | 0),
         "--crop-w", String(job.cropW),
         "--crop-h", String(job.cropH),
+        "--halo-north", String(halo.north),
+        "--halo-east", String(halo.east),
+        "--halo-south", String(halo.south),
+        "--halo-west", String(halo.west),
       ]
     : [
         "-u",
@@ -405,6 +476,7 @@ async function bakeJob(root, job) {
     return;
   }
   try {
+    await stitchFaceEdges(job);
     await paintCropTerrain(job.dir);
   } catch (err) {
     job.status = "error";

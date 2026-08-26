@@ -20,12 +20,14 @@ const VARIANTS_KEY = 'planetgen.variants';
 const SAVED_SEEDS_KEY = 'planetgen.savedSeeds';
 const SEARCH_KEEPS_KEY = 'planetgen.searchKeeps';
 const Variants = Projects.Variants;
+const Init = Projects.Init;
 let thumbFill = 0;
 
 
 function createSession(startup) {
     const project = startup.project;
-    const pins = Object.assign({}, Projects.byName(project).body || {});
+    const named = Projects.byName(project);
+    const pins = Init.startingPins(named);
     const seed = startup.seed != null ? startup.seed : 1;
     return {
         project,
@@ -53,10 +55,13 @@ function createSession(startup) {
         pipelineShapeBusy: false,
         host: null,
         ui: {
-            stageIntent: null,
             variantsOpen: false,
             saveName: '',
             undo: null,
+            pickerView: 'list',
+            createDraft: Object.assign({name: ''}, Init.DEFAULTS),
+            createError: '',
+            createBusy: false,
         },
     };
 }
@@ -68,13 +73,19 @@ function parseSeed(raw) {
 
 
 function projectLabel(name) {
-    const project = Boot.knownProject(name) && Projects.byName(name);
-    return project && project.label ? project.label : name;
+    try {
+        const project = Projects.byName(name);
+        return project && project.label ? project.label : name;
+    } catch (_) {
+        return name;
+    }
 }
 
 
 function effectiveBag(project, pins, workingValues) {
-    if (Projects.isFixture(project)) return Projects.authored(project);
+    if (Projects.isFixture(project)) {
+        return Object.assign({}, Projects.authored(project), workingValues || {});
+    }
     return Object.assign({}, workingValues || {}, pins || {});
 }
 
@@ -149,14 +160,28 @@ function applyPins(session, rebuild) {
 }
 
 
+function rerunShapeIfLive(session) {
+    if (session.host && session.host.isShaped && session.host.isShaped()) {
+        session.host.runShape(session.shapeSeed || session.seed);
+    }
+}
+
+
 function setParam(session, name, value) {
-    if (Projects.isFixture(session.project)) return;
-    if (name in session.pins) session.pins[name] = value;
-    else session.workingValues[name] = value;
+    const shapeGene = Params.phase(name) === 'shape';
+    /* Earth locks layout; Shape genes still move, because the fixture
+     * exists so shaping can be tried on a known tectonic base. */
+    if (Projects.isFixture(session.project) && !shapeGene) return;
+    if (!Projects.isFixture(session.project) && name in session.pins) {
+        session.pins[name] = value;
+    } else {
+        session.workingValues[name] = value;
+    }
     session.projectModified = true;
-    /* Shape genes do not touch plates. They wait for the Shape action
-     * so layout stays frozen while coasts are iterated. */
-    applyPins(session, Params.phase(name) !== 'shape');
+    /* Shape genes do not touch plates. A live sketch re-runs in place,
+     * the same way shuffling the shape seed does. */
+    applyPins(session, !shapeGene);
+    if (shapeGene) rerunShapeIfLive(session);
 }
 
 
@@ -246,7 +271,11 @@ async function loadVariantShape(session) {
     const variantId = session.variant && session.variant.id;
     const id = variantId || (Projects.isFixture(session.project) ? 'earth' : null);
     if (!id) {
-        session.host.clearShape();
+        if (session.host.isShaped && session.host.isShaped() && session.host.showLayout) {
+            session.host.showLayout();
+        } else if (session.host.clearShape) {
+            session.host.clearShape();
+        }
         return;
     }
     try {
@@ -270,22 +299,19 @@ async function loadVariantShape(session) {
 }
 
 
-async function shapeVariant(session) {
+async function shapeVariant(session, opts) {
     if (session.pipelineShapeBusy) return;
+    const regenerate = !!(opts && opts.regenerate);
     await ensureVariant(session);
-    if (!Projects.isFixture(session.project) && session.variant) {
-        const needsHead = !session.variant.shaped || isWorkingDirty(session);
-        if (needsHead) {
-            session.ui.stageIntent = 'shape';
-            await saveWorkingVariant(session, {force: true});
-        }
-    }
     session.pipelineShapeBusy = true;
     renderPipeline(session);
     try {
+        if (!regenerate && !Projects.isFixture(session.project) && session.variant) {
+            const needsHead = !session.variant.shaped || isWorkingDirty(session);
+            if (needsHead) await saveWorkingVariant(session, {force: true});
+        }
         const payload = session.host.runShape(session.shapeSeed || session.seed);
         await persistShape(session, payload);
-        session.ui.stageIntent = 'shape';
         ensureCurrentThumb(session);
         await refreshPipeline(session);
     } catch (err) {
@@ -294,6 +320,12 @@ async function shapeVariant(session) {
         session.pipelineShapeBusy = false;
         renderPipeline(session);
     }
+}
+
+
+async function regenerateShape(session) {
+    if (!session.host || !session.host.runShape) return;
+    await shapeVariant(session, {regenerate: true});
 }
 
 
@@ -312,9 +344,25 @@ function showWorkspace(session) {
 }
 
 
+function applyInitWorking(session, project, seed) {
+    session.workingRanges = null;
+    if (!project || project.fixture) return;
+    if (project.body && Object.keys(project.body).length) return;
+    if (!project.init) return;
+    session.workingRanges = Init.rangesOf(project.init);
+    const drawn = Init.draw(project, seed);
+    for (const [name, value] of Object.entries(drawn)) {
+        if (name in session.pins) continue;
+        session.workingValues[name] = value;
+    }
+}
+
+
 function showProjectPage(session) {
     if (session.searchSession) exitSearch(session);
     session.ui.variantsOpen = false;
+    session.ui.pickerView = 'list';
+    session.ui.createError = '';
     document.documentElement.classList.add('is-picker');
     document.getElementById('workspace')?.setAttribute('aria-hidden', 'true');
     document.title = 'Projects';
@@ -348,7 +396,7 @@ async function loadProject(session, name) {
     const project = Projects.byName(name);
     const lastId = Boot.readStoredVariant(project.name);
     session.project = project.name;
-    session.pins = Object.assign({}, project.body || {});
+    session.pins = Init.startingPins(project);
     session.workingValues = {};
     session.variant = null;
     session.workingParent = null;
@@ -358,7 +406,6 @@ async function loadProject(session, name) {
     thumbFill += 1;
     session.compareId = null;
     session.discovery = false;
-    session.ui.stageIntent = null;
     session.ui.variantsOpen = false;
     session.ui.saveName = '';
     Undo.dismissUndo(session, {immediate: true});
@@ -368,23 +415,30 @@ async function loadProject(session, name) {
     session.projectModified = false;
     Boot.writeStoredProject(session.project);
     syncProjectTitle(session);
+    session.lastResolved = Projects.resolve({name: session.project, values: effectiveValues(session)});
+    if (session.host && session.host.showLayout) session.host.showLayout();
+    applyInitWorking(session, project, project.fixture && project.seed != null ? 1 : 1);
     applyPins(session, false);
 
     await hydrateCatalog(session);
-    if (resumeCatalog(session)) {
-        if (session.catalog.variants.length) await persistCatalog(session);
-        session.host.generateMesh();
-        renderSearchChrome(session);
-        return;
+    const resumed = resumeCatalog(session);
+    if (resumed && session.catalog.variants.length) await persistCatalog(session);
+    if (!resumed) {
+        const seed = project.fixture && project.seed != null ? project.seed : 1;
+        resetSeedHistory(session, seed);
+        applyInitWorking(session, project, session.seed);
+        applyPins(session, false);
     }
-
-    const seed = project.fixture && project.seed != null ? project.seed : 1;
-    resetSeedHistory(session, seed);
-    session.host.generateMesh();
-    syncContext(session);
+    if (resumed || Projects.isFixture(session.project)) await loadVariantShape(session);
+    if (!(session.host && session.host.isShaped && session.host.isShaped())) {
+        session.host.generateMesh();
+    }
+    if (!resumed) {
+        syncContext(session);
+        syncVariantsUI(session);
+        if (session.catalog.variants.length) await persistCatalog(session);
+    }
     renderSearchChrome(session);
-    syncVariantsUI(session);
-    if (session.catalog.variants.length) await persistCatalog(session);
 }
 
 
@@ -445,7 +499,6 @@ function shuffleSeed(session) {
     if (session.variant) session.discovery = true;
     session.shapeSeed = next;
     if (session.host && session.host.clearShape) session.host.clearShape();
-    session.ui.stageIntent = 'layout';
     commitSeed(session, next);
 }
 
@@ -459,9 +512,7 @@ function setShapeSeed(session, next) {
     session.shapeSeed = parsed;
     session.projectModified = true;
     paint(session);
-    if (session.host && session.host.isShaped && session.host.isShaped()) {
-        session.host.runShape(session.shapeSeed);
-    }
+    rerunShapeIfLive(session);
 }
 
 
@@ -477,6 +528,7 @@ function undoSeed(session) {
     session.seedHistoryIndex--;
     if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
+    if (session.host && session.host.clearShape) session.host.clearShape();
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
     syncContext(session);
@@ -488,6 +540,7 @@ function redoSeed(session) {
     session.seedHistoryIndex++;
     if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
+    if (session.host && session.host.clearShape) session.host.clearShape();
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
     syncContext(session);
@@ -682,7 +735,26 @@ function resumeCatalog(session) {
 }
 
 
+async function hydrateUserProjects() {
+    try {
+        const res = await fetch(`${TdOverlay.TD_API}/projects`);
+        if (!res.ok) return;
+        const data = await res.json();
+        for (const item of data.projects || []) {
+            try { Projects.register(item); } catch (_) { /* skip junk */ }
+        }
+    } catch (_) { /* bake server down */ }
+}
+
+
 async function hydrateAndResume(session) {
+    await hydrateUserProjects();
+    const start = Boot.resolveStartup();
+    if (start.skipPicker) showWorkspace(session);
+    if (start.project !== session.project && Boot.knownProject(start.project)) {
+        await loadProject(session, start.project);
+        return;
+    }
     await hydrateCatalog(session);
     const resumed = resumeCatalog(session);
     if (session.catalog.variants.length) await persistCatalog(session);
@@ -692,6 +764,74 @@ async function hydrateAndResume(session) {
         }
     }
     if (resumed || Projects.isFixture(session.project)) await loadVariantShape(session);
+}
+
+
+function beginCreateProject(session) {
+    session.ui.pickerView = 'create';
+    session.ui.createError = '';
+    session.ui.createDraft = Object.assign({name: ''}, Init.DEFAULTS);
+    paint(session);
+}
+
+
+function setCreateDraft(session, patch) {
+    session.ui.createDraft = Object.assign({}, session.ui.createDraft, patch);
+    session.ui.createError = '';
+    paint(session);
+}
+
+
+function cancelCreateProject(session) {
+    session.ui.pickerView = 'list';
+    session.ui.createError = '';
+    paint(session);
+}
+
+
+async function createProject(session) {
+    if (session.ui.createBusy) return;
+    const draft = session.ui.createDraft || {};
+    let record;
+    try {
+        record = Init.buildRecord({
+            label: draft.name,
+            init: {
+                size: draft.size,
+                age: draft.age,
+                day: draft.day,
+                water: draft.water,
+            },
+        });
+    } catch (err) {
+        session.ui.createError = (err.problems && err.problems[0]) || String(err.message || err);
+        paint(session);
+        return;
+    }
+    session.ui.createBusy = true;
+    session.ui.createError = '';
+    paint(session);
+    try {
+        const res = await fetch(`${TdOverlay.TD_API}/projects`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({label: record.label, init: record.init}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            session.ui.createError = data.error || 'Could not create that project.';
+            return;
+        }
+        Projects.register(data.project);
+        session.ui.pickerView = 'list';
+        session.ui.createDraft = Object.assign({name: ''}, Init.DEFAULTS);
+        openProject(session, data.project.name);
+    } catch (err) {
+        session.ui.createError = 'Could not create that project.';
+    } finally {
+        session.ui.createBusy = false;
+        paint(session);
+    }
 }
 
 
@@ -941,6 +1081,13 @@ function syncModeButtons(session) {
     for (const b of document.querySelectorAll('[data-action="draw"]')) {
         b.setAttribute('aria-pressed', String(b.dataset.draw === drawMode));
     }
+    /* Tiles read the sketch. Hide the look-bar toggle on Layout. */
+    const tiles = document.getElementById('td-crops-toggle');
+    const label = tiles && tiles.closest('label');
+    if (label) {
+        const live = !!(session.host.isShaped && session.host.isShaped());
+        label.hidden = !live;
+    }
 }
 
 
@@ -1120,8 +1267,6 @@ async function toggleSearchVariant(session, i) {
 
 
 async function applySavedVariant(session, saved) {
-    const stayShape = session.ui.stageIntent === 'shape'
-        || (session.host && session.host.isShaped && session.host.isShaped());
     session.variant = saved;
     session.workingParent = null;
     session.workingRanges = saved.ranges || null;
@@ -1133,14 +1278,14 @@ async function applySavedVariant(session, saved) {
     Boot.writeStoredVariant(session.project, saved.id);
     if (saved.thumb) persistThumb(session, saved.id, saved.thumb);
     /* A child starts unshaped. Drop a parent's sketch if it is still on
-     * the globe; do not copy the file onto the new id. */
+     * the globe; do not copy the file onto the new id. The tab follows
+     * the globe, so this returns Discover to Layout. */
     if (session.host && session.host.clearShape) {
         const shaped = session.host.isShaped && session.host.isShaped();
         session.host.clearShape();
         if (shaped && session.host.showLayout) session.host.showLayout();
         else if (shaped) session.host.generateMesh();
     }
-    session.ui.stageIntent = stayShape ? 'shape' : 'layout';
     syncContext(session);
     paint(session);
     return saved;
@@ -1175,10 +1320,11 @@ function openVariant(session, id, opts) {
     if (session.searchSession) exitSearch(session);
     loadVariantState(session, variant);
     session.compareId = null;
-    session.ui.stageIntent = variant.shaped ? 'shape' : 'layout';
     if (!opts || !opts.keepOpen) session.ui.variantsOpen = false;
     session.projectModified = false;
     Boot.writeStoredVariant(session.project, variant.id);
+    session.lastResolved = Projects.resolve({name: session.project, values: effectiveValues(session)});
+    if (session.host && session.host.showLayout) session.host.showLayout();
     applyPins(session, false);
     if (session.seed !== variant.seed) commitSeed(session, variant.seed);
     loadVariantShape(session);
@@ -1278,7 +1424,7 @@ function enterSearch(session) {
     if (!genes.length) return;
     const gen = Search.initialPopulation({
         values: pins,
-        ranges: session.variant && session.variant.ranges,
+        ranges: (session.variant && session.variant.ranges) || session.workingRanges,
         rng: Date.now(),
     });
     session.searchSession = {
@@ -1365,7 +1511,6 @@ function populate(session) {
 
 
 function goLayout(session) {
-    session.ui.stageIntent = 'layout';
     if (session.host && session.host.showLayout) session.host.showLayout();
     paint(session);
 }
@@ -1375,9 +1520,15 @@ async function goShape(session) {
     const dirty = isWorkingDirty(session);
     const shaped = session.variant && session.variant.shaped;
     if (!dirty && shaped) {
-        session.ui.stageIntent = 'shape';
-        await loadVariantShape(session);
+        if (session.pipelineShapeBusy) return;
+        session.pipelineShapeBusy = true;
         paint(session);
+        try {
+            await loadVariantShape(session);
+        } finally {
+            session.pipelineShapeBusy = false;
+            paint(session);
+        }
         return;
     }
     await shapeVariant(session);
@@ -1439,7 +1590,10 @@ function bind(session) {
         const action = el.dataset.action;
         if (action === 'plate-vectors') session.host.setDrawPlateVectors(el.checked);
         else if (action === 'plate-boundaries') session.host.setDrawPlateBoundaries(el.checked);
-        else if (action === 'td-crops') session.host.setTdCrops(el.checked);
+        else if (action === 'td-crops') {
+            if (session.host.isShaped && session.host.isShaped()) session.host.setTdCrops(el.checked);
+            else el.checked = false;
+        }
     });
 
     document.addEventListener('keydown', event => {
@@ -1450,9 +1604,18 @@ function bind(session) {
                 paint(session);
                 return;
             }
-            if (document.documentElement.classList.contains('is-picker') && session.planetReady) {
-                event.preventDefault();
-                showWorkspace(session);
+            if (document.documentElement.classList.contains('is-picker')) {
+                if (session.ui.pickerView === 'create') {
+                    event.preventDefault();
+                    session.ui.pickerView = 'list';
+                    session.ui.createError = '';
+                    paint(session);
+                    return;
+                }
+                if (session.planetReady) {
+                    event.preventDefault();
+                    showWorkspace(session);
+                }
             }
             return;
         }
@@ -1498,6 +1661,10 @@ function mount(session, host) {
     Ui.mount(session, () => uiSnapshot(session), {
         backToProjects: () => showProjectPage(session),
         openProject: (name) => openProject(session, name),
+        beginCreateProject: () => beginCreateProject(session),
+        cancelCreateProject: () => cancelCreateProject(session),
+        setCreateDraft: (patch) => setCreateDraft(session, patch),
+        createProject: () => createProject(session),
         save: () => saveWorkingVariant(session),
         setSaveName: (value) => {
             session.ui.saveName = value.slice(0, Variants.NAME_MAX);
@@ -1513,6 +1680,7 @@ function mount(session, host) {
         runUndo: () => Undo.runUndo(session),
         goLayout: () => goLayout(session),
         goShape: () => goShape(session),
+        regenerateShape: () => regenerateShape(session),
         enterSearch: () => enterSearch(session),
         searchNext: () => nextSearch(session),
         searchBack: () => backSearch(session),

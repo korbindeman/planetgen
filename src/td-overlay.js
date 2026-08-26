@@ -502,7 +502,7 @@ function paint(view) {
     const el = overlayCanvas();
     const src = document.getElementById('output');
     if (!el || !src) return;
-    if (!enabled) {
+    if (!enabled || view.shaped === false) {
         if (el.width !== 1 || el.height !== 1) {
             el.width = 1;
             el.height = 1;
@@ -870,21 +870,20 @@ function edgePoints(crop, n) {
     return pts;
 }
 
-function renderCropList(host, {onToggle, onFrame, onBake, onClearDraft, onLevel, seed, radiusKm, scaleKm, minCells, maxCells}) {
+function renderCropList(host, {onToggle, onFrame, onBake, onClearDraft, seed, radiusKm, scaleKm}) {
     if (!host) return;
     host.replaceChildren();
     host.append(note('Hold shift to see the tile grid. Click a tile, or drag across several.'));
     if (!apiUp) {
         host.append(note('Bake server is off. Use bun run dev so jobs can run.'));
     }
-    host.append(levelRow(onLevel, radiusKm, scaleKm, minCells, maxCells));
+    host.append(note(`Each tile is ${Math.round(Cube.tileEdgeKm(grid.level, radiusKm))} km across.`));
     if (grid.picked.length) {
         const cells = Cube.tileCells(grid.level, radiusKm, scaleKm);
-        const edge = Cube.tileEdgeKm(grid.level, radiusKm);
         const already = grid.picked.filter((t) => bakedTile(t)).length;
         host.append(note(
             `${grid.picked.length} tile${grid.picked.length === 1 ? '' : 's'} · `
-            + `${cells}×${cells} cells each · ${Math.round(edge)} km across`,
+            + `${cells}×${cells} cells each`,
         ));
         if (already) host.append(note(`${already} already baked — baking again replaces them.`));
         const bake = document.createElement('button');
@@ -1076,29 +1075,6 @@ function pollJobs() {
         });
 }
 
-/*
- * Only the levels that make a sane bake are offered: fewer cells than the
- * model can condition on is a waste of a job, more than the server's cap is
- * not a preview any more. Want a bigger area — pick more tiles.
- */
-function levelRow(onLevel, radiusKm, scaleKm, minCells, maxCells) {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const levels = Cube.usableLevels(radiusKm, scaleKm, minCells, maxCells);
-    const label = note(`Tile ${Math.round(Cube.tileEdgeKm(grid.level, radiusKm))} km`);
-    for (const [text, delta, title] of [['−', -1, 'Bigger tiles'], ['+', 1, 'Smaller tiles']]) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = text;
-        btn.title = title;
-        btn.disabled = !levels.includes(grid.level + delta);
-        btn.addEventListener('click', () => onLevel && onLevel(grid.level + delta));
-        row.append(btn);
-    }
-    row.append(label);
-    return row;
-}
-
 function frameView(crop) {
     const midLon = (crop.west + crop.east) / 2;
     const midLat = (crop.south + crop.north) / 2;
@@ -1120,7 +1096,7 @@ function frameView(crop) {
 function setGridLevel(level) {
     const next = Cube.clampLevel(level);
     if (next === grid.level) return;
-    /* Keep what is picked pointing at the same ground, at the new level. */
+    /* Radius changed, so the ~310 km pick is a different cube level. */
     grid.level = next;
     grid.picked = [];
     grid.hover = null;

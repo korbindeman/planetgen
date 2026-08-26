@@ -36,6 +36,7 @@ module.exports = {
         rotationHours: 24,
         axialTiltDeg: 23.44,
         ageGyr: 4.54,
+        seaLevelThicknessKm: 29,
     },
 
     /* Authored fixture knobs, not pins. Dry share is an output: solving

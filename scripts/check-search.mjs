@@ -41,20 +41,38 @@ console.log("search");
     const genes = Search.genesFor(thalos);
     const expected = [
         "steps", "plates", "cratons", "continentFraction",
-        "hotspots", "ageGyr",
+        "seaLevelThicknessKm", "hotspots", "ageGyr",
     ].sort();
     check("thalos genes are the unpinned freeable set",
         genes.slice().sort().join() === expected.join(),
         `got ${genes.join(", ")}`);
     check("layout search does not draw shape genes",
         !genes.includes("warpStrength") && Params.phase("warpStrength") === "shape");
+    for (const name of Params.exposed().filter((n) => Params.phase(n) === "shape")) {
+        check(`search does not draw exposed ${name}`, !genes.includes(name));
+    }
     for (const name of Object.keys(thalos)) {
         check(`thalos body ${name} is not a gene`, !genes.includes(name));
     }
     check("landFraction is not a gene", !genes.includes("landFraction"));
     const earth = Search.genesFor(Projects.authored("earth"));
     check("earth authored knobs are not genes",
-        !earth.includes("continentFraction") && !earth.includes("cratons"));
+        !earth.includes("continentFraction") && !earth.includes("cratons")
+        && !earth.includes("seaLevelThicknessKm"));
+}
+
+{
+    const Init = Projects.Init;
+    const ranges = Init.rangesOf({size: "small"});
+    const gen = Search.initialPopulation({
+        values: Init.DEFAULT_PINS,
+        ranges,
+        count: 16,
+        rng: 3,
+    });
+    check("search from Small draws radius", gen.genes.includes("radiusKm"));
+    check("search from Small keeps radius in the Small box",
+        gen.population.every((ind) => inside(ind.values.radiusKm, ranges.radiusKm)));
 }
 
 /* 2. Gen 0 samples stay inside the current range. */

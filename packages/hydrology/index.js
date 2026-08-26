@@ -1,9 +1,10 @@
 /*
- * Fine hydrology — not implemented.
+ * Fine hydrology — not implemented. How hard to cut is open.
  *
  * Real river networks, discharge, lakes and canyons on the baked 90 m
- * (or 30 m) DEM. Not on the planetgen mesh. The detail pass already
- * roughs in valleys; this stage cuts the network.
+ * (or 30 m) DEM. Not on the planetgen mesh. The bake already looks
+ * eroded; this pass connects drainage. Do not rerun Shape's
+ * stream-power recipe here. See docs/preparing-for-diffusion.md.
  */
 'use strict';
 

@@ -4,18 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Procedural Planet Generation</title>
-    <!-- First paint only toggles the picker. The same keys
-         `src/studio/boot.js` reads: ?project=, ?seed=, ?variant=,
-         activeProject. -->
+    <!-- First paint only toggles the picker. Shipped names (thalos,
+         earth) plus ?seed= / ?variant= skip it. User projects wait for
+         the module to register them. Same keys as src/studio/boot.js. -->
     <script>
       (function () {
         try {
           var q = new URLSearchParams(location.search);
-          var project = (q.get('project') || '').trim();
+          var project = (q.get('project') || '').trim().toLowerCase();
           var seed = q.get('seed');
           var variant = (q.get('variant') || '').trim();
-          var stored = localStorage.getItem('planetgen.activeProject');
-          if (!(project || (seed != null && seed !== '') || variant || stored)) return;
+          var stored = (localStorage.getItem('planetgen.activeProject') || '').trim().toLowerCase();
+          var shipped = {thalos: 1, earth: 1};
+          if (!(shipped[project] || (seed != null && seed !== '') || variant || shipped[stored])) return;
           document.documentElement.classList.remove('is-picker');
         } catch (e) { /* private mode */ }
       })();
@@ -239,13 +240,10 @@
           transform: none;
         }
       }
-      @media (prefers-color-scheme: dark) {
-        body.sidebar-collapsed .sidebar-toggle { filter: invert(1); }
-      }
       .controls p { margin: 0; }
       /* Restyle native widgets in the rail so nothing falls back to UA
          chrome. Ghost by default; .stage-forward is the one filled action. */
-      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants),
+      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-tab),
       .studio-modal .row button,
       .studio-modal .stage-flow button,
       .btn {
@@ -263,7 +261,7 @@
         transition-duration: 150ms;
         transition-timing-function: var(--pg-ease-out);
       }
-      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-forward),
+      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-forward):not(.stage-tab),
       .studio-modal .row button:not(.stage-forward),
       .studio-modal .stage-flow button:not(.stage-forward),
       .btn {
@@ -271,25 +269,26 @@
         color: inherit;
       }
       .sidebar-inner button.stage-forward:not(:disabled),
-      .studio-modal button.stage-forward:not(:disabled) {
+      .studio-modal button.stage-forward:not(:disabled),
+      #project-page button.stage-forward:not(:disabled) {
         background: var(--pg-ink);
         color: #fff;
         font-weight: 600;
       }
-      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):focus,
+      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-tab):focus,
       .studio-modal .row button:focus,
       .studio-modal .stage-flow button:focus,
       .btn:focus {
         outline: none;
       }
-      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):focus-visible,
+      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-tab):focus-visible,
       .studio-modal .row button:focus-visible,
       .studio-modal .stage-flow button:focus-visible,
       .btn:focus-visible {
         outline: 2px solid currentColor;
         outline-offset: 2px;
       }
-      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):disabled,
+      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-tab):disabled,
       .studio-modal .row button:disabled,
       .studio-modal .stage-flow button:disabled,
       .btn:disabled,
@@ -297,21 +296,22 @@
         opacity: 0.35;
         cursor: default;
       }
-      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(:disabled):active,
+      .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-tab):not(:disabled):active,
       .studio-modal .row button:not(:disabled):active,
       .studio-modal .stage-flow button:not(:disabled):active,
       .btn:not(:disabled):active {
         transform: scale(0.96);
       }
       @media (hover: hover) and (pointer: fine) {
-        .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-forward):not(.stage-back):not(:disabled):hover,
+        .sidebar-inner button:not(.param-pin):not(.back-projects):not(.td-frame):not(.shell-variants):not(.stage-forward):not(.stage-tab):not(:disabled):hover,
         .studio-modal .row button:not(.stage-forward):not(:disabled):hover,
         .studio-modal .stage-flow button:not(.stage-forward):not(:disabled):hover,
         .btn:not(:disabled):hover {
           background: var(--pg-fill-hover);
         }
         .sidebar-inner button.stage-forward:not(:disabled):hover,
-        .studio-modal button.stage-forward:not(:disabled):hover {
+        .studio-modal button.stage-forward:not(:disabled):hover,
+        #project-page button.stage-forward:not(:disabled):hover {
           background: #000;
           color: #fff;
         }
@@ -585,11 +585,76 @@
         opacity: 1;
         text-wrap: balance;
       }
-      .stage-back {
-        padding: 0.4rem 0.45rem 0.4rem 0;
-        font-size: 0.65rem;
+      .stage-tabs {
+        display: flex;
+        gap: 2px;
+        margin: 0 0 0.75rem;
+        padding: 2px;
+        border-radius: var(--pg-radius);
+        background: var(--pg-fill);
+      }
+      .stage-tab {
+        appearance: none;
+        -webkit-appearance: none;
+        flex: 1;
+        min-width: 0;
+        min-height: 40px;
+        margin: 0;
+        padding: 0.4rem 0.55rem;
+        border: 0;
+        border-radius: var(--pg-radius-sm);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 0.95rem;
         font-weight: 650;
-        opacity: 0.42;
+        line-height: 1.2;
+        opacity: 0.48;
+        cursor: pointer;
+        transition-property: transform, background-color, opacity, color, box-shadow;
+        transition-duration: 150ms;
+        transition-timing-function: var(--pg-ease-out);
+      }
+      .stage-tab[aria-selected="true"] {
+        opacity: 1;
+        background: #fff;
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.08),
+          0 1px 2px rgba(0, 0, 0, 0.08);
+      }
+      .stage-tab:focus {
+        outline: none;
+      }
+      .stage-tab:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+      .stage-tab:disabled {
+        cursor: default;
+        opacity: 0.35;
+      }
+      .stage-tab[aria-selected="true"]:disabled {
+        opacity: 1;
+      }
+      .stage-tab:not(:disabled):active {
+        transform: scale(0.96);
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .stage-tab:not(:disabled):hover {
+          opacity: 0.7;
+        }
+        .stage-tab[aria-selected="true"]:not(:disabled):hover {
+          opacity: 1;
+          background: #fff;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .stage-tab {
+          transition-duration: 0ms;
+        }
+        .stage-tab:active {
+          transform: none;
+        }
       }
       .stage-tools { margin: 0 0 0.85rem; }
       .tool-row {
@@ -1339,6 +1404,7 @@
         font-size: 0.85em;
         gap: 0.4rem;
       }
+      .look-bar .check[hidden] { display: none; }
       .look-bar .check:has(input:checked) {
         background: rgba(0, 0, 0, 0.1);
         font-weight: 650;
@@ -1514,10 +1580,6 @@
       .north-compass-rose .hud-icon {
         transform: rotate(-45deg);
       }
-      @media (prefers-color-scheme: dark) {
-        .globe-hud,
-        .look-bar { filter: invert(1); }
-      }
       body.view-equirect .globe-only {
         display: none;
       }
@@ -1593,12 +1655,131 @@
           0 1px 2px rgba(0, 0, 0, 0.08),
           0 8px 24px rgba(0, 0, 0, 0.06);
       }
+      .project-card.is-new {
+        color: var(--pg-muted);
+        font-weight: 500;
+        outline: 1px dashed rgba(0, 0, 0, 0.22);
+        outline-offset: -1px;
+        box-shadow: none;
+        background: transparent;
+        grid-column: 1 / -1;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .project-card.is-new:hover {
+          color: inherit;
+          background: var(--pg-fill);
+          box-shadow: none;
+        }
+      }
+      .project-create {
+        display: grid;
+        gap: 1.1rem;
+      }
+      .project-create-field {
+        display: grid;
+        gap: 0.35rem;
+      }
+      .project-create-field > span,
+      .bucket-label {
+        font-size: 0.82rem;
+        font-weight: 650;
+      }
+      .project-create-name {
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0.55rem 0.75rem;
+        border: 0;
+        border-radius: var(--pg-radius);
+        background: var(--pg-fill);
+        color: inherit;
+        font: inherit;
+      }
+      .project-create-name:focus {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+      .bucket-axis { display: grid; gap: 0.4rem; }
+      .bucket-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .bucket {
+        flex: 1 1 6.5rem;
+        min-height: 40px;
+        padding: 0.45rem 0.65rem;
+        border: 0;
+        border-radius: var(--pg-radius-sm);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition-property: transform, background-color;
+        transition-duration: 150ms;
+        transition-timing-function: var(--pg-ease-out);
+      }
+      .bucket > span { display: block; }
+      .bucket-hint {
+        margin-top: 0.1rem;
+        font-size: 0.78em;
+        font-weight: 400;
+        opacity: 0.48;
+        text-wrap: pretty;
+      }
+      .bucket.is-on { background: var(--pg-fill); }
+      @media (hover: hover) and (pointer: fine) {
+        .bucket:hover { background: var(--pg-fill-hover); }
+      }
+      .bucket:active { transform: scale(0.96); }
+      @media (prefers-reduced-motion: reduce) {
+        .bucket { transition-duration: 0ms; }
+        .bucket:active { transform: none; }
+      }
+      .project-create-error {
+        margin: 0;
+        opacity: 0.7;
+        text-wrap: pretty;
+      }
+      .project-create-actions {
+        display: flex;
+        gap: 0.4rem;
+        align-items: center;
+        margin-top: 0.2rem;
+      }
+      .project-create-actions button {
+        appearance: none;
+        margin: 0;
+        padding: 0.45rem 0.8rem;
+        border: 0;
+        border-radius: var(--pg-radius-sm);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 0.9rem;
+        cursor: pointer;
+        min-height: 40px;
+      }
+      .project-create-actions button:focus-visible,
+      .project-card:focus-visible,
+      .bucket:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+      .project-create-actions .stage-forward {
+        margin-left: auto;
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .project-create-actions button:not(.stage-forward):hover {
+          background: var(--pg-fill-hover);
+        }
+      }
       @media (hover: hover) and (pointer: fine) {
         .back-projects:hover { opacity: 1; }
-        .stage-back:hover { opacity: 1; background: transparent; }
         .shell-variants:hover { opacity: 1; background: var(--pg-fill); }
         .param-pin:hover { background: var(--pg-fill); opacity: 0.7; }
-        .project-card:hover {
+        .project-card:hover:not(.is-new) {
           box-shadow:
             0 0 0 1px rgba(0, 0, 0, 0.12),
             0 2px 4px rgba(0, 0, 0, 0.08),
@@ -2039,7 +2220,7 @@
         <div class="row" role="group" aria-label="Overlays">
           <label class="check"><input type="checkbox" data-action="plate-vectors"><span>Motion</span></label>
           <label class="check"><input type="checkbox" data-action="plate-boundaries"><span>Boundaries</span></label>
-          <label class="check"><input id="td-crops-toggle" type="checkbox" data-action="td-crops"><span>Tiles</span></label>
+          <label class="check" hidden><input id="td-crops-toggle" type="checkbox" data-action="td-crops"><span>Tiles</span></label>
         </div>
       </div>
       <div class="globe">

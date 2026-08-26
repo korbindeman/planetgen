@@ -10,17 +10,18 @@ The bake pipeline below runs on **one** planet. Getting to that planet is
 **Discover**, and it is the studio's job. Canonical: [studio.md](studio.md).
 
 ```
-adopted body                    optional project default
-    → search from a variant     working planets; likes steer the session box
-    → save variant              child of head: layout seed, shape seed, body, genes, pins
+name + body buckets             initialize; ranges, not pins
+    → search / shuffle          working planets; likes steer the session box
+    → save variant              snapshot: layout seed, shape seed, body, genes, pins
     → run Shape                 explicit; 23 km sketch, cached on that node
     → hand-author (later)       sculpt that variant's sketch
     → preview tiles             90 m crops, per variant — a tool, not a stage
     → Finish                    climate, terrain, hydrology, export
 ```
 
-A project is a tree of variants plus an optional adopted body. A variant
-stores its own body. Pins are body-only and inherited down the lineage.
+A project is a tree of variants plus an optional adopted body. During
+initialize the project holds body buckets instead. A variant stores its
+own body. Pins are body-only and inherited down the lineage.
 Finish runs on the variant you name.
 
 Every Save is a new node. A node's sketch does not go stale; a child is a
@@ -90,9 +91,11 @@ Regional crops work today (preparing-for-diffusion.md). The full planet is diffe
 - **Poles**: cubesphere kills the equirect-distortion problem, but the ±60° training clip remains. Mitigation: pin climate channels cold at high SNR (the model saw cold-dry terrain south of 60°) and treat ice sheets as a post-pass. **Open** until a polar face looks right.
 - **Scale of the bake** (90 m model, Earth): ~10¹¹ output px ≈ 200 GB int16; on the order of 600k tile-samples with overlap ≈ single-digit GPU-days. **Thalos is a quarter of that** (half radius): ~150k tiles, one to two days on the home 4070 Ti. The dense DEM is the bake, not the install — the game ships a sparse residual pyramid (~2–3 GB for Thalos). See [full-planet-bake.md](full-planet-bake.md). Feasible, not casual — which is why every stage upstream gets validated on crops first.
 
-### Hydrology and post — decided (documented elsewhere)
+### Hydrology and post — decided that we do it; how hard is open
 
-Fine drainage — real river networks, discharge, lakes, canyons — runs on the baked DEM, never as a substitute for the planetgen mesh. The detail pass already does a first-stage shaping (priority-flood, stream power, glacial fjords) so the sketch the diffusion model sees has valleys and a coast that drains somewhere; that is rough texture, not the network. The pass structure for the fine stage (priority-flood, D8 accumulation, stream-power incision, hillslope) is in preparing-for-diffusion.md. Planet-scale addendum: flow routing must run on the cubesphere adjacency graph so rivers cross face edges; route at full resolution per drainage basin, or at an intermediate global level (~1 km) with carving applied to the fine tiles.
+Fine drainage — real river networks, discharge, lakes, canyons — runs on the baked DEM, never as a substitute for the planetgen mesh. That pass is a large part of whether the planet feels believable. The detail pass already does a first-stage shaping (priority-flood, stream power, glacial fjords) so the sketch the diffusion model sees has valleys and a coast that drains somewhere; that is rough texture, not the network.
+
+**Open:** diffusion is trained on already-eroded Earth DEMs, so the 90 m bake already looks dissected. A second heavy erosion pass will break those landform statistics. Hydrology has to be a consistency pass (connect basins, breach false divides, incise only where the valley is too shallow), not Shape's stream-power recipe run again. Large meander belts and oxbows belong on the 90 m DEM (floodplain planform, not more incision; D8 across a belt is a cutoff). Creek meanders stay a reach graph / runtime spline. Working stance and the candidate operations: [preparing-for-diffusion.md](preparing-for-diffusion.md). Planet-scale addendum: flow routing must run on the cubesphere adjacency graph so rivers cross face edges; route at full resolution per drainage basin, or at an intermediate global level (~1 km) with carving applied to the fine tiles.
 
 ### Below 90 m — decided (runtime)
 
@@ -102,12 +105,12 @@ The model floor is 90 m. Ground-level gameplay needs ~1 m. That layer is non-ML 
 
 - **planetgen (this repo)**: the studio. The base, project pins, regional preview bakes, and pipeline status live here. Do not vendor terrain-diffusion. When ExoPlaSim graduates from trial, `export:td` grows a mode that takes bake-time climate rasters instead of deriving channels from `climate.js`.
 - **~/dev/terrain-diffusion**: sibling checkout, upstream untouched. The app kicks `tiff-export` as a subprocess.
-- **Cubesphere bake** (faces, seams, full 90 m job, hydrology on the DEM): still `@planetgen/bake`, a named slot. That is Finish/Terrain internals, not a Progress stage. Preview tiles come first, as a Discover tool.
+- **Cubesphere bake** (faces, seams, full 90 m job, hydrology on the DEM): still `@planetgen/bake`, a named slot. That is Finish/Terrain internals, not a Progress stage. Preview tiles come first, as a Shape tool.
 
 ## Order of attack
 
 1. ExoPlaSim trial on one planetgen heightmap (T21, then T42 if promising). Cheapest stage, biggest realism swing, zero coupling to the hard engineering.
 2. Cubesphere face raster + adjacency table, and one face generated via `WorldPipeline` with imported conditioning — compare against a `tiff-export` crop of the same region.
-3. One face edge + one corner, seam-blended. This proves or reshapes the whole bake plan.
+3. One face edge + one corner, seam-blended. Preview tiles now generate a halo and stitch (`src/td-seam.js`); `check:tiles` covers the warp only. Still needs two real bakes that share a cube edge, then a corner, before this reshapes the planet-scale plan.
 4. Full coarse planet (all six faces at 23 km conditioning, coarse model only) — cheap, and the first look at the planet as a planet.
 5. Scale out: full 90 m bake on the home 4070 Ti, then hydrology.
