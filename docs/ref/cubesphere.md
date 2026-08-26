@@ -66,7 +66,7 @@ already on disk — first bake owns the edge, and the join is C0.
 spherical field, which is enough to know the transform is right and not
 enough to know the terrain matches. Two tiles sharing a **cube edge**
 (not the same face) need baking and cropping. A three-face corner is
-worse and is untouched. Tracked in [terrain.md § Open](../terrain.md#open).
+worse and is untouched. Tracked in [terrain.md § Open](../stages/terrain.md#open).
 
 ## Prior art
 

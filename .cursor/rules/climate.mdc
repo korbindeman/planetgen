@@ -18,7 +18,7 @@ Do not add a distance-to-ocean falloff, drop `recycling`, or drop the
 two-season solve.
 
 The full invariant list, the model, and the bake-time tier:
-[docs/climate.md](../../docs/climate.md). Do not restate it here.
+[docs/climate.md](../../docs/stages/climate.md). Do not restate it here.
 
 Judge from `bun run preview climate` — the moisture field on its own. The
 finished biome map compresses the middle of the range, so a real

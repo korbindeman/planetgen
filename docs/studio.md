@@ -47,12 +47,12 @@ Thalos and Earth stay shipped modules. A name that slugs to `thalos` or
 
 | Stage | Phase | Done means | Doc |
 | --- | --- | --- | --- |
-| **Layout** | Discover | This variant's plates and continents are kept. | [layout.md](layout.md) |
-| **Shape** | Discover | Detail + later sculpting frozen as the sketch. | [shape.md](shape.md) |
-| **Climate** | Finish | Bake-time climate on that height (ExoPlaSim). Skip if the sketch keeps `climate.js`. | [climate.md](climate.md) |
-| **Terrain** | Finish | Whole-planet diffusion (cheap pass then 90 m). Cube faces and seams are internal. | [terrain.md](terrain.md) |
-| **Carve** | Finish | Rivers, fjords, and stamps on that DEM. Hydrology is the drainage work inside it. | [hydrology](carve-hydrology.md), [landforms](carve-landforms.md) |
-| **Export** | Finish | Residual pyramid for the game. | [export.md](export.md) |
+| **Layout** | Discover | This variant's plates and continents are kept. | [layout.md](stages/layout.md) |
+| **Shape** | Discover | Detail + later sculpting frozen as the sketch. | [shape.md](stages/shape.md) |
+| **Climate** | Finish | Bake-time climate on that height (ExoPlaSim). Skip if the sketch keeps `climate.js`. | [climate.md](stages/climate.md) |
+| **Terrain** | Finish | Whole-planet diffusion (cheap pass then 90 m). Cube faces and seams are internal. | [terrain.md](stages/terrain.md) |
+| **Carve** | Finish | Rivers, fjords, and stamps on that DEM. Hydrology is the drainage work inside it. | [hydrology](stages/carve-hydrology.md), [landforms](stages/carve-landforms.md) |
+| **Export** | Finish | Residual pyramid for the game. | [export.md](stages/export.md) |
 
 Preview tiles are a Shape **tool**, not a stage. They read the sketch.
 Pick them on the cubesphere grid, bake, drape. Cubesphere, conditioning,
@@ -205,4 +205,4 @@ spacing, jitter, and the 1843 path (live tectonics, merge ocean plates,
 one world ocean) behind Advanced. Those toggles are mostly unused and
 should likely go. They are shipped application values, not genes — the
 1843 blend earns its place only as a comparison
-([layout.md](layout.md#the-1843-path)).
+([layout.md](stages/layout.md#the-1843-path)).

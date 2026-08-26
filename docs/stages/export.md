@@ -83,7 +83,7 @@ displacement, bottoming out around 0.5 m.
 
 Do not bake it. Human scale is never a diffusion bake, and 30 m globally
 is a measurement we might take later, not the global bake — see
-[ref/bake-compute.md](ref/bake-compute.md).
+[ref/bake-compute.md](../ref/bake-compute.md).
 
 The whole planet is playable: landable and flyable everywhere. Do not
 treat 90 m windows as "the playable parts."

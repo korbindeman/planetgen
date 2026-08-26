@@ -16,12 +16,12 @@ Do not hard-code this planet's geography into the model. Do not pin a Pacific, a
 
 | Stage | Grain | Doc | The one rule |
 | --- | --- | --- | --- |
-| **Layout** | ~10k cells | [docs/layout.md](docs/layout.md) | Coasts are interpolated from a continuous field, never stamped from plate outlines. Raising `N` makes it worse. |
-| **Shape** | 23 km sketch | [docs/shape.md](docs/shape.md) | A body is at least two cells. Do not finish coasts or drainage here. |
-| **Climate** | 23 km fields | [docs/climate.md](docs/climate.md) | Moisture is advected downwind, never painted on by latitude. |
-| **Terrain** | 90 m DEM | [docs/terrain.md](docs/terrain.md) | Do not vendor terrain-diffusion. Do not `tiff-export` the whole world. |
-| **Carve** | 90 m DEM | [hydrology](docs/carve-hydrology.md), [landforms](docs/carve-landforms.md) | Diffusion owns landform statistics; hydrology owns drainage. Different knobs. |
-| **Export** | residual pyramid | [docs/export.md](docs/export.md) | Ship the pyramid, never the dense bake. |
+| **Layout** | ~10k cells | [docs/layout.md](docs/stages/layout.md) | Coasts are interpolated from a continuous field, never stamped from plate outlines. Raising `N` makes it worse. |
+| **Shape** | 23 km sketch | [docs/shape.md](docs/stages/shape.md) | A body is at least two cells. Do not finish coasts or drainage here. |
+| **Climate** | 23 km fields | [docs/climate.md](docs/stages/climate.md) | Moisture is advected downwind, never painted on by latitude. |
+| **Terrain** | 90 m DEM | [docs/terrain.md](docs/stages/terrain.md) | Do not vendor terrain-diffusion. Do not `tiff-export` the whole world. |
+| **Carve** | 90 m DEM | [hydrology](docs/stages/carve-hydrology.md), [landforms](docs/stages/carve-landforms.md) | Diffusion owns landform statistics; hydrology owns drainage. Different knobs. |
+| **Export** | residual pyramid | [docs/export.md](docs/stages/export.md) | Ship the pyramid, never the dense bake. |
 
 **Discover** is Layout and Shape; **Finish** is Climate through Export. The harness — projects, variants, what a Save is — is [`docs/studio.md`](docs/studio.md), canonical. The words are [`CONTEXT.md`](CONTEXT.md).
 
@@ -69,7 +69,7 @@ Judge the **batch**, not one seed: a failure mode that hits every seed reads as 
 
 `bun run stats` and `bun run climate` are optional hints when a picture looks collapsed. Do not lead with them and do not treat a green number as done.
 
-`bun run check:earth` locks the Earth fixture's `stats` report to `scripts/earth-baseline.txt` so a model change cannot drift Earth unnoticed. It is a tripwire, not a taste test: if it fails, look at the Earth captures, decide whether the picture moved the right way, then `--update`. Also: `check:projects`, `check:search`, `check:tiles`, `check:pipeline`, `check:td`.
+`bun run check:earth` locks the Earth fixture's `stats` report to `scripts/earth-baseline.txt` so a model change cannot drift Earth unnoticed. It is a tripwire, not a taste test: if it fails, look at the Earth captures, decide whether the picture moved the right way, then `--update`. Also: `check:projects`, `check:search`, `check:tiles`, `check:pipeline`, `check:td`, and `check:docs` — links resolve, contract tables match the code, every stage doc has its seven sections.
 
 **Do not open the interactive app in any built-in agent browser** (Simple Browser, MCP browser, Cursor browser). Tell the user they can run `bun run dev` and open `http://localhost:3000` themselves.
 

@@ -69,7 +69,7 @@ cache that keeps height and climate only is broken.
 ### What Terrain wants from this
 
 Shape's real output target is a sketch terrain-diffusion can eat. Written
-from the model's side in [ref/terrain-diffusion.md](ref/terrain-diffusion.md);
+from the model's side in [ref/terrain-diffusion.md](../ref/terrain-diffusion.md);
 the part that constrains Shape:
 
 - Continent-scale land vs ocean, sea at 0 m, irregular coasts that came
@@ -149,7 +149,7 @@ Shape reuses the variant's layout: plates and `climate.js` do **not**
 rerun when you Shape, shuffle the shape seed, or move a shape gene.
 
 The full reasoning for choosing these three, and what was rejected, is in
-[history/shape-detail-pass-2026-08.md](history/shape-detail-pass-2026-08.md).
+[history/shape-detail-pass-2026-08.md](../history/shape-detail-pass-2026-08.md).
 
 ## Open
 

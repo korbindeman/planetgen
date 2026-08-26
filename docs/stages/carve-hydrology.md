@@ -25,7 +25,7 @@ this stage exists.
 | the 90 m DEM | [Terrain](terrain.md#hands-on) | the surface to route on and cut into |
 | `r_moisture`, `r_temperature` at 23 km | [Climate](climate.md#hands-on) | discharge, and which basins are endorheic |
 | `r_boundary`, `r_orogeny` at 23 km | [Layout](layout.md#hands-on) via the sketch | bedrock vs alluvial character |
-| face adjacency | [ref/cubesphere.md](ref/cubesphere.md) | flow must cross face edges |
+| face adjacency | [ref/cubesphere.md](../ref/cubesphere.md) | flow must cross face edges |
 
 **Wishes** — unknown until a trial runs. Expect this list to be the most
 active in the repo once the stage starts. Likely candidates: a

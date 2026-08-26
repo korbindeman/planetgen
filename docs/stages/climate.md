@@ -45,7 +45,7 @@ export time** from latitude, inland dryness and seasonality. That is the
 weakest join in the pipeline: they are heuristics standing in for a
 seasonal cycle nothing here actually simulates. A GCM would drop all four
 out of a 12-month climatology instead. Mapping in
-[ref/terrain-diffusion.md](ref/terrain-diffusion.md#unit-mapping).
+[ref/terrain-diffusion.md](../ref/terrain-diffusion.md#unit-mapping).
 
 Climate ships to the game at the **coarse cell (~23 km)**, never as a
 90 m raster.

@@ -1,15 +1,22 @@
 # planetgen docs
 
-The generator is a **pipeline of stages**. Each stage owns one grain, reads
-what the stage before it handed on, and hands on something the next stage
-can use. Most of the interesting work in this project is deepening one
-stage, or widening the contract between two.
+```
+docs/
+  studio.md    the harness: Discover/Finish, projects, variants, what a Save is
+  stages/      one file per pipeline stage — the research lives here
+  ref/         stable lookup: external tools and formats
+  history/     decisions as they were made, dated, never updated
+```
 
-One file per stage. That file is where its research, its decisions, and its
-open questions live. If you are working on a stage, you should not have to
-read any other stage's file to know what you are allowed to do.
+Language — every term and what not to call it — is
+[../CONTEXT.md](../CONTEXT.md).
 
 ## The pipeline
+
+The generator is a **pipeline of stages**. Each stage owns one grain,
+reads what the stage before it handed on, and hands on something the next
+stage can use. Most of the work in this project is deepening one stage, or
+widening the contract between two.
 
 ```
 Layout    ~10k cells        plates, continents, tectonic history
@@ -28,22 +35,24 @@ Export    residual pyramid  what the game installs
 ```
 
 **Discover** is Layout and Shape — search, save, iterate. **Finish** is
-Climate through Export — overnight and GPU work on a variant you kept. The
-harness around both is [studio.md](studio.md).
+Climate through Export — overnight and GPU work on a variant you kept.
 
 | Stage | Grain | State | Doc |
 | --- | --- | --- | --- |
-| Layout | ~10k cells (~113 km on Thalos) | Live, improving | [layout.md](layout.md) |
-| Shape | 23 km/px sketch | Live, improving | [shape.md](shape.md) |
-| Climate | 23 km fields | Live heuristic; bake tier untried | [climate.md](climate.md) |
-| Terrain | 90 m/px | Regional tiles work; planet scale open | [terrain.md](terrain.md) |
-| Carve — hydrology | 90 m/px | Not started; method open | [carve-hydrology.md](carve-hydrology.md) |
-| Carve — landforms | 90 m/px | Not started | [carve-landforms.md](carve-landforms.md) |
-| Export | sparse pyramid | Schema decided; bake unwritten | [export.md](export.md) |
+| Layout | ~10k cells (~113 km on Thalos) | Live, improving | [stages/layout.md](stages/layout.md) |
+| Shape | 23 km/px sketch | Live, improving | [stages/shape.md](stages/shape.md) |
+| Climate | 23 km fields | Live heuristic; bake tier untried | [stages/climate.md](stages/climate.md) |
+| Terrain | 90 m/px | Regional tiles work; planet scale open | [stages/terrain.md](stages/terrain.md) |
+| Carve — hydrology | 90 m/px | Not started; method open | [stages/carve-hydrology.md](stages/carve-hydrology.md) |
+| Carve — landforms | 90 m/px | Not started | [stages/carve-landforms.md](stages/carve-landforms.md) |
+| Export | sparse pyramid | Schema decided; bake unwritten | [stages/export.md](stages/export.md) |
+
+If you are working on a stage, you should not have to read another
+stage's file to know what you are allowed to do.
 
 ## How a stage doc is laid out
 
-Every stage file has the same seven sections, in this order:
+Seven sections, same order, every file:
 
 1. **What it does** — the job, and at what grain.
 2. **Reads** — what it takes from upstream, what it does with it, and
@@ -55,52 +64,28 @@ Every stage file has the same seven sections, in this order:
    reverted. Do not delete a line here without a picture that says why.
 5. **How it works today** — the mechanism.
 6. **Open** — unresolved questions, measured dead ends, what to try next.
-7. **How to judge it** — the capture, the command, what you are looking for.
+7. **How to judge it** — the capture, the command, what you are looking
+   for.
 
-Sections 2 and 3 are the ones that make the pipeline improve. A stage
-gets better mostly by being handed more context, not by being tuned:
-Layout began emitting history maps because Shape's wishes list asked for
-them. When a wish is granted it becomes a row in section 3 upstream.
+Sections 2 and 3 are what make the pipeline improve. A stage gets better
+mostly by being handed more context, not by being tuned: Layout began
+emitting history maps because Shape's wishes list asked for them. **When
+a wish is granted it becomes a row in section 3 upstream** — move it, do
+not leave it in both places.
 
 Section 6 is the point of this repo. Almost every stage is open. A doc
 that reads as finished is either wrong or about Export.
 
+`bun run check:docs` holds all of that: links and anchors resolve,
+contract tables match the field lists in the code, every stage has its
+seven sections. It also prints the open wishes across the pipeline.
+
 **One file per stage, until it earns a folder.** When a stage's open
 questions each grow their own working notes, promote that stage —
-`layout.md` becomes `layout/README.md` with siblings beside it, and §6
-links down to them. Sections 3 and 4 never leave the front page: the
-contract and the invariants stay where every other doc points at them.
-Do not promote a stage before it needs it; one file is what keeps the
-skeleton usable.
-
-## Not a stage
-
-- [studio.md](studio.md) — the harness: Discover/Finish, projects,
-  variants, what a Save is. Canonical for all of that.
-- [../CONTEXT.md](../CONTEXT.md) — the words. Every term, and what not to
-  call it.
-
-## Reference
-
-Stable lookup. These change when an external tool changes, not when we
-learn something.
-
-- [ref/terrain-diffusion.md](ref/terrain-diffusion.md) — what the model
-  reads: channels, units, SNR, padding, how to run it.
-- [ref/cubesphere.md](ref/cubesphere.md) — six faces, tile addressing,
-  seams, the scale bound.
-- [ref/bake-compute.md](ref/bake-compute.md) — 90 m vs 30 m, which GPU,
-  how long, how big.
-
-## History
-
-Decisions as they were made, kept because the reasoning is worth more
-than the outcome. Do not update these — they are dated on purpose.
-
-- [history/shape-detail-pass-2026-08.md](history/shape-detail-pass-2026-08.md) — how
-  Shape's three steps were chosen and what they replaced.
-- [history/layout-base-survey-2026-08.md](history/layout-base-survey-2026-08.md) — why
-  planetgen and not World Orogen, GPlates, ASPECT, or tectonics.js.
+`stages/layout.md` becomes `stages/layout/README.md` with siblings beside
+it, and §6 links down to them. Sections 3 and 4 never leave the front
+page: the contract and the invariants stay where every other doc points
+at them. Do not promote a stage before it needs it.
 
 ## Status words
 

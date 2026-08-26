@@ -1,8 +1,8 @@
 # Reference — bake compute and resolution
 
 Decided Aug 2026. What the planet-scale bake costs and why 90 m. What
-ships to the game is [export.md](../export.md); the engineering is
-[terrain.md](../terrain.md).
+ships to the game is [export.md](../stages/export.md); the engineering is
+[terrain.md](../stages/terrain.md).
 
 The whole planet is playable: landable and flyable everywhere. Aerial has
 to read as real. Human-scale detail is analytic and lazy in the game.

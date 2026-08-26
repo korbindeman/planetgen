@@ -6,7 +6,7 @@ reading [World Orogen](https://orogen.studio)'s implementation.
 
 All three shipped: a second mesh with domain warp and island crests (A),
 phasor ridges on the belts (C), and first-stage erosion (E). What they do
-*now* — and what still looks wrong — is [shape.md](../shape.md). Further
+*now* — and what still looks wrong — is [shape.md](../stages/shape.md). Further
 work on the pass belongs there, not here.
 
 Status labels are **decided**, **recommended**, **open**, as in
@@ -189,7 +189,7 @@ documents were updated when E landed.
 
 ## What must not regress
 
-Everything in [layout.md § Must not regress](../layout.md#must-not-regress),
+Everything in [layout.md § Must not regress](../stages/layout.md#must-not-regress),
 plus the properties these
 steps are most likely to damage:
 

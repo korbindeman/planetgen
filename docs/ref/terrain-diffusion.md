@@ -2,7 +2,7 @@
 
 What the model reads and how to run it. This changes when the model
 changes, not when we learn something about planets. Stage context is
-[terrain.md](../terrain.md).
+[terrain.md](../stages/terrain.md).
 
 Sibling checkout, never vendored: `~/dev/terrain-diffusion`. Weights:
 Hugging Face `xandergos/terrain-diffusion-90m` or `…-30m`.
@@ -57,7 +57,7 @@ output. The output DEM is **int16 metres**, LZW tiled 256×256.
 `tiff-export` currently writes **elevation only** (`with_climate=False`).
 The climate channels are conditioning going in; nothing comes back out.
 Anything downstream that needs climate on the fine DEM has to recompute
-it — see [carve-hydrology.md](../carve-hydrology.md#after-the-cut).
+it — see [carve-hydrology.md](../stages/carve-hydrology.md#after-the-cut).
 
 `temperature_std` is the only channel with a unit conversion inside
 `tiff_export` (multiply by 100). Write °C in the TIFF anyway.
@@ -78,7 +78,7 @@ planetgen fields are not metres or °C. `exportTerrainDiffusion` converts:
 Sea stays at 0. Peaks sit around 5.5 km, abyss around −4.2 km —
 Earth-like enough for a model trained on ETOPO/WorldClim. The last two
 rows are heuristics standing in for a seasonal cycle nothing upstream
-simulates; see [climate.md § Open](../climate.md#open).
+simulates; see [climate.md § Open](../stages/climate.md#open).
 
 ## Padding
 
@@ -97,7 +97,7 @@ Consequences:
 
 Cube-grid preview tiles do not use that edge-repeat — planetgen
 rasterizes 64 cells of real neighbouring ground instead. See
-[terrain.md](../terrain.md#preview-tiles-a-shape-tool) and
+[terrain.md](../stages/terrain.md#preview-tiles-a-shape-tool) and
 [cubesphere.md](cubesphere.md).
 
 ## SNR
@@ -168,7 +168,7 @@ Think **Azgaar-style painted map**, not SRTM.
 
 **Training clip:** the model's data was cut at ±60° latitude. Its worlds
 are statistically mid-latitude everywhere. That is the structural blind
-spot [climate.md](../climate.md) is trying to plug.
+spot [climate.md](../stages/climate.md) is trying to plug.
 
 ## Tiling the planar path
 

@@ -12,7 +12,7 @@ Not drainage; that is [Carve](carve-hydrology.md).
 
 The model is a sibling checkout at `~/dev/terrain-diffusion`, never
 vendored into this tree. What it reads is
-[ref/terrain-diffusion.md](ref/terrain-diffusion.md).
+[ref/terrain-diffusion.md](../ref/terrain-diffusion.md).
 
 Grain in is 23 km/px, out is 90 m/px — 256× on each axis.
 
@@ -30,7 +30,7 @@ GeoTIFFs per tile.
 | `precipitation_cv.tif` | derived | %, from dryness + seasonality |
 
 Exact conversions in
-[ref/terrain-diffusion.md § Unit mapping](ref/terrain-diffusion.md#unit-mapping).
+[ref/terrain-diffusion.md § Unit mapping](../ref/terrain-diffusion.md#unit-mapping).
 
 **Wishes** — what Terrain would use if upstream emitted it:
 
@@ -66,18 +66,10 @@ browser with the globe's own surface look.
   raster is for inspection. Upsampling it in one shot is pole distortion
   plus one giant job — explicitly wrong, and it is what the cubesphere
   replaced.
-- **Do not reintroduce a lon/lat crop box.** A box centred on wherever
-  the mouse happened to be is what the grid replaced.
-- **The tile grid draws unconditionally** — every face, every line, fixed
-  subdivision, at every viewpoint. Do not add a visibility probe, a
-  minimum-cell-size threshold, or view-dependent subdivision to make it
-  cheaper. Each turns a smoothly varying measurement into a binary
-  draw/skip and the grid flickers as the view moves; all three were tried
-  and reverted. Cull only on things that do not depend on the viewpoint:
-  the globe's back-face test, and an antimeridian break measured in
-  **longitude** — never in screen pixels, since at high zoom one ordinary
-  segment exceeds half the canvas, which silently chopped the grid to
-  pieces.
+- **The tile grid is `(face, level, i, j)` and draws unconditionally.**
+  No lon/lat crop box, no visibility probe, no view-dependent
+  subdivision. Those were tried and reverted; the full list and the
+  reasons are [ref/cubesphere.md § Invariants](../ref/cubesphere.md#invariants).
 - **Do not raise elevation SNR to freeze a blocky sketch.** Very high
   ELEV SNR (1.5+) on an out-of-distribution sketch collapsed relief in
   tests. The coarse model is trained on Earth statistics and will
@@ -87,7 +79,7 @@ browser with the globe's own surface look.
 
 ### Preview tiles: a Shape tool
 
-Pick tiles on the [cubesphere grid](ref/cubesphere.md), bake, drape on
+Pick tiles on the [cubesphere grid](../ref/cubesphere.md), bake, drape on
 the globe. In the studio this is a **tool inside Shape**, not a stage and
 not a step you browse to. Tiles belong to a variant
 (`preview/<project>/v/<id>/`) so they do not follow you onto the next
@@ -116,7 +108,7 @@ Isolated lon/lat crops still go through `tiff-export`. CLI:
 - **Cubesphere, equal-angle.** Six faces, quadtree per face, 512² tiles.
   Keeps pixel scale within **√2** worst case against ~2.12× for raw
   gnomonic. Details and the invariants in
-  [ref/cubesphere.md](ref/cubesphere.md).
+  [ref/cubesphere.md](../ref/cubesphere.md).
 - **Generate per face** on the face's raster via `WorldPipeline` +
   `set_custom_conditioning_import()`, not `tiff-export`. Conditioning for
   each face is the sketch reprojected into that face's projection,
@@ -130,7 +122,7 @@ Isolated lon/lat crops still go through `tiff-export`. CLI:
   generation-order constraint, no required seam blend. One
   `WorldPipeline` process will **not** see the other GPUs on an 8-wide
   machine — shard the list yourself.
-- Compute, wall-clock and sizes: [ref/bake-compute.md](ref/bake-compute.md).
+- Compute, wall-clock and sizes: [ref/bake-compute.md](../ref/bake-compute.md).
 
 `@planetgen/bake` is a named slot. Nothing there runs yet.
 
@@ -184,4 +176,4 @@ Crop a bake and look at it twice: from orbit, and at Maps-style zoom. A
 seam that is invisible at planet scale can be a wall at 90 m.
 
 What to expect from a given sketch is tabulated in
-[ref/terrain-diffusion.md § Landforms](ref/terrain-diffusion.md#landforms-you-can-expect).
+[ref/terrain-diffusion.md § Landforms](../ref/terrain-diffusion.md#landforms-you-can-expect).

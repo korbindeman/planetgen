@@ -20,7 +20,7 @@ ocean basins, or widen `coastBlend`.
 Resolution is decoupled instead — that is what Shape is.
 
 The full invariant list, the model, and what is currently open:
-[docs/layout.md](../../docs/layout.md). Do not restate it here.
+[docs/layout.md](../../docs/stages/layout.md). Do not restate it here.
 
 Judge from `bun run preview plates`, `bun run preview crust` and
 `bun run sheet` — not from `bun run stats`.
