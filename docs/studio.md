@@ -1,8 +1,10 @@
 # How the studio works
 
-Canonical. Language lives in `CONTEXT.md`. This is the operational model:
-phases, stages, the tree, and what a Save is. If another doc disagrees,
-this one wins.
+Canonical for the **harness**: phases, the tree, and what a Save is. If
+another doc disagrees about those, this one wins.
+
+What each stage actually *does* is one file per stage — start at
+[README.md](README.md). Language lives in [../CONTEXT.md](../CONTEXT.md).
 
 ## Two phases
 
@@ -43,14 +45,14 @@ Thalos and Earth stay shipped modules. A name that slugs to `thalos` or
 
 ## Stages
 
-| Stage | Phase | Done means |
-| --- | --- | --- |
-| **Layout** | Discover | This variant's plates and continents are kept. |
-| **Shape** | Discover | Detail + later sculpting frozen as the sketch. |
-| **Climate** | Finish | Bake-time climate on that height (ExoPlaSim). Skip if the sketch keeps `climate.js`. |
-| **Terrain** | Finish | Whole-planet diffusion (cheap pass then 90 m). Cube faces and seams are internal. |
-| **Carve** | Finish | Rivers, fjords, and stamps on that DEM. Hydrology is the drainage work inside it. |
-| **Export** | Finish | Residual pyramid for the game. |
+| Stage | Phase | Done means | Doc |
+| --- | --- | --- | --- |
+| **Layout** | Discover | This variant's plates and continents are kept. | [layout.md](layout.md) |
+| **Shape** | Discover | Detail + later sculpting frozen as the sketch. | [shape.md](shape.md) |
+| **Climate** | Finish | Bake-time climate on that height (ExoPlaSim). Skip if the sketch keeps `climate.js`. | [climate.md](climate.md) |
+| **Terrain** | Finish | Whole-planet diffusion (cheap pass then 90 m). Cube faces and seams are internal. | [terrain.md](terrain.md) |
+| **Carve** | Finish | Rivers, fjords, and stamps on that DEM. Hydrology is the drainage work inside it. | [hydrology](carve-hydrology.md), [landforms](carve-landforms.md) |
+| **Export** | Finish | Residual pyramid for the game. | [export.md](export.md) |
 
 Preview tiles are a Shape **tool**, not a stage. They read the sketch.
 Pick them on the cubesphere grid, bake, drape. Cubesphere, conditioning,
@@ -75,6 +77,7 @@ here.
 The workspace shell is always: back to projects, the project name,
 **Save**, and **Variants**. The globe and look stay on the canvas. Workspace chrome is Preact; the
 canvases and generator are not.
+**Measure** is a HUD tool. Click two points for the great-circle distance in kilometres. Click again to add a leg. Escape clears.
 **Save** is a shell action on the working planet, not a control inside
 the tree. The name field next to it shows the active variant. Save
 continues that name. Change the name and Save starts another variant,
@@ -175,6 +178,12 @@ write **ranges** to the active snapshot without saving. Shape, and a
 save with no new name, continue the active name. A new name is another
 card; the previous name stays.
 
+On disk: the catalog is `preview/<project>/variants.json` and a
+variant's folder is `preview/<project>/v/<id>/`. Earth, and a project
+with no variant yet, stay at `preview/<project>/` — `preview/earth/`.
+Listing without a variant id does not walk `v/`. User projects live at
+`preview/<name>/project.json`; Thalos and Earth stay shipped modules.
+
 The catalog is **append-only**. Delete marks a snapshot (`deleted`).
 The id stays. A badge offers **Undo**. A load merges disk with the
 local cache by id; a write does the same. If the globe is a checkout
@@ -188,3 +197,12 @@ joins. The UI word is **Save**, never Update.
 Climate, Terrain, Carve, and export consume the 23 km sketch on that
 variant. They do not re-run Shape. Preview tiles run from Shape, still
 keyed to the variant, so they do not follow you onto the next candidate.
+
+## Open
+
+**Advanced needs another look.** Layout still folds mesh `N`, shape
+spacing, jitter, and the 1843 path (live tectonics, merge ocean plates,
+one world ocean) behind Advanced. Those toggles are mostly unused and
+should likely go. They are shipped application values, not genes — the
+1843 blend earns its place only as a comparison
+([layout.md](layout.md#the-1843-path)).

@@ -1,58 +1,25 @@
 ---
-description: Moisture is carried by the wind, not painted on by latitude. Keep it that way.
+description: Moisture is advected by wind, never painted on by latitude. Read docs/climate.md before touching climate.js.
 alwaysApply: true
 ---
 
-# Climate
+# Climate — the rule that matters
 
-`climate.js` holds the whole model, free of WebGL and DOM. Judge it from
-`bun run preview climate` — moisture on its own, not the finished biome
-map. `bun run climate` is an optional helper; do not treat its numbers as
-a pass.
+**Moisture is advected, never painted on by latitude.** Air picks up
+water over the sea, travels downwind, rains some out at every step, and
+arrives inland already depleted. Latitude only sets how readily air rains
+out, not how much water is there.
 
-## The rule that matters
+That is the only way to get the thing that separates Earth's climate map
+from a set of stripes: the subtropical dry belt is not a girdle. A
+continent's windward coast is wet and its leeward coast dry.
 
-**Moisture is advected, never painted on by latitude.** Air picks up water
-over the sea, travels downwind, rains some out at every step, and arrives
-inland already depleted. Latitude only sets how readily air rains out — the
-Hadley circulation — not how much water is there.
+Do not add a distance-to-ocean falloff, drop `recycling`, or drop the
+two-season solve.
 
-This is not decoration. It is the only way to get the thing that most
-distinguishes Earth's climate map from a set of stripes: the subtropical dry
-belt is not a girdle. The Sahara and the Namib are dry while Florida and
-south-east China, at the same latitude, are wet. In the trade-wind belt the
-wind is easterly, so a continent's east coast gets fresh maritime air and its
-west coast gets air that has already crossed the land; under the westerlies
-it reverses. Rain shadows fall out of the same mechanism.
+The full invariant list, the model, and the bake-time tier:
+[docs/climate.md](../../docs/climate.md). Do not restate it here.
 
-You should be able to *see* that asymmetry: a continent's windward coast
-wet, the leeward coast dry, interiors not a uniform desert. `bun run
-climate` can confirm the sign if the picture is ambiguous. It is not the
-verdict.
-
-Do not:
-
-- Replace advection with a distance-to-ocean falloff, or add one on top
-- Drop `recycling`. Land returns about half its rain to the passing air —
-  half the Amazon's rainfall is water the forest itself evaporated. Without
-  it every continental interior becomes desert no matter what else is tuned.
-- Drop the two-season solve. A single fixed wind field leaves big landmasses
-  uniformly arid; averaging the two solstices is what a monsoon is.
-- Shift the wind bands as far as the rain belt. `windSeasonShift` is
-  deliberately smaller than `seasonShift`: Earth's ITCZ swings much further
-  than the trades do, and moving the wind bands the full amount averages a
-  subtropical cell over both trade and westerly regimes, cancelling the
-  asymmetry that is the whole point.
-
-## Reading the result
-
-`bun run preview climate` renders the moisture field on its own. Use it,
-and crop in on a continent that should show a wet and a dry coast. Rendering
-the finished biome colours and reasoning backwards about what the moisture
-must have been is how you end up tuning the wrong subsystem — the biome
-table needs moisture well above 0.5 before land stops looking arid, so a
-real improvement in moisture can leave the finished map looking unchanged.
-
-`colormap.js` is part of this. Its middle row is savanna and tropical
-grassland; those entries have to stay clearly greener than the desert row
-above them or any land of middling moisture reads as sand.
+Judge from `bun run preview climate` — the moisture field on its own. The
+finished biome map compresses the middle of the range, so a real
+improvement can look like no change.

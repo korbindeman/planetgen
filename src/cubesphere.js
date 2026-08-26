@@ -8,7 +8,7 @@
  * 2^level steps along that edge. So 6 * 4^level tiles cover the sphere with
  * no gaps and no overlaps, and a tile at one level is exactly four at the
  * next. That nesting is why picking a coarse tile here still picks whole
- * bake tiles later — see docs/full-planet-pipeline.md.
+ * bake tiles later — see docs/ref/cubesphere.md.
  *
  * Equal-angle rather than raw gnomonic: stepping the *angle* linearly holds
  * pixel scale to sqrt(2) across a face, where gnomonic spreads to ~2.12x. So

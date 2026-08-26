@@ -53,7 +53,7 @@ Cuts and stamps on the baked DEM after **Terrain**: rivers, lakes, canyons, fjor
 _Avoid_: Landforms, post-diffusion, polish, hydrology (as the stage)
 
 **Hydrology**:
-Drainage on that DEM: rivers, lakes, canyons. Lives inside **Carve**. A consistency pass on already-eroded 90 m terrain, not a second landscape-evolution. How hard to cut is open; see [docs/preparing-for-diffusion.md](docs/preparing-for-diffusion.md).
+Drainage on that DEM: rivers, lakes, canyons. Lives inside **Carve**. A consistency pass on already-eroded 90 m terrain, not a second landscape-evolution. How hard to cut is open; see [docs/carve-hydrology.md](docs/carve-hydrology.md).
 _Avoid_: Calling the Finish stage this; treating it as Shape's erosion run again
 
 **Sketch**:

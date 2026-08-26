@@ -8,7 +8,7 @@
 
 function run() {
     throw new Error(
-        '@planetgen/bake is a named slot. The cubesphere bake is not in this repo. See docs/full-planet-pipeline.md.',
+        '@planetgen/bake is a named slot. The cubesphere bake is not in this repo. See docs/terrain.md.',
     );
 }
 

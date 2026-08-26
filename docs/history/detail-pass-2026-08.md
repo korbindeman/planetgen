@@ -1,16 +1,16 @@
-# Giving the base planet detail
+# Giving the base planet detail — Aug 2026
 
-Historical design record (Aug 2026). The studio model that consumed this
-pass is [studio.md](studio.md): Shape is an explicit cached action at the
-23 km sketch grain, not a generate toggle. The three steps below shipped: a second
-mesh with domain warp and island crests (A), phasor ridges on the belts (C),
-and first-stage erosion (E). Further work on how the pass looks lives on
-[wanted.md](wanted.md) — not here. There is no Shape search sheet.
+**Historical. Do not update this file.** It records how Shape's three
+steps were chosen and what they replaced, as argued at the time, after
+reading [World Orogen](https://orogen.studio)'s implementation.
 
-Status labels follow [full-planet-pipeline.md](full-planet-pipeline.md):
-**decided**, **recommended**, **open**. The problem statement in each section
-is the one that was true when the step was chosen, after reading
-[World Orogen](https://orogen.studio)'s implementation.
+All three shipped: a second mesh with domain warp and island crests (A),
+phasor ridges on the belts (C), and first-stage erosion (E). What they do
+*now* — and what still looks wrong — is [shape.md](../shape.md). Further
+work on the pass belongs there, not here.
+
+Status labels are **decided**, **recommended**, **open**, as in
+[../README.md](../README.md).
 
 ## Why not simply raise the mesh — decided
 
@@ -141,7 +141,7 @@ and an active belt have identical texture.
   somewhere.
 - *Downstream, after diffusion:* real river networks, discharge, lakes and
   canyons at 90 m. terrain-diffusion redraws local statistics anyway (see
-  [preparing-for-diffusion.md](preparing-for-diffusion.md)), so fine erosion here
+  [ref/terrain-diffusion.md](../ref/terrain-diffusion.md)), so fine erosion here
   would only be overwritten.
 
 **Mechanism.** World Orogen's `erodeComposite` (`terrain-post.js:399`) interleaves
@@ -183,13 +183,14 @@ the warp, so the islands are warped, then ridged and eroded like any other land.
 ## Scope change
 
 `CLAUDE.md` used to list "rivers, flow accumulation, or carving valleys into
-the heightmap" as out of scope, and full-planet-pipeline.md placed hydrology after
+the heightmap" as out of scope, and the pipeline notes placed hydrology after
 diffusion. Step E splits that: **rough shaping here, real drainage later.** Both
 documents were updated when E landed.
 
 ## What must not regress
 
-Everything in `.cursor/rules/plates-elevation.mdc`, plus the properties these
+Everything in [layout.md § Must not regress](../layout.md#must-not-regress),
+plus the properties these
 steps are most likely to damage:
 
 - global layout: clustered land, one large empty ocean, hemispheric asymmetry

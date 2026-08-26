@@ -6,4 +6,6 @@ Writes the five-channel conditioning sketch terrain-diffusion reads (`heightmap`
 app, pick tiles on the cubesphere grid (a Shape tool, not a Progress
 stage). Do not run `tiff-export` on the whole-world raster.
 
+What the model reads: `docs/ref/terrain-diffusion.md`.
+
 The rasterizers live on the Planet document (`mesh` + `map` of the visible layer).
