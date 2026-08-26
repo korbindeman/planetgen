@@ -1,20 +1,17 @@
 # Carve — hydrology
 
-**Not started. We have decided that we do it; how hard to cut is the open
-research question.**
-
 ## What it does
 
-Cuts drainage into the baked 90 m DEM: rivers that reach the sea, lakes
-in real basins, a trunk you can follow. Runs **after** Terrain, never as a
-substitute for it.
+Hydrology cuts drainage into the baked 90 m DEM: rivers that reach the
+sea, lakes in real basins, a trunk you can follow. It runs **after**
+Terrain. Never as a substitute for it.
 
-This is a large part of whether the finished planet feels believable.
-Diffusion is trained on already-eroded Earth DEMs, so local landform
-statistics — ridge sharpness, valley spacing, crenulation — already look
-right. What it does not have is **non-local coherence**: a catchment, a
-mouth, a hanging valley that actually joins the next one. That gap is why
-this stage exists.
+This stage is a large part of whether the finished planet feels
+believable. Diffusion is trained on already-eroded Earth DEMs. Local
+landform statistics — ridge sharpness, valley spacing, crenulation —
+already look right. What it does not have is **non-local coherence**: a
+catchment, a mouth, a hanging valley that actually joins the next one.
+That gap is why this stage exists.
 
 `@planetgen/hydrology` is a named slot. Nothing there runs yet.
 
@@ -28,13 +25,13 @@ this stage exists.
 | face adjacency | [ref/cubesphere.md](../ref/cubesphere.md) | flow must cross face edges |
 
 **Wishes** — unknown until a trial runs. Expect this list to be the most
-active in the repo once the stage starts. Likely candidates: a
-lithology or erodibility hint from Layout, and honest seasonality from
-Climate so discharge is not a function of annual mean alone.
+active in the repo once the stage starts. Likely candidates: a lithology
+or erodibility hint from Layout, and honest seasonality from Climate so
+discharge is not a function of annual mean alone.
 
 ## Hands on
 
-Two products, and the split matters:
+Two products. The split matters:
 
 | Product | Form | Why |
 | --- | --- | --- |
@@ -43,30 +40,30 @@ Two products, and the split matters:
 
 **Most of the network never enters the DEM.** A 90 m cell is already a
 wide river. Rivers ship to the game as a graph, never as a planet-wide
-raster — see [export.md](export.md).
+raster. See [export.md](export.md).
 
 ## Must not regress
 
-Nothing to regress yet. These are the constraints the method has to
-respect, and they are the settled part of an otherwise open stage:
+Nothing to regress yet. These constraints are settled. The method is
+not.
 
 - **Do not rerun Shape's stream-power recipe on the bake.** That recipe
   is for a 23 km blob so the model sees valleys. A second
   landscape-evolution pass with a real hillslope `K` and uncapped
-  incision will slot valley floors, round ridges, and spend the high
-  frequencies the U-Net just drew. **Diffusion owns landform statistics;
-  hydrology owns drainage. They must not use the same knobs.**
+  incision will slot valley floors. It will round ridges. It will spend
+  the high frequencies the U-Net just drew. **Diffusion owns landform
+  statistics. Hydrology owns drainage. They must not use the same knobs.**
 - **Do not carve on Layout's ~113–226 km mesh.** Valleys would be
   hundreds of kilometres wide.
 - **Do not D8-carve a floodplain so it "drains."** Steepest descent
-  through a meander belt is a cutoff — it straightens the belt.
+  through a meander belt is a cutoff. It straightens the belt.
 - **Do not apply a global hillslope term to inherited terrain.** Optional
   hillslope is only for slots *this* pass just cut.
 
 ## How it works today
 
 Nothing. What follows is the working stance and the candidate
-operations — structure only. Strength is the open part.
+operations. Structure only. Strength is open.
 
 **Working stance:**
 
@@ -85,65 +82,65 @@ operations — structure only. Strength is the open part.
   a watershed that hydrology says is a pass. Surgical, a few cells, not a
   planet-wide `K`.
 - **Meanders are a floodplain process, not more incision.** Bedrock
-  gorges stay dendritic; alluvial valleys keep or get a planform.
+  gorges stay dendritic. Alluvial valleys keep or get a planform.
 
 **Candidate operations**, on the 90 m DEM with sea level still at 0:
 
-1. **Fill or breach sinks** so flow can reach the ocean. Priority-flood;
-   terrain-diffusion already ships `fill_depressions_priority_flood` in
-   `inference/postprocessing.py`. Prefer breach. Cap fill depth if you
-   want real endorheic basins.
+1. **Fill or breach sinks** so flow can reach the ocean. Priority-flood.
+   Terrain-diffusion already ships `fill_depressions_priority_flood` in
+   `inference/postprocessing.py`. Prefer breach. If you want real
+   endorheic basins, cap fill depth.
 2. **Route flow** (D8 or similar) and accumulate contributing area. Same
    file has `d8_flow` / `flow_accumulation`. Ocean (`z <= 0`) is the sink.
-   At planet scale this runs on the cubesphere adjacency graph so rivers
-   cross face edges: either at full resolution per drainage basin, or at
-   an intermediate global level (~1 km) with carving applied to the fine
-   tiles.
+   At planet scale this runs on the cubesphere adjacency graph. Rivers
+   then cross face edges. Run at full resolution per drainage basin, or
+   at an intermediate global level (~1 km) with carving applied to the
+   fine tiles.
 3. **Incise** along the network, only where the existing valley is
    shallower than the hydraulic target, or a saddle blocks a trunk.
    Stream-power style: carve more where area × slope is high.
 4. **Hillslope** (optional, off on inherited slopes): mild diffusion or
    debris-slope on walls this pass just cut. Weak diffusion in dry rock
-   keeps canyon walls; strong diffusion in wet soil opens V-valleys.
+   keeps canyon walls. Strong diffusion in wet soil opens V-valleys.
 
 **Canyon vs valley is a ratio, not a flag.** A canyon is a channel
-cutting down faster than its slopes wear back — it needs a high surface
+cutting down faster than its slopes wear back. It needs a high surface
 draining to a much lower base, a trunk with real area, and incision ≫
 hillslope smoothing. A valley is the same process with more smoothing or
-less drop. A wash is dryness and no drop; hydrology will not turn a
+less drop. A wash is dryness and no drop. Hydrology will not turn a
 pancake interior into the Grand Canyon. A single Colorado-style trench
 needs **one** master river capturing a large plateau while the rims stay
-high — bias the trunk (pour point, extra area, higher `K` on one path).
-Equal carving of every tributary gives a dissected plateau, which is
+high. Bias the trunk (pour point, extra area, higher `K` on one path).
+Equal carving of every tributary gives a dissected plateau. That is
 closer to what diffusion already sketches.
 
 ### Meanders and oxbows
 
-In scope, not built. Stream-power does not grow them: incision deepens,
-it does not wander.
+In scope, not built. Stream-power does not grow them. Incision deepens.
+It does not wander.
 
 Meander wavelength is about **10–12× channel width**. A loop train that
 reads as geology rather than noise wants λ ≳ 1 km, so bankfull width
-≳ 70–100 m. That is a river. Oxbows are abandoned loops of that size — a
+≳ 70–100 m. That is a river. Oxbows are abandoned loops of that size. A
 Mississippi-class cutoff is a 1–5 km lake, comfortably inside the 90 m
 bake. A 30 m creek's meanders are not.
 
 Three grains:
 
 - **Aerial (90 m DEM).** Large meander belts and oxbow lakes. First keep
-  what diffusion already drew — Earth 90 m DEMs are full of these and the
+  what diffusion already drew. Earth 90 m DEMs are full of these and the
   U-Net paints them in low-gradient wet valleys. Hydrology follows that
-  centerline; `Δz` only where the channel is hanging or blocked, and stay
-  inside the existing belt. Then, on alluvial reaches that came out too
-  straight (large area, low slope, not a bedrock canyon), synthesize a
-  kinematic meander — sine-generated curve, or Howard–Humber /
-  Lancaster–Bras — and incise a narrow channel, leaving the floodplain
-  from the bake. Oxbows are cutoffs: when a neck is thin, abandon the loop
-  and leave it as a capped lake. **Graph edit plus a few metres of
-  height, not another erosion pass.**
+  centerline. `Δz` only where the channel is hanging or blocked, and stay
+  inside the existing belt. If alluvial reaches came out too straight
+  (large area, low slope, not a bedrock canyon), synthesize a kinematic
+  meander. Use a sine-generated curve, or Howard–Humber / Lancaster–Bras.
+  Incise a narrow channel. Leave the floodplain from the bake. Oxbows are
+  cutoffs. If a neck is thin, abandon the loop and leave it as a capped
+  lake. **Graph edit plus a few metres of height, not another erosion
+  pass.**
 - **Approach (optional 30 m, local).** Medium rivers, wavelength a few
-  hundred metres. Only if low flight still looks like a canal after the
-  90 m belt. Not a global bake.
+  hundred metres. If low flight still looks like a canal after the 90 m
+  belt, use this. Not a global bake.
 - **Walking (analytic, below 90 m).** Creek meanders as a centerline
   spline with displacement, draped at runtime.
 
@@ -156,15 +153,15 @@ Three grains:
   elevation SNR. If the sketch's coast must be law, raise ELEV SNR a
   little or mask ocean before hydrology. If you want dendritic coasts,
   leave it.
-- **Climate on the fine DEM.** Elevation has changed: recompute
-  temperature with a lapse rate, add orographic precipitation if you have
-  wind, and take biomes from temp + precip + elevation — not from
+- **Climate on the fine DEM.** Elevation changes. Recompute
+  temperature with a lapse rate. If you have wind, add orographic
+  precipitation. Take biomes from temp + precip + elevation, not from
   hillshade colour.
 
 ## Open
 
-The whole method. Concretely, the question is: **how hard can this touch
-the bake before it breaks the landform statistics diffusion just drew?**
+The whole method. The concrete question: **how hard can this touch the
+bake before it breaks the landform statistics diffusion just drew?**
 
 Judge a trial the same way as everything else: crop a bake, run a light
 pass, crop the same valley. **If the ridges moved, `K` is too high.**

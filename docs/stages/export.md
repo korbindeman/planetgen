@@ -1,14 +1,12 @@
 # Export
 
-**Schema decided. The bake that feeds it is unwritten.**
-
-The one stage that is mostly closed. If this doc reads as finished, that
-is correct.
-
 ## What it does
 
-Turns the baked planet into what the game installs. **The bake is an
-authoring product; the install is not the bake.**
+Export turns the baked planet into what the game installs. **The bake is
+an authoring product. The install is not the bake.**
+
+Schema v1 is decided. The cubesphere bake that would feed it is not
+written.
 
 ## Reads
 
@@ -25,7 +23,7 @@ A **sparse cube-sphere residual pyramid**, not a dense GeoTIFF. Schema v1:
 - parent predictor, per-node quantized `i16` residuals with a local scale
 - zstd per blob, content-addressed
 - addressed `(face, lod, x, y)`
-- **nodes stop when the parent is good enough.** Ocean, cratons and mare
+- When the parent is good enough, nodes stop. Ocean, cratons and mare
   die at 1–2 km. Coasts, belts and crater rims keep 90 m.
 
 Alongside it: climate at the coarse cell (~23 km, megabytes), rivers as a
@@ -44,13 +42,13 @@ an algorithm plus a seed.
 
 Dense 90 m int16 for Thalos is ~30 GB. After pruning, quantization and
 zstd it should land at **2–3 GB**. Home pair (Thalos + Mira) is a ~2.5 GB
-base; the rest is a solar-system pack or on-demand bodies. The whole
+base. The rest is a solar-system pack or on-demand bodies. The whole
 system fits in about **10–20 GB** — a texture pack. Dense 90 m for all of
-Pyros' solid area (~one Earth, ~490 million km²) would be ~120 GB and is
-not a product.
+Pyros' solid area (~one Earth, ~490 million km²) would be ~120 GB. That
+is not a product.
 
-**If one body crosses ~5 GB the prune threshold is wrong** — 90 m got
-stored on plains.
+**If one body crosses ~5 GB, the prune threshold is wrong.** Then 90 m
+got stored on plains.
 
 The current Mira `29.6 MiB` file is the crater MVP, not the production
 number. The game-side package contract lives in `~/dev/thalos`
@@ -71,18 +69,19 @@ below 90 m is an algorithm and a seed, not a stored artifact.
 
 ## How it works today
 
-Schema v1 exists and Mira has a crater-MVP package. The cube-sphere bake
-that would feed a real one does not — `@planetgen/bake` is a named slot.
+Schema v1 exists. Mira has a crater-MVP package. The cube-sphere bake
+that would feed a real package is not written. `@planetgen/bake` is a
+named slot.
 
 ### Below 90 m — decided, runtime
 
 The model floor is 90 m. Ground-level gameplay needs ~1 m. That layer is
-**non-ML amplification** evaluated lazily in the game from the residual,
+**non-ML amplification**. The game evaluates it lazily from residual,
 slope, biome and seed: erosion-aware detail noise, slope and material
 displacement, bottoming out around 0.5 m.
 
-Do not bake it. Human scale is never a diffusion bake, and 30 m globally
-is a measurement we might take later, not the global bake — see
+Do not bake it. Human scale is never a diffusion bake. 30 m globally is
+a measurement we might take later. It is not the global bake. See
 [ref/bake-compute.md](../ref/bake-compute.md).
 
 The whole planet is playable: landable and flyable everywhere. Do not
@@ -90,9 +89,10 @@ treat 90 m windows as "the playable parts."
 
 ## Open
 
-- The bake itself, which is [Terrain](terrain.md#open)'s open engineering.
+- The bake itself, which is [Terrain](terrain.md#open)'s open
+  engineering.
 - Prune thresholds per terrain class have a stated target (ocean and
-  craton at 1–2 km, coasts and rims at 90 m) but have not been measured
+  craton at 1–2 km, coasts and rims at 90 m). They have not been measured
   against a real planet.
 
 ## How to judge it

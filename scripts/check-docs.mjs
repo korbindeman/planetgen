@@ -181,6 +181,66 @@ console.log("\ncontracts match the code");
         invented.length === 0, invented.join(", "));
 }
 
+console.log("\nstatus claims match the code");
+{
+    /* A status line is the first thing to rot: a stage gets built and the
+     * row that says it is not still reads fine. So the claim is held
+     * against the code that would have to change. Nothing here encodes an
+     * opinion about a stage — only that the docs and the tree agree.
+     *
+     * A named slot is a package whose run() throws instead of running. It
+     * is how this repo says "decided, not built", and it is exactly the
+     * thing that stops being true without anyone editing a doc. */
+    const namedSlot = (pkg) => {
+        try { return readFileSync(join(root, "packages", pkg, "index.js"), "utf8").includes("named slot"); }
+        catch { return false; }
+    };
+    const exists = (p) => { try { statSync(join(root, p)); return true; } catch { return false; } };
+
+    const UNBUILT = /not started|not built|not written|not tried|named slot/i;
+    const readme = readFileSync(join(root, "docs", "README.md"), "utf8");
+    const state = new Map();
+    for (const line of readme.split("\n")) {
+        const m = line.match(/^\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*\[.*?\]\((.+?)\)\s*\|$/);
+        if (m && m[4].startsWith("stages/")) state.set(m[4].replace("stages/", "").replace(".md", ""), m[3]);
+    }
+    check(`the index states a status for every stage (${STAGES.length})`,
+        STAGES.every((s) => state.has(s)),
+        STAGES.filter((s) => !state.has(s)).join(", "));
+
+    /* §5 of a stage that is not built reads "Nothing". The index row must
+     * agree, in both directions. */
+    for (const stage of STAGES) {
+        const text = readFileSync(join(root, "docs", "stages", `${stage}.md`), "utf8");
+        const how = (text.split(/^## How it works today$/m)[1] ?? "").split(/\n## /)[0].trim();
+        const docSaysNothing = /^Nothing[.\s]/.test(how);
+        const indexSaysUnbuilt = UNBUILT.test(state.get(stage) ?? "");
+        if (docSaysNothing) {
+            check(`${stage}: "How it works today: Nothing" agrees with the index`,
+                indexSaysUnbuilt, `index says "${state.get(stage)}"`);
+        }
+        check(`${stage}: § How it works today is not empty`, how.length > 0);
+    }
+
+    /* The two named slots, against the packages that would stop throwing. */
+    for (const [stage, pkg] of [["carve-hydrology", "hydrology"], ["terrain", "bake"]]) {
+        const stub = namedSlot(pkg);
+        const text = readFileSync(join(root, "docs", "stages", `${stage}.md`), "utf8");
+        const claimsUnbuilt = UNBUILT.test(state.get(stage) ?? "") || /named slot/i.test(text);
+        check(`@planetgen/${pkg} is a named slot and ${stage} still says so`,
+            stub === claimsUnbuilt,
+            stub ? `${stage} no longer says it is unbuilt`
+                 : `@planetgen/${pkg} runs now — update ${stage}.md and the index`);
+    }
+
+    /* A stage that describes a mechanism must have the module it names. */
+    for (const [stage, file] of [["layout", "src/tectonics.js"], ["shape", "src/detail.js"],
+                                 ["shape", "src/shape-artifact.js"], ["climate", "src/climate.js"],
+                                 ["terrain", "scripts/td-bake.py"], ["export", "src/cubesphere.js"]]) {
+        check(`${stage}: ${file} exists`, exists(file));
+    }
+}
+
 console.log("\nopen wishes across the pipeline\n");
 for (const stage of STAGES) {
     const text = readFileSync(join(root, "docs", "stages", `${stage}.md`), "utf8");
