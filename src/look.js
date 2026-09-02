@@ -304,6 +304,36 @@ function reliefAlbedo(e) {
     return sampleRamp(RELIEF_LAND, clamp01(e));
 }
 
+function climateAlbedo(e, m) {
+    if (e <= 0) return CLIMATE_OCEAN.slice();
+    return sampleRamp(CLIMATE_STOPS, clamp01(m));
+}
+
+const CLIMATE_GLSL = (() => {
+    const lines = ['vec3 climateLand(float m) {'];
+    for (let i = 1; i < CLIMATE_STOPS.length; i++) {
+        const [a, ca] = CLIMATE_STOPS[i - 1];
+        const [b, cb] = CLIMATE_STOPS[i];
+        const cond = i === CLIMATE_STOPS.length - 1 ? 'true' : `m <= ${glNum(b)}`;
+        lines.push(`  if (${cond}) {`);
+        lines.push(`    float t = clamp((m - ${glNum(a)}) / ${glNum(b - a)}, 0.0, 1.0);`);
+        lines.push(`    return mix(${glVec3(ca)}, ${glVec3(cb)}, t);`);
+        lines.push('  }');
+    }
+    lines.push(`  return ${glVec3(CLIMATE_STOPS[CLIMATE_STOPS.length - 1][1])};`);
+    lines.push('}');
+    return `
+${lines.join('\n')}
+vec3 climateAlbedo(sampler2D colormap, vec3 tm) {
+  float e = tm.x;
+  if (e <= 0.0) {
+    return ${glVec3(CLIMATE_OCEAN)};
+  }
+  return climateLand(clamp(tm.y, 0.0, 1.0));
+}
+`;
+})();
+
 const RELIEF_GLSL = (() => {
     const lines = ['vec3 reliefLand(float e) {'];
     for (let i = 1; i < RELIEF_LAND.length; i++) {
@@ -437,6 +467,8 @@ module.exports = {
     SURFACE_GLSL,
     reliefAlbedo,
     RELIEF_GLSL,
+    climateAlbedo,
+    CLIMATE_GLSL,
     hillshade,
     northPoleLines,
     elevRgb,

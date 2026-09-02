@@ -4,7 +4,10 @@
 
 Hydrology cuts drainage into the baked 90 m DEM: rivers that reach the
 sea, lakes in real basins, a trunk you can follow. It runs **after**
-Terrain. Never as a substitute for it.
+Terrain. Never as a substitute for it. A later Terrain would route at
+1 km and make those rivers law for a 90 m residual. That file is
+[custom-model.md](../custom-model.md). Do not rewrite this stage to
+put rivers first while terrain-diffusion is the bake.
 
 This stage is a large part of whether the finished planet feels
 believable. Diffusion is trained on already-eroded Earth DEMs. Local
@@ -165,6 +168,11 @@ bake before it breaks the landform statistics diffusion just drew?**
 
 Judge a trial the same way as everything else: crop a bake, run a light
 pass, crop the same valley. **If the ridges moved, `K` is too high.**
+
+A drainage graph on Terrain's cheap whole-planet pass would be a
+preview. Those rivers do not constrain the 90 m pass. The later
+inversion — rivers before valleys — waits for
+[custom-model.md](../custom-model.md).
 
 ## How to judge it
 

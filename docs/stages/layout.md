@@ -116,6 +116,12 @@ Do not:
   `crustSmoothing`). Noise frequencies are fixed in world space.
   `speckCells` / `minFragment` / `plateRetireArea` are tuned against 10k.
   Resolution is decoupled instead. That is what Shape does.
+- Copy a continental column into a divergent cell. On seeds 1–12 that
+  cloned crust (some seeds 47% → 69%) and raised land-body count from
+  ~3 to ~28. The birth plan is stamped back each step instead.
+- Grow continent blocks away from the mass as a chain. That walk made
+  sausages. Extra pieces hang off the shield. A satellite is one
+  offshore fragment, not a chain.
 
 **Per-cell fields belong to their mesh.** `boundaryWarp` and the crust
 arrays are one value per cell. A cached field is valid only for the mesh
@@ -193,19 +199,24 @@ gains most, and grows until it owns the map. The reversion term must
 stay stronger than the growth term, or there is no equilibrium at all.
 
 **3. Continents.** A handful, unequal in size, and biased to cluster
-into one hemisphere. That cluster leaves a Pacific-sized ocean opposite,
-instead of spreading land evenly. Each continent is grown as a chain of
-overlapping elliptical blocks (`planBlocks`), the way a real continent
-is an aggregate of cratons. The union's outline gets waists,
-promontories and concavities from that structure. Noise (`cratonWarp`,
-`gulfCut` and related knobs) only textures the margin. A weld between
-two blocks can carry an old belt, or sag into a shallow inland sea
-(`sutures`). A global bisection rescales the plan to hit the target
-continental area. The Earth fixture authors its blocks directly and
+into one hemisphere. That cluster leaves a Pacific-sized ocean opposite.
+Each continent is a composed still (`planBlocks`): a dominant shield,
+then whatever extras the roll picked — a lobe, a hooked peninsula, a
+sliver, satellites. Facets are the default margin. Noise (`cratonWarp`,
+`gulfCut`) only textures. Huddled continents that almost touch get a
+join cut (`planCuts`): a thin isthmus with islands on the open side, an
+enclosed sea with a sliver into it, or the gap left as a seaway. Large
+shields may also take an ocean-facing gulf. A weld can carry an old
+belt. A global bisection rescales the plan to the target continental
+area. The Earth fixture authors its blocks and basins directly and
 zeroes `sutures`.
 
+The run does not redraw those coasts. Matching coasts from a rift are
+a later trial.
+
 Interiors are *flat*: a coastal plain climbs to a platform at
-`crustReferenceKm` (~650 m via isostasy) and stays there.
+`crustReferenceKm` (~650 m via isostasy) and stays there. Relief on
+land is the composed belts, not a dome from core to coast.
 
 **4. Simulation.** The crust is the state: type, age, thickness, orogeny,
 arc. Each step the plates turn, ownership is rebuilt from the sites, and
@@ -215,15 +226,20 @@ plate.
 What happens to the crust keys off **what the boundary is doing, never
 off whether a cell changed hands**. Ownership is also renumbered when
 plates split, weld, or absorb a scrap. If that bookkeeping is read as
-subduction, the continents shred. Divergent margins thin the neighbouring
-crust by a fixed amount per step and flood once it breaks. Thinning by a
-*fraction* instead halves a cell every step it touches a rift. Then half
-the continental crust is too deep to be land.
+subduction, the continents shred. After each step the birth continent
+plan is stamped back: type and thickness on cells that were continental
+at birth. The run still paints sea-floor age. It does not grow, eat, or
+smear coasts. Thinning a continental cell by a *fraction* of its
+thickness each step it touches a rift also fails: half the continental
+crust ends up too deep to be land.
 
-Arcs and belts are raised along a margin for as long as it is converging,
-not only in the step the boundary sweeps past. Ownership changes over a
-band a cell or two wide per step. If mountain building is tied to that
-band alone, the planet has almost no relief.
+After the run, `composeTectonicStory` replaces land orogeny and ocean
+arcs. The Voronoi edge that last sat on frozen land is not a coast, so
+the run's belts were interior patches. The story uses Earth's kinds of
+rule: a chain on the Pacific-facing coast, a passive back, a collision
+belt where two masses huddle, an island arc in the empty ocean, an arc
+across the mouth of a small sea. The Earth fixture does not run this
+pass. It paints from authored plate margins.
 
 A plate cut in two by its neighbours is not a bug to patch. The main
 body keeps the name. A piece big enough stands up as a new plate with
@@ -241,12 +257,12 @@ cooling (`5650 - 3050·exp(-age/62.8)` metres). Land height comes from
 Airy isostasy on thickness (145 m per km, relative to
 `seaLevelThicknessKm`).
 
-`continentFraction` is the crust the planet *starts* with. The
-simulation consumes some at sutures, so this value sits well above the
-final figure. `seaLevelThicknessKm` is the land-fraction dial. It stands
-for how much water the planet has. It is separate from
-`crustReferenceKm`, the thickness that undisturbed crust relaxes
-towards.
+`continentFraction` is the crust the planet *starts* with, and with
+coasts frozen it is close to the final figure. It sits above Earth's
+0.41 because birth includes drowned shelf. `seaLevelThicknessKm` is the
+land-fraction dial. It stands for how much water the planet has. It is
+separate from `crustReferenceKm`, the thickness that undisturbed crust
+relaxes towards.
 
 ### The 1843 path
 
@@ -264,9 +280,15 @@ default. `mergeOceanPlates` only applies on the 1843 path.
 
 ## Open
 
-- **Relief, not the partition.** Boundaries are already close to
-  straight arcs. The leftover roughness is trench fronts, which erode
-  now. Mountains still sit in diffuse patches rather than linear belts.
+- **Composed tectonic story, judged from relief and climate sheets.**
+  Belts and arcs are authored after the run (`composeTectonicStory`).
+  A pass is a coastal chain on the ocean-facing side, a quieter back,
+  a collision where masses huddle, and an island arc in the empty
+  ocean. A fail is interior mountain blobs, or every coast a range.
+  Matching coasts from a rift are not this trial.
+- **Composed stills.** Continents are a shield plus pieces, then join
+  cuts between huddled masses. The run stamps that plan back each
+  step. Round ponds in the interior are still a fail.
 - **The ridge staircase cannot be drawn here.** Earth's divergent
   boundaries look angular because short spreading segments are offset by
   transform faults. Built, then removed. Earth's segments run 30–500 km
@@ -286,7 +308,9 @@ default. `mergeOceanPlates` only applies on the 1843 path.
 ```sh
 bun run preview plates    # plate shapes, sizes, motion, names, age
 bun run preview crust     # sea-floor age, orogeny, boundary types
+bun run preview relief    # hypsometric tint and hillshade — belts
 bun run sheet             # twelve seeds at once
+bun run sheet --overlay=relief
 bun run sheet --view=globe
 ```
 

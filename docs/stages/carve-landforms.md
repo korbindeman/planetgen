@@ -29,9 +29,15 @@ The peak/age triples exist for this. A stamp needs to know a volcano
 *was* here and when it stopped, not only whether it is erupting now.
 Without them, every atoll would have to be noise.
 
-**Wishes** — unknown until the stage starts. A sea-surface-temperature
-proxy is the first likely ask. Reef presence is close to a temperature
-threshold.
+**Wishes** — what this stage would use if upstream emitted it:
+
+- **A feature list from Shape.** The peak / age maps say a volcano was
+  in this cell. They do not say how many edifices, or which stage of
+  life. A list would give a stamp a target. Do not grant this as
+  height. See [shape.md § Open](shape.md#open).
+- **Sea-surface temperature from Climate.** Reef presence is close to
+  a temperature threshold. Air temperature is a stand-in. See
+  [climate.md § Open](climate.md#open).
 
 ## Hands on
 
@@ -40,9 +46,11 @@ Consumed by [Export](export.md).
 
 ## Must not regress
 
-- **Do not push these back into Shape.** A one-cell cone at 23 km is not
-  an island. It is a speck. Shape drops them on purpose. A stamp upstream
-  puts a feature on the map that the diffusion model then heals away.
+- **Do not push these back into Shape as height.** A one-cell cone at
+  23 km is not an island. It is a speck. Shape drops them on purpose.
+  A stamp upstream puts a feature on the map that the diffusion model
+  then heals away. A **feature list** is the exception. It stays a
+  list.
 - **Do not ask terrain-diffusion to invent them.** It will not draw a
   landform the sketch never marked. A ring is out of its training
   distribution regardless.
@@ -69,7 +77,20 @@ known:
   drowned cell, not a Norway coast. A real fjord network is a 90 m
   feature: glacial valley profile, overdeepened floor, threshold at the
   mouth. Related to the hydrology pass but not the same operation. A
-  fjord is a drowned glacial trough, not a river channel.
+  fjord is a drowned glacial trough, not a river channel. A late
+  sea-level cut on the carved DEM is how that drowning would happen.
+  Shape's 23 km ice cell is not a fjord.
+
+**Late sea-level cut — open.** Climate would choose a level from ice
+history. Flood after the valleys exist. **The trial:** pick a finished
+DEM, flood to a second level, crop a glaciated coast. Pass: drowned
+troughs read as fjords. Fail: the 90 m pass never covered the new
+shoreline, so the cut is a cliff. See
+[climate.md § Open](climate.md#open).
+
+A later Terrain would dress the feature list itself. Stamps would
+shrink. They do not vanish while terrain-diffusion is the bake. See
+[custom-model.md](../custom-model.md).
 
 **Not** on this list: abyssal hills and a second continental-shelf pass.
 Those are texture the diffusion model can be asked for, not stamps.

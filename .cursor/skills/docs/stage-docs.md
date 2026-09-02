@@ -43,6 +43,7 @@ plain sentence if it helps. Do not open the file with it as a slogan.
 | File | This skill |
 | --- | --- |
 | `docs/studio.md` | Same prose rules. It wins on harness questions. |
+| `docs/systems.md`, `docs/custom-model.md` | Vision. Same prose rules. Not a stage. |
 | `docs/ref/` | Lookup. Change when the external tool changes. |
 | `docs/history/` | Do not update. |
 | `CONTEXT.md` | Vocabulary only. If you add a term, add `_Avoid_`. |

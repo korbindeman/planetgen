@@ -91,6 +91,9 @@ The part that constrains Shape:
 - **A body is at least two cells.** Isolated 1-cell cones, atolls, reefs,
   islets and real fjords are not Shape's job. Dropping them here is
   intended.
+- **Do not raise a feature list into `r_meters`.** Discrete edifices
+  too small for a cell stay a list. If they enter height,
+  terrain-diffusion heals the cones and Carve has nothing to stamp.
 - **Do not finish coasts, river valleys or eroded slopes.** The sketch
   stays a sketch. Terrain-diffusion redraws local shape anyway. Erosion
   here is texture so the model sees valleys. It is not a drainage
@@ -111,8 +114,8 @@ The part that constrains Shape:
 
 ## How it works today
 
-Three steps, in this order, on a second mesh built from the same sphere
-routine as the sim:
+Three steps plus coastal water, in this order, on a second mesh built
+from the same sphere routine as the sim:
 
 **A — detail mesh, warp, island crests.** Sample Layout's `meters` onto
 the finer mesh. Then displace each cell's *sample point* in the tangent
@@ -124,6 +127,15 @@ swings whole capes. A fine component frays the shore. Max is ±0.13 rad
 within a band of the shoreline, so interiors do not get noisy for free. Island crests run *after* the warp against the
 transferred `r_arc` / `r_hotspot`. That is what turns one 226 km blob per
 island into a chain.
+
+**B — coastal water.** Warp will not open a Channel or raise Britain.
+`warpCoastKeep` damps every land/ocean swap so an 800 km lookup cannot
+close the Med, and also cannot cut a 1-cell gap. This step is the
+asymmetric rule: do not fill a basin; do raise 2-cell bodies on shallow
+drowned continental crust; do drown a short, low neck that already
+separates an inland sea from the world ocean. A mountain isthmus stays.
+A cut that would split two large land pieces stays. Layout still owns
+the hole itself.
 
 **C — oriented ridges.** A belt used to be `orogenyReliefM * r_orogeny`
 — a smooth dome with no strike and no grain. The current method sums
@@ -165,12 +177,43 @@ at this grain:
 - old / weak arc ribbons (Curaçao class)
 - plume-on-ridge plateaus (Iceland)
 - the forearc trough
-- drowned-margin islands
 - ria inlets
 - fracture-zone scars
+- island-arc chains that sit in the water, not on the continent (Japan,
+  Antilles)
 
-**Not** Shape's list. Do not add them here: abyssal hills, a second
-continental-shelf pass, large lakes, rift grabens.
+**Layout owns the basin. Shape owns the shore.** An enclosed sea is a
+Layout hole (`planCuts` / authored basins). On Earth, 2026-08-27, the
+west Med box (`lon -8..0`, `lat 34..38`) had zero water at Layout: Europe
+and Africa meet as land, 126 km apart, then as 2–4 km of collision belt
+after Shape. `planCuts` opens a second-join sea at `0.14 rad` (about
+900 km on Earth). That is a gulf. A thin strait (Gibraltar / Dover
+class, 1–2 cells at 23 km) belongs here. Real Gibraltar is 14 km. That
+last pinch waits for [Carve](carve-landforms.md).
+
+**Coastal water — in trial.** First raise (2026-08-27, Earth, no
+erosion) took land bodies 49 → 1075, a necklace of 2–40 cell islands on
+every coast, and split the Americas into two ~37k-cell pieces. Tightened
+to: only raise drowned shelf that does not touch existing land, bodies
+of at least four cells, and refuse a strait that increases the number of
+large land masses. Judge on Earth: Britain crop, Aegean crop, Panama
+still an isthmus, Drake still open. Pass: offshore 2-cell+ bodies on the
+shelf without a speckle fringe; Americas one piece. Britain as a calf
+still needs a Channel cut. That is a later trial. Fail: speckle returns,
+or the Med or Drake closes.
+
+Do not drop `warpCoastKeep` to get this. That closed the Med.
+
+**Not** Shape's 23 km list. Do not add them here: abyssal hills, a
+second continental-shelf pass, large lakes, rift grabens.
+
+**Feature list — open.** Most islands are smaller than 23 km. Shape
+would write every edifice the peak / age maps imply: hotspot volcanoes,
+arc volcanoes, reef platforms, seamounts. Kind, age, trail. Carve
+stamps would read it. A later Terrain would dress it. See
+[custom-model.md](../custom-model.md). The row schema is not chosen.
+Height still drops one-cell cones. Do not grant this as a fifth Layout
+field. Layout already has the triples.
 
 - **Fjords are a grain problem.** The erosion pass drowns glaciated
   high-latitude coasts. A cell is ~23 km. A real fjord is 1–6 km across.
@@ -180,6 +223,19 @@ continental-shelf pass, large lakes, rift grabens.
   generated sketch. Implementation open. [World
   Orogen](https://orogen.studio) already does this. Read that codebase
   when we get to it. Same planet. Save is a new snapshot.
+- **Supersample the DualMesh into the 23 km TIFF — recommended, not
+  tried.** The 90 m model still reads one pixel per 23 km cell. A denser
+  TIFF would mis-scale the prior. A finer Shape mesh, rasterized onto
+  that same 23 km grid, might anti-alias coasts and ramps. The
+  conditioning would be less Voronoi-blocky. Sub-23 km landforms would
+  still average out. They are not the target. **The trial:** keep
+  `SCALE_KM = 23`. Run Shape at a modestly smaller `shapeSpacingKm`
+  (try ~12 km, about 4× the cells). Rasterize the same tile. Compare the
+  conditioning heightmap, then one preview bake. Pass: the 23 km sketch
+  and the bake read cleaner at coasts and belts, without new one-cell
+  cones the model then heals. Fail: the bake matches 23 km Shape, or
+  warp and erosion at the finer N alias into speckle. Do not ship a new
+  spacing until a picture picks one.
 
 ## How to judge it
 
@@ -188,6 +244,7 @@ the biome colours.
 
 ```sh
 bun run preview relief    # hypsometric tint + hillshade — belts and basin shape
+bun run preview --earth   # Earth fixture: coasts and shelf islands
 bun run preview           # globe + equirect
 bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400
 ```

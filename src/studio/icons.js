@@ -5,18 +5,14 @@
 import { faChevronLeft } from '@fortawesome/free-solid-svg-icons/faChevronLeft';
 import { faChevronRight } from '@fortawesome/free-solid-svg-icons/faChevronRight';
 import { faCompass } from '@fortawesome/free-solid-svg-icons/faCompass';
-import { faGlobe } from '@fortawesome/free-solid-svg-icons/faGlobe';
 import { faHouse } from '@fortawesome/free-solid-svg-icons/faHouse';
-import { faMap } from '@fortawesome/free-solid-svg-icons/faMap';
 import { faRuler } from '@fortawesome/free-solid-svg-icons/faRuler';
 
 const ICONS = {
     'chevron-left': faChevronLeft,
     'chevron-right': faChevronRight,
     compass: faCompass,
-    globe: faGlobe,
     house: faHouse,
-    map: faMap,
     ruler: faRuler,
 };
 

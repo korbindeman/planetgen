@@ -441,17 +441,7 @@ function crustColorForRegion(r, map) {
 }
 
 function climateColorForRegion(r, map) {
-    if (map.r_elevation[r] <= 0) return Look.CLIMATE_OCEAN;
-    const m = clamp01(map.r_moisture[r]);
-    const stops = Look.CLIMATE_STOPS;
-    for (let i = 1; i < stops.length; i++) {
-        if (m <= stops[i][0] || i === stops.length - 1) {
-            const [a, ca] = stops[i - 1], [b, cb] = stops[i];
-            const t = clamp01((m - a) / (b - a));
-            return [ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t];
-        }
-    }
-    return stops[stops.length - 1][1];
+    return Look.climateAlbedo(map.r_elevation[r], map.r_moisture[r]);
 }
 
 function overlayColorForRegion(r, map, mode) {

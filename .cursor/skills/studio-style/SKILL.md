@@ -31,8 +31,8 @@ Use these tokens on `body`:
 - `--pg-fill`: `rgba(0,0,0,0.055)`
 - `--pg-fill-hover`: `rgba(0,0,0,0.08)`
 - `--pg-muted`: `rgba(0,0,0,0.48)`
-- `--pg-radius`: `10px`
-- `--pg-radius-sm`: `8px`
+- `--pg-radius`: `8px`
+- `--pg-radius-sm`: `6px`
 - `--pg-ease`: `cubic-bezier(0.23, 1, 0.32, 1)`
 - `--pg-ease-out`: `cubic-bezier(0.2, 0, 0, 1)`
 
@@ -40,11 +40,23 @@ Draw hairlines with `box-shadow: 0 ±1px 0 var(--pg-hair)`. Do not use `border` 
 
 ## Controls
 
-Make buttons ghost by default. Use one filled action. `.stage-forward` is ink with white type and `font-weight: 600`. Show a pressed toggle with `--pg-fill`.
+Make buttons ghost by default. Use one filled action. `.stage-forward` is ink with white type and `font-weight: 600`. A selected chip in a segmented track (stage tabs, look bar, bool params) is a white pill with a stacked transparent shadow, not a fill tint.
+
+A combo is a padded fill well (`padding: 1px`, radius 7px). The inner action is a concentric rounded rect, not a flush split. Put a muted `.combo-label` inside the well (Seed, Name). Do not leave a text field with only a placeholder.
 
 Gate hover with `@media (hover: hover) and (pointer: fine)`. On press, scale to `0.96` in 150ms with `--pg-ease-out`. Name the transition properties. Do not write `transition: all`. If the visible control is smaller than 40×40, extend the hit target with a `::before` inset. Set `:focus-visible` to a 2px `currentColor` outline.
 
 If `prefers-reduced-motion: reduce` is set, drop transform motion.
+
+## Parameter language
+
+A knob is one tight row: label, value capsule, slider. Do not stack the value above a full-width slider.
+
+The capsule is a fill well. The number is ink at weight 650 with `tabular-nums`. The unit sits on the right, smaller and muted to opacity `0.32`. Units that have a mark (`°`, `km`, `m`, `h`, `Gyr`) show it. Count, step, index, frac, and `1` show no mark. The capsule is editable. Escape cancels. Enter and blur commit and clamp to the vouched range.
+
+The slider is a 1.5rem rounded rect (`5px`), the same height as the capsule. Fill the portion to the left of the thumb with `--param-t` (0..1) on the input. The thumb is a vertical 7px rounded rect flush with the track. No pill radii. No shadow, no circle.
+
+Keep vertical rhythm tight: about `0.22rem` between rows. Labels truncate. Do not put the bound value in the label.
 
 ## Copy
 

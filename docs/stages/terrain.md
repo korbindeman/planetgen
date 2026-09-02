@@ -7,6 +7,12 @@ Terrain turns the 23 km sketch into a 90 m DEM with
 is the bake. Ridges, valley spacing, coast crenulation: **landform
 statistics**. Not drainage. Drainage is [Carve](carve-hydrology.md).
 
+This stage is designed on that model's contract: five channels, no
+river graph, no feature list. A later Terrain would split into two
+learned grains with Hydrology between them. That file is
+[custom-model.md](../custom-model.md). Do not rewrite this stage to
+match that order.
+
 The model is a sibling checkout at `~/dev/terrain-diffusion`. It is never
 vendored into this tree. What it reads is
 [ref/terrain-diffusion.md](../ref/terrain-diffusion.md).
@@ -151,15 +157,37 @@ InfiniteDiffusion random access also makes on-demand generation possible
 later. Nothing here should preclude it. Keep tiles as deterministic
 functions of `(seed, face, level, i, j)` wherever you can.
 
-**Order of work** for this stage:
+### Current sprint
+
+Designed on [terrain-diffusion's contract](../ref/terrain-diffusion.md).
+Five channels. No river graph. No feature list. Hydrology stays after
+the 90 m DEM.
 
 1. Cubesphere face raster + adjacency table, and one face generated via
    `WorldPipeline` with imported conditioning. Compare against a
    `tiff-export` crop of the same region.
 2. One face edge, then one corner, seam-blended and cropped.
-3. Full coarse planet: all six faces at 23 km conditioning, coarse model
-   only. Cheap. First look at the planet as a planet.
-4. Scale out to the full 90 m bake, then hand off to Carve.
+3. Cheap whole-planet pass: all six faces at 23 km conditioning, coarse
+   model only. First look at the planet as a planet. A drainage graph
+   on that pass would be a preview. Those rivers do not constrain the
+   90 m pass.
+4. Scale out to the 90 m bake. Mask to land and shelf if a trial shows
+   the abyss does not need it. That trial is not run. Then hand off to
+   Carve.
+
+A late sea-level cut on the carved DEM is a Finish step. It is not a
+re-bake unless the new shoreline leaves the baked band. See
+[carve-landforms.md § Open](carve-landforms.md#open).
+
+### Not this sprint
+
+A later Terrain would invert drainage into the middle of the bake.
+That file is [custom-model.md](../custom-model.md).
+
+Earth's residual pyramid, with the story maps attached, is a parallel
+artifact. It would be training data and the install format.
+`check:earth` locks a stats report. That is not a pyramid. See
+[export.md § Open](export.md#open).
 
 ## How to judge it
 

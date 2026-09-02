@@ -5,8 +5,10 @@
  * finer sphere, samples the simulation's metres field onto it, then
  * warps that height the way World Orogen does: normalised FBM in the
  * tangent plane, greedy walk, blend. Island crests go on after.
- * Oriented phasor ridges and a first-stage erosion pass follow, so the
- * belts have grain and the slopes drain somewhere.
+ * A coastal-water pass then raises drowned-margin islands and opens a
+ * short low neck on an inland sea. Oriented phasor ridges and a
+ * first-stage erosion pass follow, so the belts have grain and the
+ * slopes drain somewhere.
  *
  * Climate, plates and crust stay where they were computed and are
  * sampled without the warp, so a trench can still be judged against its
@@ -110,6 +112,22 @@ const DEFAULTS = {
     noiseActivityM: 160,          // extra on belts
     noiseOctaves: 4,
     noiseWavelengthKm: 120,
+
+    /* Coastal water. Warp is damped at land/ocean swaps so it cannot
+     * open a Channel or raise Britain. Layout owns the basin; this pass
+     * owns the shore: shelf islands, and a 1–2 cell mouth on an inland
+     * sea that already almost meets the ocean. */
+    shelfLoM: -220,               // drowned continental crust shallow enough to emerge
+    shelfHiM: 0,                  // only raise what is still water; a coastal plain stays
+    shelfIslandM: 48,             // a body, not a volcano
+    shelfNoiseThresh: 0.35,
+    shelfWavelengthKm: 160,
+    shelfMaxBodyCells: 700,       // bigger than this is the shelf itself, not an island
+    straitMinBasin: 80,           // skip ponds; a body of water here is at least a few cells
+    straitMaxLandHops: 4,         // ~90 km. Wider mouths stay Layout's gap
+    straitMaxM: 80,               // a flooded shelf neck, not a mountain isthmus
+    straitFloorM: -42,
+    straitMinSplit: 4000,         // do not cut Panama: both sides would stay huge
 };
 
 
@@ -435,6 +453,172 @@ function applyPhasorRidges(mesh, r_xyz, meters, r_orogeny, r_orogenyDir, seed, o
 }
 
 
+function waterComponents(mesh, isLand, n) {
+    const id = new Int32Array(n).fill(-1);
+    const sizes = [];
+    const nb = [];
+    let nC = 0;
+    for (let r = 0; r < n; r++) {
+        if (isLand[r] || id[r] >= 0) continue;
+        const q = [r];
+        id[r] = nC;
+        let size = 0;
+        for (let i = 0; i < q.length; i++) {
+            size++;
+            mesh.r_circulate_r(nb, q[i]);
+            for (let j = 0; j < nb.length; j++) {
+                const k = nb[j];
+                if (isLand[k] || id[k] >= 0) continue;
+                id[k] = nC;
+                q.push(k);
+            }
+        }
+        sizes.push(size);
+        nC++;
+    }
+    let world = 0;
+    for (let c = 1; c < nC; c++) if (sizes[c] > sizes[world]) world = c;
+    return {id, sizes, world};
+}
+
+
+function largeLandCount(mesh, isLand, minKeep) {
+    const n = isLand.length;
+    const seen = new Uint8Array(n);
+    const nb = [];
+    let nLarge = 0;
+    for (let r = 0; r < n; r++) {
+        if (!isLand[r] || seen[r]) continue;
+        const q = [r];
+        seen[r] = 1;
+        let sz = 0;
+        for (let i = 0; i < q.length; i++) {
+            sz++;
+            mesh.r_circulate_r(nb, q[i]);
+            for (let j = 0; j < nb.length; j++) {
+                const k = nb[j];
+                if (!isLand[k] || seen[k]) continue;
+                seen[k] = 1;
+                q.push(k);
+            }
+        }
+        if (sz >= minKeep) nLarge++;
+    }
+    return nLarge;
+}
+
+
+/* Inland seas are Layout holes. A mouth that is already a short, low
+ * neck becomes a 1–2 cell strait. A mountain isthmus (Gibraltar as the
+ * fixture paints it, Panama) stays. Shallow drowned continental crust
+ * becomes island bodies of at least two cells. */
+function sculptCoastalWater(mesh, r_xyz, meters, r_crust_type, seed, opts) {
+    const n = mesh.numRegions;
+    const CONTINENTAL = Tectonics.CRUST_CONTINENTAL;
+    const isLand = new Uint8Array(n);
+    for (let r = 0; r < n; r++) if (meters[r] >= 0) isLand[r] = 1;
+
+    const water = waterComponents(mesh, isLand, n);
+    const nb = [];
+    const floor = opts.straitFloorM;
+    const maxHops = opts.straitMaxLandHops;
+    const maxM = opts.straitMaxM;
+    const minBasin = opts.straitMinBasin;
+    const minSplit = opts.straitMinSplit;
+
+    for (let c = 0; c < water.sizes.length; c++) {
+        if (c === water.world || water.sizes[c] < minBasin) continue;
+        const dist = new Int32Array(n).fill(-1);
+        const prev = new Int32Array(n).fill(-1);
+        const q = [];
+        for (let r = 0; r < n; r++) {
+            if (water.id[r] !== c) continue;
+            dist[r] = 0;
+            q.push(r);
+        }
+        for (let i = 0; i < q.length; i++) {
+            mesh.r_circulate_r(nb, q[i]);
+            for (let j = 0; j < nb.length; j++) {
+                const k = nb[j];
+                if (dist[k] < 0) {
+                    dist[k] = dist[q[i]] + 1;
+                    prev[k] = q[i];
+                    q.push(k);
+                }
+            }
+        }
+        let best = 1e9, who = -1;
+        for (let r = 0; r < n; r++) {
+            if (water.id[r] !== water.world || dist[r] < 0) continue;
+            if (dist[r] < best) { best = dist[r]; who = r; }
+        }
+        if (who < 0) continue;
+        const land = [];
+        let cur = who, guard = 0;
+        while (cur >= 0 && guard++ < n) {
+            if (isLand[cur]) land.push(cur);
+            if (water.id[cur] === c) break;
+            cur = prev[cur];
+        }
+        if (land.length < 1 || land.length > maxHops) continue;
+        let high = 0;
+        for (let i = 0; i < land.length; i++) high = Math.max(high, meters[land[i]]);
+        if (high > maxM) continue;
+        const trial = new Uint8Array(isLand);
+        for (let i = 0; i < land.length; i++) trial[land[i]] = 0;
+        if (largeLandCount(mesh, trial, minSplit) > largeLandCount(mesh, isLand, minSplit)) continue;
+        for (let i = 0; i < land.length; i++) {
+            meters[land[i]] = Math.min(meters[land[i]], floor);
+            isLand[land[i]] = 0;
+        }
+    }
+
+    const lo = opts.shelfLoM, hi = opts.shelfHiM;
+    const dest = opts.shelfIslandM;
+    const thresh = opts.shelfNoiseThresh;
+    const maxBody = opts.shelfMaxBodyCells;
+    const freq = noiseFrequency(opts.shelfWavelengthKm, opts);
+    const noise = new SimplexNoise(makeRandFloat(seed + 0x51e11d));
+    const fbm = Tectonics.makeFbm(noise, 4, 0.55);
+    const pick = new Float32Array(n);
+    for (let r = 0; r < n; r++) {
+        if (r_crust_type[r] !== CONTINENTAL) continue;
+        if (meters[r] < lo || meters[r] >= hi) continue;
+        const x = freq * r_xyz[3 * r], y = freq * r_xyz[3 * r + 1], z = freq * r_xyz[3 * r + 2];
+        if (fbm(x, y, z) > thresh) pick[r] = 1;
+    }
+    dropSpecks(mesh, pick, 4);
+    const seen = new Uint8Array(n);
+    for (let r = 0; r < n; r++) {
+        if (pick[r] <= 0 || seen[r]) continue;
+        const cells = [r];
+        seen[r] = 1;
+        for (let i = 0; i < cells.length; i++) {
+            mesh.r_circulate_r(nb, cells[i]);
+            for (let j = 0; j < nb.length; j++) {
+                const k = nb[j];
+                if (seen[k] || pick[k] <= 0) continue;
+                seen[k] = 1;
+                cells.push(k);
+            }
+        }
+        if (cells.length > maxBody) continue;
+        let touchesLand = false;
+        for (let i = 0; i < cells.length && !touchesLand; i++) {
+            mesh.r_circulate_r(nb, cells[i]);
+            for (let j = 0; j < nb.length; j++) {
+                if (isLand[nb[j]] && pick[nb[j]] <= 0) { touchesLand = true; break; }
+            }
+        }
+        if (touchesLand) continue;
+        for (let i = 0; i < cells.length; i++) {
+            if (meters[cells[i]] < dest) meters[cells[i]] = dest;
+        }
+    }
+    return meters;
+}
+
+
 function simMetersOf(simMap) {
     if (simMap.r_meters) return simMap.r_meters;
     const n = simMap.r_elevation.length;
@@ -589,6 +773,8 @@ function applyDetailPass(simMesh, simMap, detailMesh, detailXyz, seed, options) 
         detailMesh, detailXyz, meters, r_crust_type, null, crestPlateau, seed,
         Object.assign({}, crestOpts, {islandBody: 'plateau'}));
 
+    sculptCoastalWater(detailMesh, detailXyz, meters, r_crust_type, seed, opts);
+
     applyPhasorRidges(
         detailMesh, detailXyz, meters, hasOrogeny ? r_orogeny : null,
         hasOrogenyDir ? r_orogenyDir : null, seed, opts);
@@ -658,6 +844,7 @@ module.exports = {
     noiseFrequency,
     warpTerrain,
     applyPhasorRidges,
+    sculptCoastalWater,
     applyDetailPass,
     applyErosionPass,
 };

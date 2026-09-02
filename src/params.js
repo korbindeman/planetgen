@@ -155,6 +155,7 @@ const TECTONICS = {
         collisionThrust:     p('frac'),
         riftThinKm:          p('km/step'),
         riftIntactShare:     p('frac'),
+        riftCratonShare:     p('frac'),
         emergentFraction:    p('frac'),
     },
 
@@ -353,6 +354,22 @@ const DETAIL = {
         noiseActivityM:    p('m'),
         noiseOctaves:      p('count'),
         noiseWavelengthKm: p('km'),
+    },
+
+    coast: {
+        /* Shallow continental crust that can emerge as a 2-cell island.
+         * Not a second shelf pass: this is the drowned-margin body. */
+        shelfLoM:          p('m'),
+        shelfHiM:          p('m'),
+        shelfIslandM:      p('m'),
+        shelfNoiseThresh:  p('1'),
+        shelfWavelengthKm: p('km'),
+        shelfMaxBodyCells: p('count'),
+        straitMinBasin:    p('count'),
+        straitMaxLandHops: p('count'),
+        straitMaxM:        p('m'),
+        straitFloorM:      p('m'),
+        straitMinSplit:    p('count'),
     },
 };
 

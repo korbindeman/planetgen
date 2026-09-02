@@ -41,6 +41,11 @@ days** on the 4070 Ti — half a day if tiles are fast, three or four if
 not. Earth-scale was single-digit GPU-days and ~600k tiles; Thalos is that
 number over four.
 
+These numbers are a dense terrain-diffusion 90 m pass. They stay true
+until the model changes. A later Terrain would mask the 90 m residual
+to land and shelf and aim at hours. That target has not been measured.
+See [custom-model.md](../custom-model.md).
+
 Sharding is free: any partition of the tile list is valid, because
 `get(i1,j1,i2,j2)` is a pure function of `(seed, coords)` plus a bounded
 parent window. N GPUs means N processes on the same seed and

@@ -31,6 +31,51 @@ const GROUP_LABEL = {
 const GROUP_ORDER = Object.keys(GROUP_LABEL);
 const INTEGER_UNITS = new Set(['count', 'step', 'index', 'km', 'm']);
 const INTEGER_STEPS = new Set(['count', 'step', 'index']);
+const UNIT_MARK = {
+    deg: '°',
+    km: 'km',
+    m: 'm',
+    Myr: 'Myr',
+    Gyr: 'Gyr',
+    h: 'h',
+    rad: 'rad',
+};
+
+
+function unitMark(unit) {
+    return UNIT_MARK[unit] || '';
+}
+
+
+function formatValue(meta, value) {
+    if (value == null) return 'free';
+    if (typeof value === 'boolean') return value ? 'on' : 'off';
+    if (INTEGER_UNITS.has(meta.unit)) return String(Math.round(value));
+    if (meta.unit === 'frac' || meta.unit === '1') return value.toFixed(3);
+    return String(Math.round(value * 10) / 10);
+}
+
+
+function parseParamInput(meta, raw) {
+    const n = Number(String(raw).trim());
+    if (!Number.isFinite(n)) return null;
+    let next = n;
+    if (INTEGER_STEPS.has(meta.unit) || INTEGER_UNITS.has(meta.unit)) next = Math.round(next);
+    if (meta.range) next = Math.min(meta.range[1], Math.max(meta.range[0], next));
+    return next;
+}
+
+
+function rangeProgress(value, lo, hi) {
+    if (!(hi > lo)) return 0;
+    const v = value == null ? (lo + hi) / 2 : value;
+    return Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+}
+
+
+function progressStyle(value, lo, hi) {
+    return '--param-t:' + rangeProgress(value, lo, hi);
+}
 
 
 function actionsOf(session) {
@@ -54,15 +99,6 @@ function thumbSrc(thumb) {
 
 function variantHasSketch(variant) {
     return !!(variant && variant.shaped);
-}
-
-
-function formatValue(meta, value) {
-    if (value == null) return 'free';
-    if (typeof value === 'boolean') return value ? 'on' : 'off';
-    if (INTEGER_UNITS.has(meta.unit)) return String(Math.round(value));
-    if (meta.unit === 'frac' || meta.unit === '1') return value.toFixed(3);
-    return String(Math.round(value * 10) / 10);
 }
 
 
@@ -100,6 +136,43 @@ function paramsForStage(stage) {
 }
 
 
+function ParamCapsule({meta, live, onCommit}) {
+    const [draft, setDraft] = useState(null);
+    const cancel = useRef(false);
+    const mark = unitMark(meta.unit);
+    const shown = draft != null ? draft : formatValue(meta, live);
+    return html`
+        <label class="param-capsule">
+            <input type="text" class="param-num" inputmode="decimal"
+                autocomplete="off" spellcheck=${false}
+                aria-label="Value"
+                value=${shown}
+                onFocus=${() => setDraft(formatValue(meta, live))}
+                onInput=${(e) => setDraft(e.currentTarget.value)}
+                onBlur=${(e) => {
+                    if (cancel.current) {
+                        cancel.current = false;
+                        setDraft(null);
+                        return;
+                    }
+                    const next = parseParamInput(meta, e.currentTarget.value);
+                    setDraft(null);
+                    if (next != null && next !== live) onCommit(next);
+                }}
+                onKeyDown=${(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                    if (e.key === 'Escape') {
+                        cancel.current = true;
+                        setDraft(null);
+                        e.currentTarget.blur();
+                    }
+                }} />
+            ${mark ? html`<span class="param-unit">${mark}</span>` : null}
+        </label>
+    `;
+}
+
+
 function ParamRow({session, name}) {
     const meta = Params.all()[name];
     const pinned = name in session.pins;
@@ -109,6 +182,8 @@ function ParamRow({session, name}) {
     useEffect(() => { setLive(value); }, [value]);
     const act = actionsOf(session);
     const canPin = !isFixture(session) && Params.isBody(name);
+    const lo = meta.range && meta.range[0];
+    const hi = meta.range && meta.range[1];
 
     return html`
         <div class=${pinned ? 'param' : probing ? 'param free is-probe' : 'param free'}>
@@ -124,15 +199,21 @@ function ParamRow({session, name}) {
                     </button>
                 `}
                 <span class="param-name" title=${name}>${Params.label(name)}</span>
-                <span class="param-value">${formatValue(meta, live)}</span>
             </div>
             ${meta.unit === 'bool' ? html`
-                <input type="checkbox" checked=${!!live}
-                    onChange=${(event) => act.setParam(name, event.currentTarget.checked)} />
+                <div class="param-seg" role="group" aria-label=${Params.label(name)}>
+                    <button type="button" aria-pressed=${String(!!live)}
+                        onClick=${() => act.setParam(name, true)}>On</button>
+                    <button type="button" aria-pressed=${String(!live)}
+                        onClick=${() => act.setParam(name, false)}>Off</button>
+                </div>
             ` : meta.range ? html`
-                <input type="range" min=${meta.range[0]} max=${meta.range[1]}
-                    step=${INTEGER_STEPS.has(meta.unit) ? '1' : String((meta.range[1] - meta.range[0]) / 200)}
-                    value=${live == null ? (meta.range[0] + meta.range[1]) / 2 : live}
+                <${ParamCapsule} meta=${meta} live=${live}
+                    onCommit=${(next) => act.setParam(name, next)} />
+                <input type="range" min=${lo} max=${hi}
+                    step=${INTEGER_STEPS.has(meta.unit) ? '1' : String((hi - lo) / 200)}
+                    value=${live == null ? (lo + hi) / 2 : live}
+                    style=${progressStyle(live, lo, hi)}
                     onInput=${(event) => setLive(event.currentTarget.valueAsNumber)}
                     onChange=${(event) => act.setParam(name, event.currentTarget.valueAsNumber)} />
             ` : null}
@@ -208,12 +289,45 @@ function StageTabs({session}) {
 function SeedField({label, value, onChange, onShuffle, shuffleTitle}) {
     return html`
         <div class="combo seed-field">
+            <span class="combo-label">Seed</span>
             <input type="text" autocomplete="off" spellcheck=${false}
                 aria-label=${label} title=${label} value=${String(value)}
                 onKeyDown=${(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                 onChange=${(e) => onChange(e.currentTarget.value)} />
             <button type="button" class="seed-shuffle" title=${shuffleTitle}
                 onClick=${onShuffle}>Shuffle</button>
+        </div>
+    `;
+}
+
+
+function AdvancedParam({label, extraClass, meta, value, sliderMin, sliderMax, sliderStep, sliderValue, onSlide, onCommit}) {
+    const [live, setLive] = useState(value);
+    const [thumb, setThumb] = useState(sliderValue != null ? sliderValue : value);
+    useEffect(() => {
+        setLive(value);
+        setThumb(sliderValue != null ? sliderValue : value);
+    }, [value, sliderValue]);
+    const commit = (next) => {
+        if (next == null) return;
+        setLive(next);
+        if (sliderValue == null) setThumb(next);
+        onCommit(next);
+    };
+    return html`
+        <div class=${extraClass ? extraClass + ' param' : 'param'}>
+            <div class="param-head"><span class="param-name">${label}</span></div>
+            <${ParamCapsule} meta=${meta} live=${live} onCommit=${commit} />
+            <input type="range" min=${sliderMin} max=${sliderMax} step=${sliderStep}
+                value=${thumb}
+                style=${progressStyle(thumb, sliderMin, sliderMax)}
+                onInput=${(e) => {
+                    const raw = e.currentTarget.valueAsNumber;
+                    setThumb(raw);
+                    const next = onSlide(raw);
+                    if (next != null) setLive(next);
+                }}
+                onChange=${(e) => onCommit(onSlide(e.currentTarget.valueAsNumber))} />
         </div>
     `;
 }
@@ -252,27 +366,27 @@ function Advanced({session}) {
                     Flat cells
                 </button>
             </div>
-            <div class="globe-only">
-                <label class="field"><span>Spin</span>
-                    <input type="range" min="-5" max="5" step="0.001" value=${rotation}
-                        onInput=${(e) => host.setRotation(e.currentTarget.valueAsNumber)} />
-                </label>
-            </div>
-            <label class="field"><span>Layout mesh</span>
-                <output>${n}</output>
-                <input type="range" min="2" max="5" step="0.001" value=${Math.log10(n)}
-                    onChange=${(e) => { host.setN(Math.pow(10, e.currentTarget.valueAsNumber) | 0); session.redraw(); }} />
-            </label>
-            <label class="field"><span>Shape spacing</span>
-                <output>${spacing} km</output>
-                <input type="range" min="10" max="50" step="1" value=${spacing}
-                    onChange=${(e) => { host.setShapeSpacing(e.currentTarget.valueAsNumber | 0); session.redraw(); }} />
-            </label>
-            <label class="field"><span>Mesh jitter</span>
-                <output>${jitter.toFixed(2)}</output>
-                <input type="range" min="0" max="1" step="0.001" value=${jitter}
-                    onChange=${(e) => { host.setJitter(e.currentTarget.valueAsNumber); session.redraw(); }} />
-            </label>
+            <${AdvancedParam} label="Spin" extraClass="globe-only"
+                meta=${{unit: '1', range: [-5, 5]}} value=${rotation}
+                sliderMin=${-5} sliderMax=${5} sliderStep=${0.001}
+                onSlide=${(v) => { host.setRotation(v); return v; }}
+                onCommit=${(v) => host.setRotation(v)} />
+            <${AdvancedParam} label="Layout mesh"
+                meta=${{unit: 'count', range: [100, 100000]}} value=${n}
+                sliderMin=${2} sliderMax=${5} sliderStep=${0.001}
+                sliderValue=${Math.log10(n)}
+                onSlide=${(log) => Math.pow(10, log) | 0}
+                onCommit=${(next) => { host.setN(next | 0); session.redraw(); }} />
+            <${AdvancedParam} label="Shape spacing"
+                meta=${{unit: 'km', range: [10, 50]}} value=${spacing}
+                sliderMin=${10} sliderMax=${50} sliderStep=${1}
+                onSlide=${(v) => v | 0}
+                onCommit=${(next) => { host.setShapeSpacing(next | 0); session.redraw(); }} />
+            <${AdvancedParam} label="Mesh jitter"
+                meta=${{unit: '1', range: [0, 1]}} value=${jitter}
+                sliderMin=${0} sliderMax=${1} sliderStep=${0.001}
+                onSlide=${(v) => v}
+                onCommit=${(next) => { host.setJitter(next); session.redraw(); }} />
         </details>
     `;
 }
@@ -398,7 +512,8 @@ function Shell({session}) {
             </div>
             ${!fixture && html`
                 <form class="combo save-row" onSubmit=${(e) => { e.preventDefault(); act.save(); }}>
-                    <input type="text" maxlength="48" placeholder="Name"
+                    <span class="combo-label">Name</span>
+                    <input type="text" maxlength="48"
                         autocomplete="off" spellcheck=${false} aria-label="Variant name"
                         value=${session.ui.saveName}
                         onInput=${(e) => act.setSaveName(e.currentTarget.value)} />

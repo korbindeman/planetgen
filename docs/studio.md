@@ -77,6 +77,10 @@ here.
 The workspace shell is always: back to projects, the project name,
 **Save**, and **Variants**. The globe and look stay on the canvas. Workspace chrome is Preact; the
 canvases and generator are not.
+The look bar is Surface, Relief, Climate, then Plates. Climate is the
+moisture field on the same shaded globe as Surface. Plates opens Color
+or Floor, plus Motion and Boundaries. Floor hides Boundaries. Tiles
+appear on Surface after Shape.
 **Measure** is a HUD tool. Click two points for the great-circle distance in kilometres. Click again to add a leg. Escape clears.
 **Save** is a shell action on the working planet, not a control inside
 the tree. The name field next to it shows the active variant. Save
@@ -132,7 +136,9 @@ cells. Shape already does coast warp, volcanic crests, belt grain, and
 drainage texture. It also claims: young hotspot islands, old/weak arc
 ribbons, plume-on-ridge plateaus, the forearc trough, drowned-margin
 islands, ria inlets, and fracture-zone scars. Isolated 1-cell cones,
-atolls, reefs, islets, and real fjords wait for **Carve**. Not Shape:
+atolls, reefs, islets, and real fjords wait for **Carve**. A **feature
+list** would name those edifices without putting them in height. Schema
+open. See [shape.md § Open](stages/shape.md#open). Not Shape:
 abyssal hills, a second continental-shelf pass, large lakes, rift
 grabens. Finish reads the same maps on the sketch for stamps below that
 grain in **Carve**. Each stage adds only what belongs at its scale. Do
@@ -211,6 +217,12 @@ Climate, Terrain, Carve, and export consume the 23 km sketch on that
 variant. They do not re-run Shape. Preview tiles run from Shape, still
 keyed to the variant, so they do not follow you onto the next candidate.
 
+The current bake is terrain-diffusion. That sprint is
+[terrain.md](stages/terrain.md). A later Terrain would split into two
+learned grains with Hydrology between them. That file is
+[custom-model.md](custom-model.md). Finish stays one button on a kept
+variant either way.
+
 ## Open
 
 **Advanced needs another look.** Layout still folds mesh `N`, shape
@@ -219,3 +231,13 @@ one world ocean) behind Advanced. Those toggles are mostly unused and
 should likely go. They are shipped application values, not genes — the
 1843 blend earns its place only as a comparison
 ([layout.md](stages/layout.md#the-1843-path)).
+
+**Body buckets for activity and ice — open.** Initialize has size, age,
+day, and water. Gravity and tilt start pinned. A later Finish wants
+how active the crust is and how much ice there has been recently.
+Genes already steer vigour. Do not add those buckets on this sprint.
+See [custom-model.md](custom-model.md).
+
+**Systems are a later harness grain.** A **system** is the star and the
+**situation** of several **projects**. Not scheduled. Do not add a picker
+layer or a system file for this. → [systems.md](systems.md)

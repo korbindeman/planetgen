@@ -82,7 +82,9 @@ displacement, bottoming out around 0.5 m.
 
 Do not bake it. Human scale is never a diffusion bake. 30 m globally is
 a measurement we might take later. It is not the global bake. See
-[ref/bake-compute.md](../ref/bake-compute.md).
+[ref/bake-compute.md](../ref/bake-compute.md). A one-step 90 m → 10 m
+model in the game would reopen this line. That trial is not run. See
+[custom-model.md](../custom-model.md).
 
 The whole planet is playable: landable and flyable everywhere. Do not
 treat 90 m windows as "the playable parts."
@@ -94,6 +96,13 @@ treat 90 m windows as "the playable parts."
 - Prune thresholds per terrain class have a stated target (ocean and
   craton at 1–2 km, coasts and rims at 90 m). They have not been measured
   against a real planet.
+- **Earth's residual pyramid.** Schema v1 with Earth's real DEM and
+  the story maps attached. That artifact would be training data, the
+  install format, and the answer key. `check:earth` locks a stats
+  report. That is not a pyramid. This trial is not run. See
+  [custom-model.md](../custom-model.md).
+- A **system** would author the solar-system pack named above. Not built.
+  See [systems.md](../systems.md).
 
 ## How to judge it
 

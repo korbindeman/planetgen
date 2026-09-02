@@ -2,10 +2,12 @@
 
 ```
 docs/
-  studio.md    the harness: Discover/Finish, projects, variants, what a Save is
-  stages/      one file per pipeline stage
-  ref/         lookup for external tools and formats
-  history/     dated decisions. Do not update these files
+  studio.md         the harness: Discover/Finish, projects, variants, what a Save is
+  systems.md        vision: a star and several projects. Not built
+  custom-model.md   vision: a later Terrain. Not this sprint
+  stages/           one file per pipeline stage
+  ref/              lookup for external tools and formats
+  history/          dated decisions. Do not update these files
 ```
 
 Language — every term, and what not to call it — is
@@ -38,6 +40,12 @@ Export    residual pyramid  what the game installs
 
 **Discover** is Layout and Shape. Search, save, iterate. **Finish** is
 Climate through Export. Overnight and GPU work on a variant you kept.
+
+Finish has two implementations. The current bake is terrain-diffusion.
+That sprint is [terrain.md](stages/terrain.md). A later Terrain would
+split into two learned grains with Hydrology between them. That file
+is [custom-model.md](custom-model.md). Do not collapse those orders
+into one stage doc.
 
 | Stage | Grain | State | Doc |
 | --- | --- | --- | --- |

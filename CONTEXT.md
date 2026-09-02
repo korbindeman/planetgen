@@ -47,9 +47,12 @@ bake-time tier is the Finish stage.
 _Avoid_: Weather, biomes (those are a read of climate, not the stage)
 
 **Terrain**:
-Whole-planet diffusion, cheap pass then 90 m, per cubesphere face.
-Terrain is **the bake**. → [docs/stages/terrain.md](docs/stages/terrain.md)
-_Avoid_: Diffusion (as the stage name), tiles, conditioning, Finish
+The bake. Today that is whole-planet diffusion, cheap pass then 90 m,
+per cubesphere face. A later Terrain would be two learned grains with
+**Hydrology** between them. → [docs/stages/terrain.md](docs/stages/terrain.md),
+[docs/custom-model.md](docs/custom-model.md)
+_Avoid_: Diffusion (as the stage name), tiles, conditioning, Finish,
+calling terrain-diffusion the custom model
 
 **Carve**:
 Cuts and stamps on the baked DEM after **Terrain**: rivers, lakes,
@@ -58,10 +61,14 @@ canyons, fjords, atolls, reefs, islets.
 _Avoid_: Landforms, post-diffusion, polish, hydrology (as the stage)
 
 **Hydrology**:
-The drainage work *inside* **Carve** — a consistency pass on already-eroded
-90 m terrain, not a second landscape-evolution.
-→ [docs/stages/carve-hydrology.md](docs/stages/carve-hydrology.md)
-_Avoid_: Calling the Finish stage this; treating it as Shape's erosion run again
+The drainage work *inside* **Carve**. Today that is a consistency pass
+on already-eroded 90 m terrain, after Terrain. A later Terrain would
+route at 1 km and make those rivers law for the 90 m residual.
+→ [docs/stages/carve-hydrology.md](docs/stages/carve-hydrology.md),
+[docs/custom-model.md](docs/custom-model.md)
+_Avoid_: Calling the Finish stage this; treating it as Shape's erosion
+run again; putting rivers before the 90 m pass while terrain-diffusion
+is the bake
 
 **Export**:
 The sparse residual pyramid the game installs. Not the bake.
@@ -70,9 +77,25 @@ _Avoid_: Ship, package (the game side owns that word), the bake
 
 **Sketch**:
 The height, climate, and Layout story maps at the terrain model's grain
-(23 km today). Discover writes it; Finish reads it. Spacing is a shipped
-value, not a gene. → [docs/stages/shape.md](docs/stages/shape.md#hands-on)
+(23 km today). Discover writes it; Finish reads it. A **feature list**
+would sit here too. Spacing is a shipped value, not a gene.
+→ [docs/stages/shape.md](docs/stages/shape.md#hands-on)
 _Avoid_: Conditioning, coarse map, DEM, height-only
+
+**Feature list**:
+Discrete edifices too small for a sketch cell: hotspot volcanoes, arc
+volcanoes, reef platforms, seamounts. Shape would write it. Height
+still drops one-cell cones. Not built.
+→ [docs/stages/shape.md](docs/stages/shape.md#open)
+_Avoid_: Island layer, stamp list, raising these into `r_meters`,
+calling the story maps a feature list
+
+**Custom model**:
+A later **Terrain**: two learned grains with **Hydrology** between
+them. Not built. The current bake is terrain-diffusion.
+→ [docs/custom-model.md](docs/custom-model.md)
+_Avoid_: Calling terrain-diffusion this; renaming Terrain; calling
+Finish this
 
 **Progress**:
 Where a **variant** sits in the **pipeline**. Shown on that node in the
@@ -85,7 +108,18 @@ _Avoid_: Pipeline widget, stage list, sidebar rows
 The named world being made: an evolutionary tree of **variants**, plus an
 optional **adopted body**. It does not hold a seed or a gene range box.
 Thalos is the one being discovered. → [docs/studio.md](docs/studio.md)
-_Avoid_: World (the generated body), seed, preset, Earth (that is the fixture)
+_Avoid_: World (the generated body), seed, preset, Earth (that is the fixture), system (that is several bodies)
+
+**System**:
+The star and the **situation** of each **project** in it. Several bodies
+share one. Not built. → [docs/systems.md](docs/systems.md)
+_Avoid_: Galaxy, universe, world (the generated body), calling the system a project, putting star class on a variant
+
+**Situation**:
+Where a body sits: parent and orbit. Derives flux, year, and whether the
+body is locked. Would live with the project, not as a gene. Not built.
+→ [docs/systems.md](docs/systems.md)
+_Avoid_: Body (that is the rock), orbit as a gene, star class on the variant
 
 **Fixture**:
 A locked known planet used to test shaping on a base whose tectonics are
@@ -107,7 +141,7 @@ _Avoid_: Preset, exact value
 The catalogue properties of a planet: radius, gravity, day length, tilt,
 age, and **water**. Each **variant** stores its own. Model knobs
 (cratons, climate rates, continent fraction) are not body.
-_Avoid_: World params, planet settings
+_Avoid_: World params, planet settings, situation (that is where it sits)
 
 **Water**:
 How full the ocean basin is. A **body** fact. Dry share is an output, not
@@ -155,6 +189,17 @@ _Avoid_: Current, selected (ambiguous with search), HEAD (in the UI)
 The saves that share one **name**, in time order. The Variants panel
 shows one card per name; the latest save is the head.
 _Avoid_: Showing every snapshot as its own variant, History (the tectonic sim), nesting by parent or seed
+
+**Look**:
+How the globe is coloured. Surface, Relief, and Climate are shaded
+reads of the planet. Plates is a diagram. Its paints are Color and
+**Floor**. Motion and Boundaries are Plates layers.
+_Avoid_: Overlay (as the bar), view mode (that is globe vs map), Crust (as a look)
+
+**Floor**:
+The Plates paint for sea-floor age and boundary type. The sim still
+says crust.
+_Avoid_: Crust (in the look bar)
 
 **Working planet**:
 The globe on screen. Same recipe shape as a **variant**, but uncommitted
@@ -218,6 +263,12 @@ _Avoid_: Fitness, generation count, search depth
 
 **The pipeline is not frozen.** Layout, Shape, **Carve** and the rest will keep changing for realism. Every stage doc has an **Open** section, and that is where the argument belongs.
 
+**A system is not a project.** Several bodies share a star. Each body is still its own project. That grain is a vision. → [docs/systems.md](docs/systems.md)
+
+**The feature list is not height.** One-cell cones stay dropped from `r_meters`. Carve and a later Terrain read the list.
+
+**Two Terrain orders.** The current bake is 23 km → 90 m, then Carve. A later Terrain routes water at 1 km between two learned grains. Those orders must not share one stage doc. → [docs/custom-model.md](docs/custom-model.md)
+
 ## Example
 
 — Thalos has three saved variants and no adopted body yet. Is that the planet?
@@ -246,6 +297,9 @@ _Avoid_: Fitness, generation count, search depth
 
 — I want an ocean world. Do I set land fraction to 5%?
 — No. That is **water**: drowned. Land fraction is not a parameter.
+
+— I made a homeworld and a moon. Are those two variants?
+— No. They would be two **projects** that share a **system**. Each has its own variants. That grain is not built.
 
 — When do we run the 90 m bake?
 — In **Finish**, on the variant you name. Preview tiles can run earlier, per variant, so they do not follow you onto the next candidate.

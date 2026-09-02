@@ -23,7 +23,7 @@ Do not hard-code this planet's geography into the model. Do not pin a Pacific, a
 | **Carve** | 90 m DEM | [hydrology](docs/stages/carve-hydrology.md), [landforms](docs/stages/carve-landforms.md) | Diffusion owns landform statistics; hydrology owns drainage. Different knobs. |
 | **Export** | residual pyramid | [docs/export.md](docs/stages/export.md) | Ship the pyramid, never the dense bake. |
 
-**Discover** is Layout and Shape; **Finish** is Climate through Export. The harness — projects, variants, what a Save is — is [`docs/studio.md`](docs/studio.md), canonical. The words are [`CONTEXT.md`](CONTEXT.md).
+**Discover** is Layout and Shape; **Finish** is Climate through Export. The harness — projects, variants, what a Save is — is [`docs/studio.md`](docs/studio.md), canonical. The words are [`CONTEXT.md`](CONTEXT.md). A **system** of several bodies is [`docs/systems.md`](docs/systems.md). That grain is not built. A later Terrain (two learned grains, hydrology between) is [`docs/custom-model.md`](docs/custom-model.md). The current bake is terrain-diffusion.
 
 `tectonics.js`, `climate.js` and `detail.js` are kept free of WebGL and DOM so captures and the headless helpers share one model.
 

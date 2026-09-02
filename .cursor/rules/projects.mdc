@@ -21,5 +21,8 @@ planet belongs to neither.
 Do not treat the generator's Earth-calibrated `DEFAULTS` as a third
 project. Those are the unmarked baseline the body sits on.
 
+A **system** of several bodies is later. Not built.
+→ [docs/systems.md](../../docs/systems.md)
+
 How the studio works: [docs/studio.md](../../docs/studio.md). Language:
 [CONTEXT.md](../../CONTEXT.md). Do not restate either here.

@@ -20,10 +20,16 @@ const TWO_PI = 2 * PI;
 const POLE_LAT = PI / 2 - 1e-6;
 const POLE_SNAP = 3 * PI / 180;
 const {OVERLAY_LEGEND, PLATE_ARROW, BOUNDARY_INK} = Look;
-const {surfaceAlbedo, reliefAlbedo, hillshade, northPoleLines} = Look;
+const {surfaceAlbedo, reliefAlbedo, climateAlbedo, hillshade, northPoleLines} = Look;
 
 function paintedOverlay(overlay) {
-    return overlay === 'plates' || overlay === 'crust' || overlay === 'climate';
+    return overlay === 'plates' || overlay === 'crust';
+}
+
+function surfaceLook(overlay) {
+    if (overlay === 'relief') return 'relief';
+    if (overlay === 'climate') return 'climate';
+    return 'surface';
 }
 
 function globeProjection(yaw, rotation, zoom) {
@@ -86,7 +92,7 @@ function putPixelOpaque(target, x, y, z, r, g, b) {
     target.rgba[p + 3] = 255;
 }
 
-function rasterTriangle(target, a, b, c, shade, overlay, relief) {
+function rasterTriangle(target, a, b, c, shade, overlay, look) {
     const minX = Math.max(0, Math.floor(Math.min(a.x, b.x, c.x)));
     const maxX = Math.min(target.width - 1, Math.ceil(Math.max(a.x, b.x, c.x)));
     const minY = Math.max(0, Math.floor(Math.min(a.y, b.y, c.y)));
@@ -126,7 +132,9 @@ function rasterTriangle(target, a, b, c, shade, overlay, relief) {
                 const e = u * a.e + v * b.e + w * c.e;
                 const m = u * a.m + v * b.m + w * c.m;
                 const t = u * a.t + v * b.t + w * c.t;
-                const alb = relief ? reliefAlbedo(e) : surfaceAlbedo(e, m, t);
+                const alb = look === 'relief' ? reliefAlbedo(e)
+                    : look === 'climate' ? climateAlbedo(e, m)
+                    : surfaceAlbedo(e, m, t);
                 putPixelOpaque(target, x, y, z,
                     Math.round(Math.max(0, Math.min(1, alb[0] * light)) * 255),
                     Math.round(Math.max(0, Math.min(1, alb[1] * light)) * 255),
@@ -155,7 +163,7 @@ function projectAttr(v, matrix, width, height) {
     return Object.assign({}, v, s);
 }
 
-function drawIndexed(target, xyz, tm, indices, matrix, overlay, relief) {
+function drawIndexed(target, xyz, tm, indices, matrix, overlay, look) {
     const {width, height} = target;
     const n = indices.length;
     for (let i = 0; i < n; i += 3) {
@@ -167,17 +175,17 @@ function drawIndexed(target, xyz, tm, indices, matrix, overlay, relief) {
         if (A.x > width + 2 && B.x > width + 2 && C.x > width + 2) continue;
         if (A.y < -2 && B.y < -2 && C.y < -2) continue;
         if (A.y > height + 2 && B.y > height + 2 && C.y > height + 2) continue;
-        rasterTriangle(target, A, B, C, 1, overlay, relief);
+        rasterTriangle(target, A, B, C, 1, overlay, look);
     }
 }
 
-function drawUnindexed(target, xyz, tm, count, matrix, overlay, relief) {
+function drawUnindexed(target, xyz, tm, count, matrix, overlay, look) {
     const {width, height} = target;
     for (let i = 0; i < count; i += 3) {
         const A = projectAttr(vertexAttr(xyz, tm, i, overlay), matrix, width, height);
         const B = projectAttr(vertexAttr(xyz, tm, i + 1, overlay), matrix, width, height);
         const C = projectAttr(vertexAttr(xyz, tm, i + 2, overlay), matrix, width, height);
-        rasterTriangle(target, A, B, C, 1, overlay, relief);
+        rasterTriangle(target, A, B, C, 1, overlay, look);
     }
 }
 
@@ -336,7 +344,7 @@ function wrapPanX(x) {
     return ((x + 1) % 2 + 2) % 2 - 1;
 }
 
-function drawEquirectSurface(target, tris, panX, overlay, relief) {
+function drawEquirectSurface(target, tris, panX, overlay, look) {
     const {width, height} = target;
     for (const xshift of [-2, 0, 2]) {
         const matrix = equirectMatrix(panX, xshift);
@@ -344,7 +352,7 @@ function drawEquirectSurface(target, tris, panX, overlay, relief) {
             const A = projectAttr(tris[i], matrix, width, height);
             const B = projectAttr(tris[i + 1], matrix, width, height);
             const C = projectAttr(tris[i + 2], matrix, width, height);
-            rasterTriangle(target, A, B, C, 1, overlay, relief);
+            rasterTriangle(target, A, B, C, 1, overlay, look);
         }
     }
 }
@@ -591,15 +599,17 @@ function renderGlobe(planet, opts = {}) {
     const size = opts.size || GLOBE_SIZE;
     const overlay = opts.overlay || null;
     const painted = paintedOverlay(overlay);
-    const relief = overlay === 'relief';
+    const look = surfaceLook(overlay);
     const yaw = opts.yaw || 0;
     const rotation = opts.rotation == null ? -1 : opts.rotation;
     const zoom = opts.zoom == null ? 1 : opts.zoom;
     const matrix = globeProjection(yaw, rotation, zoom);
     const target = makeTarget(size, size);
     const tm = surfaceTm(planet, overlay);
-    drawIndexed(target, planet.geometry.xyz, tm, planet.geometry.I, matrix, painted, relief);
-    if (painted) drawBoundariesGlobe(target, plateBoundarySegments(planet.mesh, planet.map), matrix, BOUNDARY_INK);
+    drawIndexed(target, planet.geometry.xyz, tm, planet.geometry.I, matrix, painted, look);
+    if (painted && overlay !== 'crust') {
+        drawBoundariesGlobe(target, plateBoundarySegments(planet.mesh, planet.map), matrix, BOUNDARY_INK);
+    }
     if (!painted) drawNorthPole(target, matrix);
     if (overlay === 'plates') {
         paintPlateAnnotations(target.rgba, size, size, planet, 'globe', matrix, 0);
@@ -612,14 +622,14 @@ function renderEquirect(planet, opts = {}) {
     const height = opts.height || EQUIRECT_H;
     const overlay = opts.overlay || null;
     const painted = paintedOverlay(overlay);
-    const relief = overlay === 'relief';
+    const look = surfaceLook(overlay);
     const lon0 = Number(opts.lon0) || 0;
     const panX = wrapPanX(-(lon0 / 180));
     const tm = surfaceTm(planet, overlay);
     const tris = buildEquirectTris(planet.geometry.xyz, tm, planet.geometry.I, painted);
     const target = makeTarget(width, height);
-    drawEquirectSurface(target, tris, panX, painted, relief);
-    if (painted) {
+    drawEquirectSurface(target, tris, panX, painted, look);
+    if (painted && overlay !== 'crust') {
         const ink = BOUNDARY_INK;
         drawEquirectBoundaries(target, plateBoundarySegments(planet.mesh, planet.map), panX, ink);
     }

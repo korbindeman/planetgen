@@ -780,19 +780,15 @@ const DEFAULTS = {
     cratonWarp: 1.0,              // gain on the banded margin cuts. The old
                                   // multiplicative warp just resized a disc; this
                                   // scales gulfs, bays and shatter instead
-    cratonElongation: 0.38,       // log-sigma of how stretched a craton is along its
-                                  // axis; discs make blobs, slivers make Americas, and
-                                  // too much of it makes noodles
-    cratonTaper: 0.35,            // how much one end of a craton narrows, so a mass
-                                  // can come to a point the way South America does
-    continentBlocks: 1.0,         // a continent is grown as a chain of welded blocks,
-                                  // not one decorated cap; this scales how many blocks
-                                  // the largest continents get. 0 collapses every
-                                  // continent back to a single cap
-    blockSpread: 0.70,            // block centre spacing as a fraction of the two
-                                  // blocks' summed radii. Lower is compact and rounded,
-                                  // higher is lobed and sprawling; past ~1 the blocks
-                                  // detach into an island neighbour
+    cratonElongation: 0.20,       // log-sigma of how stretched a shield is. Low:
+                                  // a fat mass. A peninsula sets its own stretch.
+    cratonTaper: 0.22,            // how much one end of a shield narrows
+    continentBlocks: 1.0,         // extra composed pieces on top of the shield.
+                                  // 0 is a single cap. 1 is lobe, peninsula,
+                                  // sliver, satellites — whatever the still rolls
+    blockSpread: 0.80,            // lobe spacing as a fraction of summed radii.
+                                  // ~0.8 is a waist. Past ~1 the lobe detaches.
+                                  // 0.48 fused every extra into the shield.
     sutures: 1.0,                 // gain on what a weld between two blocks does to the
                                   // crust. The fixture zeroes this: it authors its own
                                   // belts and basins
@@ -813,16 +809,20 @@ const DEFAULTS = {
     facetCalm: 0.35,              // gain on the gulf/bay noise along a faceted margin.
                                   // A rift scar is a calm, straight coast; full noise
                                   // wobbles the straightness back into a blob
-    gulfCut: 0.72,                // deep but sparse inlets; weak noise is ignored
-    bayCut: 0.16,                 // smaller bays
-    coastGrain: 0.06,             // a little edge grain; wiggly blobs are not the goal
-    cratonShatter: 0.12,          // some outer shelves break into islands
+    gulfCut: 0.36,                // sparse inlets; the coast language is facets, not
+                                  // noise chewing a blob
+    bayCut: 0.08,                 // smaller bays
+    coastGrain: 0.05,             // a little edge grain
+    cratonShatter: 0.04,          // a few outer shelves break into islands
     coastContrast: 0.4,           // regional variation in coast raggedness: some
                                   // margins calm, some shattered
-    cratonClustering: 0.62,       // chance a craton huddles against the others
-    cratonMinSeparation: 0.70,    // radians; block aggregates reach further than the
-                                  // caps they grew from, so continents need more room
-                                  // than single cratons did
+    cratonClustering: 0.82,       // chance a craton huddles against the others.
+                                  // Below ~0.6 too many strike out and the land
+                                  // sprinkles; this is what leaves a Pacific-sized ocean
+    cratonMinSeparation: 1.08,    // radians; huddled continents should kiss, not
+                                  // swallow each other. 0.70 still fused three
+                                  // Thalos cratons into one blob. The Pacific is
+                                  // from clustering, not from overlap.
     crustSmoothing: 1,            // smoothing of the craton edge warp
     continentFraction: 0.47,      // Earth: continental crust is ~41% of the surface, of
                                   // which ~29% is dry land. Set above 0.41 because this
@@ -870,6 +870,10 @@ const DEFAULTS = {
                                   // opening floods. Was declared but never used: the rift
                                   // branch tested against crustTypeKm instead, so crust
                                   // kept being drawn into new area almost indefinitely
+    riftCratonShare: 0.90,        // share of crustReferenceKm a column must beat
+                                  // to count as a shield when a ridge sits on
+                                  // already-continental ground. Below this, a
+                                  // suture sag on a divergent cell may open.
     emergentFraction: 0.73,       // share of continental crust starting above sea level.
                                   // The rest is shelf: a craton needs a wide drowned rim
                                   // to land at Earth's ~30% submerged, and that rim is
@@ -1090,6 +1094,25 @@ function frameFromTangent(centre, u) {
 }
 
 
+function midpointSphere(a, b) {
+    const m = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    const len = Math.hypot(m[0], m[1], m[2]) || 1;
+    return [m[0] / len, m[1] / len, m[2] / len];
+}
+
+
+function tangentToward(from, to) {
+    const d = vec3.dot(from, to);
+    const t = [to[0] - d * from[0], to[1] - d * from[1], to[2] - d * from[2]];
+    if (Math.hypot(t[0], t[1], t[2]) < 1e-9) {
+        const ref = Math.abs(from[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        vec3.cross(t, from, ref);
+    }
+    vec3.normalize(t, t);
+    return t;
+}
+
+
 function smooth01(edge0, edge1, x) {
     const t = clamp01((x - edge0) / (edge1 - edge0));
     return t * t * (3 - 2 * t);
@@ -1105,7 +1128,7 @@ function drawSutureTypes(nB, randFloat) {
     for (let i = 0; i < nB; i++) {
         for (let j = i + 1; j < nB; j++) {
             const roll = randFloat();
-            const type = roll < 0.40 ? SUTURE_BELT : roll < 0.72 ? SUTURE_SAG : SUTURE_NONE;
+            const type = roll < 0.50 ? SUTURE_BELT : roll < 0.62 ? SUTURE_SAG : SUTURE_NONE;
             types[i * nB + j] = types[j * nB + i] = type;
         }
     }
@@ -1113,14 +1136,16 @@ function drawSutureTypes(nB, randFloat) {
 }
 
 
-/* A continent is not one cap. Earth's are aggregates: a few cratonic
- * blocks welded along sutures — Laurentia, the shield, an Appalachian
- * rim make North America. A lone ellipse can only ever be a blob, and
- * decorating it with authored peninsula and gulf caps kept the blob and
- * added bumps. So grow each continent as a chain of overlapping blocks:
- * the union's outline gets waists, promontories and concavities because
- * the structure has them, and each weld is a suture that can carry an
- * old belt or sag into a shallow sea.
+/* A continent is a composed still, not a chain of equal discs and not a
+ * 200 Myr accident. Earth's masses are a fat shield with a few accreted
+ * pieces: a waist, a peninsula, a drowned join. A lone ellipse is a blob.
+ * A chain that walks away from the mass is a sausage.
+ *
+ * So: one dominant shield, then independently a lobe, a hooked peninsula,
+ * a sliver, satellites. Facets are the default margin language. Joins
+ * between huddled continents — isthmus, enclosed sea, open seaway — are
+ * cut afterwards in planCuts. Matching coasts from a later rift are a
+ * later trial.
  *
  * All randomness is drawn up front. Positions are re-derived for any
  * radius scale with block spacing proportional to radius, so the area
@@ -1135,34 +1160,59 @@ function planBlocks(continents, randFloat, opts) {
         return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     };
 
-    /* Pass 1: how many blocks each continent gets and how big each is,
-     * so every radius is known before any block is placed. */
-    const continent = [], weights = [], elong = [], taper = [];
+    const continent = [], weights = [], elong = [], taper = [], kind = [];
     const firstBlock = [];
     for (let k = 0; k < nC; k++) {
         const frac = cShares[k] / cTotal;
         let want = 1;
-        if (frac >= 0.30) want = 5;
-        else if (frac >= 0.20) want = 4;
-        else if (frac >= 0.12) want = 3;
-        else if (frac >= 0.05) want = 2;
+        if (frac >= 0.22) want = 3;
+        else if (frac >= 0.08) want = 2;
         want = Math.max(1, Math.round(1 + (want - 1) * opts.continentBlocks));
 
-        const sub = [1];
-        for (let i = 1; i < want; i++) sub.push(0.50 * Math.exp(0.65 * gauss()));
-        const subTotal = sub.reduce((a, b) => a + b, 0);
+        const lobe = want >= 2 && randFloat() < (want >= 3 ? 0.78 : 0.58);
+        const peninsula = want >= 2 && randFloat() < 0.50;
+        const sliver = want >= 3 && randFloat() < 0.58;
+        let nSat = 0;
+        if (frac >= 0.16 && randFloat() < 0.62) nSat++;
+        if (frac >= 0.28 && randFloat() < 0.40) nSat++;
+        if (frac >= 0.08 && nSat === 0 && randFloat() < 0.35) nSat = 1;
+
+        const extras = [];
+        if (lobe) extras.push('lobe');
+        if (peninsula) extras.push('peninsula');
+        if (sliver) extras.push('sliver');
+        for (let s = 0; s < nSat; s++) extras.push('satellite');
 
         firstBlock.push(continent.length);
-        for (let i = 0; i < want; i++) {
+        continent.push(k);
+        kind.push('shield');
+        elong.push(Math.min(continents.elong[k], Math.exp(0.18 * Math.abs(gauss()))));
+        taper.push(continents.taper[k] * 0.7);
+        const sub = [1];
+        for (const e of extras) {
             continent.push(k);
-            weights.push(cShares[k] * sub[i] / subTotal);
-            if (i === 0) {
-                elong.push(continents.elong[k]);
-                taper.push(continents.taper[k]);
+            kind.push(e);
+            if (e === 'peninsula') {
+                elong.push(2.5 + 0.9 * randFloat());
+                taper.push(0.22 + 0.16 * randFloat());
+                sub.push(0.24 * Math.exp(0.25 * gauss()));
+            } else if (e === 'sliver') {
+                elong.push(2.8 + 1.0 * randFloat());
+                taper.push(0.25 + 0.12 * randFloat());
+                sub.push(0.10 * Math.exp(0.2 * gauss()));
+            } else if (e === 'satellite') {
+                elong.push(1.7 + 1.3 * randFloat());
+                taper.push(0.12 * randFloat());
+                sub.push(0.055 * Math.exp(0.2 * gauss()));
             } else {
-                elong.push(Math.exp(0.30 * Math.abs(gauss())));
-                taper.push(0.8 * opts.cratonTaper * (2 * randFloat() - 1));
+                elong.push(1.15 + 0.40 * randFloat());
+                taper.push(0.08 * (2 * randFloat() - 1));
+                sub.push(0.34 * Math.exp(0.25 * gauss()));
             }
+        }
+        const subTotal = sub.reduce((a, b) => a + b, 0);
+        for (let i = 0; i < sub.length; i++) {
+            weights.push(cShares[k] * sub[i] / subTotal);
         }
     }
     const radii = radiiFromShares(weights, opts.continentFraction);
@@ -1228,44 +1278,68 @@ function planBlocks(continents, randFloat, opts) {
         return gap;
     };
 
+    const bearingOf = (P, k, dir) => {
+        const f = frameFromTangent(P, continents.axes[k].u);
+        return Math.atan2(
+            dir[0] * f.v[0] + dir[1] * f.v[1] + dir[2] * f.v[2],
+            dir[0] * f.u[0] + dir[1] * f.u[1] + dir[2] * f.u[2]);
+    };
+
     const OFFSETS = [0, 0.79, -0.79, 1.57, -1.57, 2.36, -2.36, 3.14];
     for (let b = 0; b < nB; b++) {
         const k = continent[b];
         if (b === firstBlock[k]) { pos1[b] = continents.centres[k]; continue; }
 
-        /* Walk on from the newest block most of the time — that is what
-         * stretches a continent into a sliver or an arc — and sometimes
-         * branch from an earlier one, which fattens it instead. */
-        parent[b] = (b - firstBlock[k] === 1 || randFloat() < 0.55)
-            ? b - 1
-            : firstBlock[k] + Math.floor(randFloat() * (b - firstBlock[k]));
-
-        /* Prefer to grow away from the continent's existing mass. */
-        const centroid = [0, 0, 0];
-        for (let j = firstBlock[k]; j < b; j++) vec3.add(centroid, centroid, pos1[j]);
-        vec3.normalize(centroid, centroid);
+        /* Every extra block hangs off the shield. A peninsula hooks off a
+         * lobe when there is one, so the two wrap a pocket. A satellite
+         * prefers the open ocean. */
+        parent[b] = firstBlock[k];
         const P = pos1[parent[b]];
-        const f = frameFromTangent(P, continents.axes[k].u);
-        const away = vec3.scaleAndAdd([], centroid, P, -vec3.dot(centroid, P));
+        const what = kind[b];
         let preferred;
-        if (vec3.length(away) < 1e-6) {
-            preferred = 2 * Math.PI * randFloat();
+        if (what === 'peninsula' || what === 'sliver') {
+            let hook = -1;
+            for (let j = firstBlock[k]; j < b; j++) {
+                if (kind[j] === 'lobe' && radii[j] > 0) { hook = j; break; }
+            }
+            if (hook >= 0) {
+                const sign = randFloat() < 0.5 ? 1 : -1;
+                const span = what === 'sliver'
+                    ? 0.55 + 0.35 * randFloat()
+                    : 1.15 + 0.40 * randFloat();
+                preferred = bearing[hook] + sign * span;
+            } else {
+                preferred = 2 * Math.PI * randFloat();
+            }
+        } else if (what === 'satellite') {
+            let ax = 0, ay = 0, az = 0, nAway = 0;
+            for (let j = 0; j < nC; j++) {
+                if (j === k) continue;
+                ax += P[0] - continents.centres[j][0];
+                ay += P[1] - continents.centres[j][1];
+                az += P[2] - continents.centres[j][2];
+                nAway++;
+            }
+            if (nAway === 0) {
+                preferred = 2 * Math.PI * randFloat();
+            } else {
+                preferred = bearingOf(P, k, tangentToward(P, [P[0] + ax, P[1] + ay, P[2] + az]));
+                preferred += 0.5 * (randFloat() - 0.5);
+            }
         } else {
-            vec3.normalize(away, away);
-            preferred = Math.atan2(-vec3.dot(away, f.v), -vec3.dot(away, f.u));
+            preferred = 2 * Math.PI * randFloat() + 0.9 * (randFloat() - 0.5);
         }
-        preferred += 1.2 * (randFloat() - 0.5);
 
-        spread[b] = randFloat() < 0.10
-            ? 0.95 + 0.15 * randFloat()   // detached: an offshore Madagascar
-            : opts.blockSpread * (0.78 + 0.45 * randFloat());
+        if (what === 'satellite') {
+            spread[b] = 1.15 + 0.35 * randFloat();
+        } else if (what === 'peninsula' || what === 'sliver') {
+            spread[b] = opts.blockSpread * (1.05 + 0.25 * randFloat());
+        } else {
+            spread[b] = opts.blockSpread * (0.85 + 0.30 * randFloat());
+        }
         const arc = spread[b] * (radii[parent[b]] + radii[b]);
 
-        /* A chain may not wander further than this from home: unbounded
-         * walks turned continents into globe-wrapping ribbons. The cap
-         * radius already covers the continent's whole share, so there is
-         * little legitimate reason to stand far outside it. */
-        const maxReach = 1.4 * continents.radii[k];
+        const maxReach = (what === 'satellite' ? 1.85 : 1.15) * continents.radii[k];
         /* Score candidates by the worse of two constraints, but only an
          * actual touch with another continent is disqualifying: a sprawl
          * overshoot merely stops being preferred, or dropped blocks
@@ -1298,19 +1372,24 @@ function planBlocks(continents, randFloat, opts) {
     /* Facets: straight-margin cuts, and pairs of cuts that converge into a
      * pointed tip. An ellipse can never come to a point, and real sharp
      * coasts are intersections of line-derived margins. A tip continues
-     * the block's grown end — the last block of a chain is a peninsula
-     * end, so it gets one most often. */
+     * the block's grown end — a peninsula or sliver gets one most often. */
     const facets = [];
     const gain = opts.blockFacets;
     for (let b = 0; b < nB; b++) {
         const list = [];
         facets.push(list);
         if (!(radii[b] > 0) || !gain) continue;
-        const tail = b + 1 === nB || continent[b + 1] !== continent[b];
-        if (randFloat() < gain * (tail ? 0.40 : 0.15)) {
-            const az = (taper[b] >= 0 ? 0 : Math.PI) + 1.0 * (randFloat() - 0.5);
-            const phi = 0.30 + 0.25 * randFloat();
-            const reach = 0.85 + 0.25 * randFloat();
+        const pen = kind[b] === 'peninsula' || kind[b] === 'sliver';
+        if (kind[b] === 'satellite') {
+            if (randFloat() < 0.4) {
+                list.push({theta: 2 * Math.PI * randFloat(), off: 0.55 + 0.25 * randFloat()});
+            }
+            continue;
+        }
+        if (pen || randFloat() < gain * 0.55) {
+            const az = (taper[b] >= 0 ? 0 : Math.PI) + 0.7 * (randFloat() - 0.5);
+            const phi = (pen ? 0.22 : 0.32) + 0.20 * randFloat();
+            const reach = (pen ? 0.92 : 0.80) + 0.18 * randFloat();
             /* Reach is against the ellipse's extent along the azimuth, so
              * a stretched block keeps its full length. */
             const ca = Math.cos(az), sa = Math.sin(az);
@@ -1320,12 +1399,202 @@ function planBlocks(continents, randFloat, opts) {
             list.push({theta: az + (Math.PI / 2 - phi), off, gate: az});
             list.push({theta: az - (Math.PI / 2 - phi), off, gate: az});
         }
-        if (randFloat() < gain * 0.30) {
-            list.push({theta: 2 * Math.PI * randFloat(), off: 0.55 + 0.30 * randFloat()});
+        if (!pen && randFloat() < gain * 0.55) {
+            list.push({theta: 2 * Math.PI * randFloat(), off: 0.50 + 0.28 * randFloat()});
         }
     }
 
-    return {radii, elong, taper, facets, materialize, sutureType: drawSutureTypes(nB, randFloat), nB};
+    return {
+        radii, elong, taper, facets, materialize,
+        sutureType: drawSutureTypes(nB, randFloat), nB, continent, kind,
+    };
+}
+
+
+/* Joins and inland seas are composed, not rolled as round ponds in the
+ * interior. The Earth fixture authors the same kinds of cut directly. */
+function planCuts(placement, plan, scale, randFloat, opts) {
+    const {centres, axes} = plan.materialize(scale);
+    const radii = plan.radii.map(r => r * scale);
+    const nC = placement.centres.length;
+    const continent = plan.continent;
+    const kind = plan.kind || [];
+    const fills = [];
+    const stamps = [];
+    const bCentres = [], bRadii = [], bAxes = [], bElong = [], bTaper = [], bFloor = [];
+
+    const addBasin = (centre, radius, ax, elong, floorKm) => {
+        if (!(radius > 0.05)) return;
+        bCentres.push(centre);
+        bRadii.push(radius);
+        bAxes.push(ax);
+        bElong.push(elong);
+        bTaper.push(0);
+        bFloor.push(floorKm);
+    };
+
+    const cBlocks = Array.from({length: nC}, () => []);
+    for (let b = 0; b < plan.nB; b++) {
+        if (radii[b] > 0) cBlocks[continent[b]].push(b);
+    }
+
+    const pairs = [];
+    for (let i = 0; i < nC; i++) {
+        for (let j = i + 1; j < nC; j++) {
+            let best = null, bestGap = Infinity;
+            for (const a of cBlocks[i]) {
+                for (const b of cBlocks[j]) {
+                    const d = angleBetween(centres[a], centres[b]);
+                    const gap = d - radii[a] - radii[b];
+                    if (gap < bestGap) {
+                        bestGap = gap;
+                        best = {a, b, d, i, j};
+                    }
+                }
+            }
+            if (best && bestGap <= 0.28) pairs.push({...best, gap: bestGap});
+        }
+    }
+    pairs.sort((p, q) => p.gap - q.gap);
+
+    const nJoins = Math.min(2, pairs.length);
+    for (let n = 0; n < nJoins; n++) {
+        const pair = pairs[n];
+        const A = centres[pair.a], B = centres[pair.b];
+        const M = midpointSphere(A, B);
+        const along = tangentToward(M, B);
+        const frame = frameFromTangent(M, along);
+        const sideSign = randFloat() < 0.5 ? 1 : -1;
+        const side = [
+            frame.v[0] * sideSign, frame.v[1] * sideSign, frame.v[2] * sideSign,
+        ];
+        const overlap = Math.max(0, -pair.gap);
+        const seaWidth = 0.14 + 0.08 * randFloat() + 0.40 * overlap;
+        const seaLength = Math.max(0.34, 0.58 * Math.min(radii[pair.a], radii[pair.b]));
+        const seaElong = Math.max(2.8, seaLength / seaWidth);
+        const seaR = Math.sqrt(seaLength * seaWidth);
+        const seaAxes = {u: frame.v, v: frame.u};
+
+        if (n === 0) {
+            /* Drown one flank of the join — that sea is the Caribbean.
+             * The other flank stays land, which is the bridge. A cut
+             * through the middle left two islands and no waist. */
+            const seaPos = walkSphere(M, side, 0.12 + 0.12 * overlap);
+            addBasin(seaPos, Math.max(seaR, 0.20), seaAxes, Math.max(3.2, seaElong),
+                14 + 4 * randFloat());
+            const back = [-side[0], -side[1], -side[2]];
+            const length = Math.max(0.26, pair.d * 0.72);
+            const width = 0.12 + 0.03 * randFloat();
+            stamps.push({
+                centre: walkSphere(M, back, 0.035),
+                radius: Math.sqrt(length * width),
+                axes: frame,
+                elong: Math.max(2.3, length / width),
+                taper: 0,
+                thicknessKm: opts.seaLevelThicknessKm + 3.5,
+            });
+            const nIsl = 2 + (randFloat() < 0.65 ? 1 : 0);
+            const far = walkSphere(M, side, 0.24 + 0.10 * overlap);
+            for (let s = 0; s < nIsl; s++) {
+                const t = (s - (nIsl - 1) / 2) * (0.12 + 0.05 * randFloat());
+                const pos = walkSphere(far, frame.u, t);
+                stamps.push({
+                    centre: pos,
+                    radius: 0.10 + 0.05 * randFloat(),
+                    axes: frameFromTangent(pos, frame.u),
+                    elong: 1.8 + 1.4 * randFloat(),
+                    taper: 0.08 * randFloat(),
+                    thicknessKm: opts.crustReferenceKm,
+                });
+            }
+        } else {
+            /* Long sea that opens at the rim, not a round pond in the
+             * interior. Offset toward one ocean so a strait exists. */
+            if (pair.gap > 0.02) {
+                const length = Math.max(0.24, pair.d * 0.75);
+                const width = 0.14 + 0.06 * randFloat();
+                fills.push({
+                    centre: M,
+                    radius: Math.sqrt(length * width),
+                    axes: frame,
+                    elong: Math.max(1.4, length / width),
+                    taper: 0,
+                    thicknessKm: opts.crustReferenceKm,
+                });
+            }
+            addBasin(walkSphere(M, side, 0.06), seaR * 1.1, seaAxes,
+                Math.max(3.8, seaElong + 1.4), 15 + 4 * randFloat());
+            if (randFloat() < 0.82) {
+                const fromA = randFloat() < 0.5;
+                const from = fromA ? A : B;
+                const src = fromA ? pair.a : pair.b;
+                const dir = tangentToward(from, M);
+                const pos = walkSphere(from, dir, radii[src] * 0.55);
+                stamps.push({
+                    centre: pos,
+                    radius: 0.095 + 0.035 * randFloat(),
+                    axes: frameFromTangent(pos, dir),
+                    elong: 3.2 + 0.8 * randFloat(),
+                    taper: 0.24,
+                    thicknessKm: opts.crustReferenceKm,
+                });
+            }
+        }
+    }
+
+    const shares = placement.shares || placement.centres.map(() => 1);
+    const total = shares.reduce((a, b) => a + b, 0) || 1;
+    for (let k = 0; k < nC; k++) {
+        const blocks = cBlocks[k];
+        if (blocks.length === 0) continue;
+        const shield = blocks[0];
+        const R = radii[shield];
+
+        for (const p of blocks) {
+            if (kind[p] !== 'peninsula') continue;
+            if (randFloat() > 0.75) continue;
+            const d = angleBetween(centres[shield], centres[p]);
+            if (d < 0.28) continue;
+            const M = midpointSphere(centres[shield], centres[p]);
+            const along = tangentToward(M, centres[p]);
+            const frame = frameFromTangent(M, along);
+            addBasin(walkSphere(M, frame.v, 0.04), 0.13 + 0.07 * randFloat(),
+                {u: frame.v, v: frame.u}, 3.4 + 1.2 * randFloat(), 16 + 5 * randFloat());
+        }
+
+        if (shares[k] / total < 0.12 || randFloat() > 0.72) continue;
+        let ax = 0, ay = 0, az = 0, nAway = 0;
+        for (let j = 0; j < nC; j++) {
+            if (j === k) continue;
+            ax += centres[shield][0] - placement.centres[j][0];
+            ay += centres[shield][1] - placement.centres[j][1];
+            az += centres[shield][2] - placement.centres[j][2];
+            nAway++;
+        }
+        const C = centres[shield];
+        const cutDir = nAway === 0
+            ? (axes[shield] && axes[shield].u) || placement.axes[k].u
+            : tangentToward(C, [C[0] + ax, C[1] + ay, C[2] + az]);
+        const frame = frameFromTangent(C, cutDir);
+        const spin = 0.8 * (randFloat() - 0.5);
+        const cs = Math.cos(spin), ss = Math.sin(spin);
+        const dir = [
+            frame.u[0] * cs + frame.v[0] * ss,
+            frame.u[1] * cs + frame.v[1] * ss,
+            frame.u[2] * cs + frame.v[2] * ss,
+        ];
+        const pos = walkSphere(C, dir, (0.55 + 0.22 * randFloat()) * R);
+        addBasin(pos, (0.26 + 0.14 * randFloat()) * R, frameFromTangent(pos, dir),
+            2.8 + 1.4 * randFloat(), 17 + 6 * randFloat());
+    }
+
+    return {
+        fills,
+        stamps,
+        basins: bCentres.length
+            ? {centres: bCentres, radii: bRadii, axes: bAxes, elong: bElong, taper: bTaper, floorKm: bFloor}
+            : null,
+    };
 }
 
 
@@ -1487,7 +1756,8 @@ function initCrust(mesh, r_xyz, seed, opts) {
         const mid = (lo + hi) / 2;
         if (measure(mid) < opts.continentFraction) lo = mid; else hi = mid;
     }
-    measure((lo + hi) / 2, true);
+    const scale = (lo + hi) / 2;
+    measure(scale, true);
 
     /* Sea level sits at the depth enclosing `emergentFraction` of the
      * continental crust, found the same way the radii were: by bisection on
@@ -1530,6 +1800,10 @@ function initCrust(mesh, r_xyz, seed, opts) {
             : base;
     }
     applyBasins(r_xyz, r_thickness, r_crust_type, opts, null);
+    if (!opts.basinPlacement && !opts.cratonPlacement) {
+        applyCuts(r_xyz, r_thickness, r_crust_type,
+            planCuts(placement, plan, scale, randFloat, opts), opts);
+    }
     return {
         r_crust_type, r_crust_age, r_thickness, r_orogeny, r_orogenyDir,
         r_arc, r_arcPeak, r_arcAge, r_arcDir,
@@ -1541,7 +1815,7 @@ function initCrust(mesh, r_xyz, seed, opts) {
 /* Enclosed seas — Mediterranean, Hudson Bay — are drowned continental
  * crust, not ocean floor. A basin is the same stretched cap as a craton
  * but it thins the column until it sits below sea level. The Earth
- * fixture authors a few; the random path generates its own. */
+ * fixture authors a few; the random path cuts joins in planCuts. */
 function applyBasins(r_xyz, r_thickness, r_crust_type, opts, r_orogeny) {
     const basins = opts.basinPlacement;
     if (!basins || !basins.centres || basins.centres.length === 0) return;
@@ -1566,6 +1840,38 @@ function applyBasins(r_xyz, r_thickness, r_crust_type, opts, r_orogeny) {
             if (r_orogeny) r_orogeny[r] *= 1 - drown;
         }
     }
+}
+
+
+function stampCaps(r_xyz, r_thickness, r_crust_type, caps, opts) {
+    if (!caps || caps.length === 0) return;
+    const n = r_thickness.length;
+    const p = [0, 0, 0], t = [0, 0, 0];
+    const minLand = opts.seaLevelThicknessKm + 0.8;
+    for (const cap of caps) {
+        if (!(cap.radius > 0)) continue;
+        const thick = Math.max(minLand, cap.thicknessKm || opts.crustReferenceKm);
+        for (let r = 0; r < n; r++) {
+            p[0] = r_xyz[3 * r]; p[1] = r_xyz[3 * r + 1]; p[2] = r_xyz[3 * r + 2];
+            const d = capDistance(p, cap.centre, cap.axes, cap.elong, cap.taper || 0, t) / cap.radius;
+            if (d >= 1) continue;
+            r_crust_type[r] = CRUST_CONTINENTAL;
+            const w = Math.pow(1 - d, 1.2);
+            const next = r_thickness[r] * (1 - w) + thick * w;
+            r_thickness[r] = Math.max(r_thickness[r], next, minLand);
+        }
+    }
+}
+
+
+function applyCuts(r_xyz, r_thickness, r_crust_type, cuts, opts) {
+    if (!cuts) return;
+    stampCaps(r_xyz, r_thickness, r_crust_type, cuts.fills, opts);
+    if (cuts.basins) {
+        applyBasins(r_xyz, r_thickness, r_crust_type,
+            Object.assign({}, opts, {basinPlacement: cuts.basins}), null);
+    }
+    stampCaps(r_xyz, r_thickness, r_crust_type, cuts.stamps, opts);
 }
 
 
@@ -1673,6 +1979,22 @@ function sampleField(field, cells, weights) {
     let sum = 0;
     for (let i = 0; i < cells.length; i++) sum += weights[i] * field[cells[i]];
     return sum;
+}
+
+
+/* Thickness must not average a shield with the neighbouring abyssal
+ * column. Twenty steps of that mix drop the margin below crustTypeKm
+ * and the type pass turns it to ocean — which is what ate land once
+ * rifts stopped cloning crust back into the gap. */
+function sampleFieldMatching(field, cells, weights, type, want) {
+    let sum = 0, w = 0;
+    for (let i = 0; i < cells.length; i++) {
+        if (type[cells[i]] !== want) continue;
+        sum += weights[i] * field[cells[i]];
+        w += weights[i];
+    }
+    if (w <= 0) return field[cells[0]];
+    return sum / w;
 }
 
 function samplePacked3(field, cells, weights, out) {
@@ -1824,61 +2146,34 @@ function stepTectonics(mesh, map, opts) {
          * renumbered when plates split, weld or absorb a scrap, and reading
          * those bookkeeping changes as subduction shreds the continents. */
         if (r_boundary[r] === BOUNDARY_DIVERGENT) {
-            /* The plates are pulling apart here. But a rift does not become
-             * sea floor the moment it opens: it first draws the neighbouring
-             * continent out into it, thinning it. That stretched crust is a
-             * hyperextended margin, and it is what gives a passive margin its
-             * width. Only once it has thinned past breaking does the opening
-             * flood.
-             *
-             * Breaking point is `riftIntactShare` of reference thickness, not
-             * the ocean/continent threshold. Stretching all the way down to the
-             * latter lets a margin keep drawing continental crust into new area
-             * for the whole run: the model has no conservation law, so each
-             * step clones the source column rather than dividing it, and
-             * continental crust grows without bound. That is what took some
-             * seeds from the 47% they are built with to over 60%. */
-            const intactKm = opts.riftIntactShare * opts.crustReferenceKm;
-            const stretched = prevType[source_r] === CRUST_CONTINENTAL
-                ? prevThickness[source_r] - opts.riftThinKm : 0;
-            if (stretched > intactKm) {
-                nextType[r] = CRUST_CONTINENTAL;
-                nextThickness[r] = stretched;
-                nextAge[r] = prevAge[source_r] + dtMyr;
-                nextOrogeny[r] = prevOrogeny[source_r] * opts.orogenyDecay;
-                sampledDir[0] = prevOrogenyDir[3 * source_r];
-                sampledDir[1] = prevOrogenyDir[3 * source_r + 1];
-                sampledDir[2] = prevOrogenyDir[3 * source_r + 2];
-                advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
-                nextOrogenyDir[3 * r]     = rotatedDir[0] * opts.orogenyDecay;
-                nextOrogenyDir[3 * r + 1] = rotatedDir[1] * opts.orogenyDecay;
-                nextOrogenyDir[3 * r + 2] = rotatedDir[2] * opts.orogenyDecay;
-                nextArc[r] = prevArc[source_r] * opts.orogenyDecay;
-                nextArcPeak[r] = prevArcPeak[source_r];
-                nextArcAge[r] = prevArcAge[source_r];
-                sampledDir[0] = prevArcDir[3 * source_r];
-                sampledDir[1] = prevArcDir[3 * source_r + 1];
-                sampledDir[2] = prevArcDir[3 * source_r + 2];
-                advectTangent(rotatedDir, sampledDir, plate.pole, plate.omega * dtMyr, x);
-                nextArcDir[3 * r]     = rotatedDir[0];
-                nextArcDir[3 * r + 1] = rotatedDir[1];
-                nextArcDir[3 * r + 2] = rotatedDir[2];
-                nextHotspot[r] = prevHotspot[source_r] * opts.hotspotDecay;
-                nextHotPeak[r] = prevHotPeak[source_r];
-                nextHotAge[r] = prevHotAge[source_r];
-            } else {
+            /* A ridge in the ocean is new floor. A ridge that has landed
+             * on a continent is not: thick crust holds and advects. Copying
+             * a continental column into a cell that was ocean is the clone
+             * that grew some seeds from 47% crust to 69%. Writing ocean
+             * over a cell that was already continent eats the margin one
+             * ring per step — 20 steps ate some seeds down to 10% land.
+             * Conservation is: do not create continent at a ridge, and do
+             * not destroy a shield because a boundary doodle crossed it.
+             * Already-thin crust on a divergent cell (suture sag, shelf)
+             * may still open. */
+            const holdKm = opts.crustReferenceKm * opts.riftCratonShare;
+            const sourceCont = prevType[source_r] === CRUST_CONTINENTAL;
+            const hereCont = prevType[r] === CRUST_CONTINENTAL
+                && prevThickness[r] >= holdKm;
+            if (!(sourceCont && hereCont)) {
                 nextType[r] = CRUST_OCEANIC;
                 nextAge[r] = 0;
                 nextThickness[r] = opts.crustOceanKm;
+                gained[now]++;
+                continue;
             }
-            gained[now]++;
-            continue;
         }
 
         /* Everywhere else the crust simply travels with its plate. */
         sampleWeights(mesh, r_xyz, back, source_r, out_r, cells, weights);
         nextAge[r] = sampleField(prevAge, cells, weights) + dtMyr;
-        nextThickness[r] = sampleField(prevThickness, cells, weights);
+        nextThickness[r] = sampleFieldMatching(
+            prevThickness, cells, weights, prevType, prevType[source_r]);
         nextOrogeny[r] = sampleField(prevOrogeny, cells, weights) * opts.orogenyDecay;
         nextArc[r] = sampleField(prevArc, cells, weights) * opts.orogenyDecay;
         nextArcPeak[r] = sampleField(prevArcPeak, cells, weights);
@@ -2813,6 +3108,347 @@ function polarStraits(mesh, r_xyz, r_elevation, opts, r_meters) {
 }
 
 
+function hopDistance(mesh, seed, n) {
+    const dist = new Int32Array(n).fill(-1);
+    const q = [];
+    for (let r = 0; r < n; r++) {
+        if (!seed[r]) continue;
+        dist[r] = 0;
+        q.push(r);
+    }
+    const nb = [];
+    for (let h = 0; h < q.length; h++) {
+        mesh.r_circulate_r(nb, q[h]);
+        for (const k of nb) {
+            if (dist[k] >= 0) continue;
+            dist[k] = dist[q[h]] + 1;
+            q.push(k);
+        }
+    }
+    return dist;
+}
+
+
+function landComponents(mesh, isLand, n) {
+    const id = new Int32Array(n).fill(-1);
+    const size = [];
+    const nb = [];
+    let nC = 0;
+    for (let r = 0; r < n; r++) {
+        if (!isLand[r] || id[r] >= 0) continue;
+        const q = [r];
+        id[r] = nC;
+        for (let h = 0; h < q.length; h++) {
+            mesh.r_circulate_r(nb, q[h]);
+            for (const k of nb) {
+                if (!isLand[k] || id[k] >= 0) continue;
+                id[k] = nC;
+                q.push(k);
+            }
+        }
+        size.push(q.length);
+        nC++;
+    }
+    return {id, size, nC};
+}
+
+
+function meanXyz(r_xyz, pick, n) {
+    const c = [0, 0, 0];
+    let w = 0;
+    for (let r = 0; r < n; r++) {
+        if (!pick[r]) continue;
+        c[0] += r_xyz[3 * r];
+        c[1] += r_xyz[3 * r + 1];
+        c[2] += r_xyz[3 * r + 2];
+        w++;
+    }
+    if (w === 0) return [0, 0, 1];
+    const len = Math.hypot(c[0], c[1], c[2]) || 1;
+    return [c[0] / len, c[1] / len, c[2] / len];
+}
+
+
+function distToGeodesic(p, a, b) {
+    const n0 = a[1] * b[2] - a[2] * b[1];
+    const n1 = a[2] * b[0] - a[0] * b[2];
+    const n2 = a[0] * b[1] - a[1] * b[0];
+    const len = Math.hypot(n0, n1, n2) || 1;
+    return Math.abs(Math.asin(Math.max(-1, Math.min(1, (p[0] * n0 + p[1] * n1 + p[2] * n2) / len))));
+}
+
+
+function onShortArc(p, a, b) {
+    const m = midpointSphere(a, b);
+    return angleBetween(p, m) <= 0.5 * angleBetween(a, b) + 0.12;
+}
+
+
+function setStrike(dir, r, pos, along) {
+    const d = along[0] * pos[0] + along[1] * pos[1] + along[2] * pos[2];
+    const t = [along[0] - d * pos[0], along[1] - d * pos[1], along[2] - d * pos[2]];
+    const len = Math.hypot(t[0], t[1], t[2]) || 1;
+    dir[3 * r] = t[0] / len;
+    dir[3 * r + 1] = t[1] / len;
+    dir[3 * r + 2] = t[2] / len;
+}
+
+
+/* A tectonic story, authored, not accumulated. The 200 Myr run still
+ * paints sea-floor age from plate motion. Belts, arcs and which coast is
+ * active are a procedure with Earth's *kinds* of rule: a Pacific-facing
+ * chain, a passive back, a collision at a huddle, an island arc in the
+ * empty ocean, an arc across a small sea's mouth.
+ *
+ * The run's orogeny is wherever a Voronoi edge last sat on frozen land.
+ * That is a patch in the interior, not a coast. This pass replaces it. */
+function composeTectonicStory(mesh, map, randFloat, opts) {
+    const {r_xyz, r_crust_type} = map;
+    const n = mesh.numRegions;
+    const isLand = new Uint8Array(n);
+    for (let r = 0; r < n; r++) isLand[r] = r_crust_type[r] === CRUST_CONTINENTAL ? 1 : 0;
+
+    const {id: comp, size, nC} = landComponents(mesh, isLand, n);
+    if (nC === 0) return;
+
+    const landPick = isLand;
+    const landPole = meanXyz(r_xyz, landPick, n);
+    const pacific = [-landPole[0], -landPole[1], -landPole[2]];
+
+    const oceanSeed = new Uint8Array(n);
+    for (let r = 0; r < n; r++) oceanSeed[r] = isLand[r] ? 0 : 1;
+    const landDist = hopDistance(mesh, oceanSeed, n); /* 0 on ocean, hops inland */
+    /* reuse: hopDistance from ocean seeds → distance-to-ocean on land.
+     * On ocean cells dist is 0. Invert the seed for distance-to-land. */
+    const toLand = hopDistance(mesh, isLand, n); /* 0 on land, hops offshore */
+
+    const nb = [];
+    const isCoast = new Uint8Array(n);
+    const oceanDir = new Float32Array(n * 3);
+    for (let r = 0; r < n; r++) {
+        if (!isLand[r]) continue;
+        mesh.r_circulate_r(nb, r);
+        let ox = 0, oy = 0, oz = 0, nOcean = 0;
+        for (const k of nb) {
+            if (isLand[k]) continue;
+            ox += r_xyz[3 * k] - r_xyz[3 * r];
+            oy += r_xyz[3 * k + 1] - r_xyz[3 * r + 1];
+            oz += r_xyz[3 * k + 2] - r_xyz[3 * r + 2];
+            nOcean++;
+        }
+        if (nOcean === 0) continue;
+        isCoast[r] = 1;
+        const pos = [r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]];
+        const t = tangentToward(pos, [pos[0] + ox, pos[1] + oy, pos[2] + oz]);
+        oceanDir[3 * r] = t[0];
+        oceanDir[3 * r + 1] = t[1];
+        oceanDir[3 * r + 2] = t[2];
+    }
+
+    /* A coast faces the Pacific if the ocean off it sits in the empty
+     * hemisphere. Coasts that face the huddle are Atlantic or a closing sea. */
+    const andean = new Uint8Array(n);
+    const collision = new Uint8Array(n);
+    for (let r = 0; r < n; r++) {
+        if (!isCoast[r] || size[comp[r]] < 28) continue;
+        let pac = 0, nOcean = 0;
+        mesh.r_circulate_r(nb, r);
+        for (const k of nb) {
+            if (isLand[k]) continue;
+            nOcean++;
+            pac += r_xyz[3 * k] * pacific[0]
+                + r_xyz[3 * k + 1] * pacific[1]
+                + r_xyz[3 * k + 2] * pacific[2];
+        }
+        if (nOcean > 0 && pac / nOcean > 0.08) andean[r] = 1;
+    }
+
+    /* Facing shores of two masses: a collision belt, not a second Andes. */
+    if (nC >= 2) {
+        const otherLand = new Uint8Array(n);
+        for (let a = 0; a < nC; a++) {
+            if (size[a] < 20) continue;
+            otherLand.fill(0);
+            for (let r = 0; r < n; r++) {
+                if (isLand[r] && comp[r] !== a) otherLand[r] = 1;
+            }
+            const toOther = hopDistance(mesh, otherLand, n);
+            for (let r = 0; r < n; r++) {
+                if (comp[r] !== a || !isCoast[r]) continue;
+                if (toOther[r] >= 0 && toOther[r] <= 5) {
+                    collision[r] = 1;
+                    andean[r] = 0;
+                }
+            }
+        }
+    }
+
+    /* Wipe the run's land belts. Keep ocean age and hotspots. Ocean arcs
+     * from Voronoi edges are speckle; Oceania is painted below. */
+    if (!map.r_orogeny) map.r_orogeny = new Float32Array(n);
+    if (!map.r_orogenyDir) map.r_orogenyDir = new Float32Array(n * 3);
+    if (!map.r_arc) map.r_arc = new Float32Array(n);
+    if (!map.r_arcDir) map.r_arcDir = new Float32Array(n * 3);
+    const {r_orogeny, r_orogenyDir, r_arc, r_arcDir, r_thickness} = map;
+    for (let r = 0; r < n; r++) {
+        r_orogeny[r] = 0;
+        r_orogenyDir[3 * r] = r_orogenyDir[3 * r + 1] = r_orogenyDir[3 * r + 2] = 0;
+        r_arc[r] = 0;
+        r_arcDir[3 * r] = r_arcDir[3 * r + 1] = r_arcDir[3 * r + 2] = 0;
+    }
+
+    const centroids = [];
+    for (let c = 0; c < nC; c++) {
+        const pick = new Uint8Array(n);
+        for (let r = 0; r < n; r++) if (comp[r] === c) pick[r] = 1;
+        centroids.push(meanXyz(r_xyz, pick, n));
+    }
+
+    const andeanProfile = [0.62, 1.10, 0.78, 0.36, 0.12];
+    const collProfile = [0.75, 1.40, 1.15, 0.70, 0.32, 0.10];
+
+    const strikeOf = (r, pos) => {
+        const od = [oceanDir[3 * r], oceanDir[3 * r + 1], oceanDir[3 * r + 2]];
+        if (od[0] !== 0 || od[1] !== 0 || od[2] !== 0) {
+            return [
+                od[1] * pos[2] - od[2] * pos[1],
+                od[2] * pos[0] - od[0] * pos[2],
+                od[0] * pos[1] - od[1] * pos[0],
+            ];
+        }
+        return vec3.cross([], pos, pacific);
+    };
+
+    const paintBelt = (r, gain, coll) => {
+        if (gain <= r_orogeny[r]) return;
+        r_orogeny[r] = gain;
+        const pos = [r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]];
+        const along = coll ? vec3.cross([], pos, pacific) : strikeOf(r, pos);
+        setStrike(r_orogenyDir, r, pos, along);
+        if (!coll) {
+            r_arc[r] = Math.max(r_arc[r], 0.4 * gain);
+            setStrike(r_arcDir, r, pos, along);
+        }
+        if (r_thickness) {
+            r_thickness[r] = Math.min(opts.crustMaxKm,
+                r_thickness[r] + (coll ? 11 : 6) * gain);
+        }
+    };
+
+    for (let r = 0; r < n; r++) {
+        if (!isLand[r]) continue;
+        const d = landDist[r] - 1;
+        if (d < 0) continue;
+        if (collision[r] && d < collProfile.length) paintBelt(r, collProfile[d], true);
+        else if (andean[r] && d < andeanProfile.length) paintBelt(r, andeanProfile[d], false);
+    }
+
+    const andeanSeed = new Uint8Array(n);
+    const collSeed = new Uint8Array(n);
+    for (let r = 0; r < n; r++) {
+        if (andean[r]) andeanSeed[r] = 1;
+        if (collision[r]) collSeed[r] = 1;
+    }
+    const toAndes = hopDistance(mesh, andeanSeed, n);
+    const toColl = hopDistance(mesh, collSeed, n);
+    for (let r = 0; r < n; r++) {
+        if (!isLand[r] || andean[r] || collision[r]) continue;
+        const dOcean = landDist[r] - 1;
+        if (dOcean < 0) continue;
+        const C = centroids[comp[r]];
+        const pos = [r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]];
+        const pacSide = pos[0] * pacific[0] + pos[1] * pacific[1] + pos[2] * pacific[2]
+            >= C[0] * pacific[0] + C[1] * pacific[1] + C[2] * pacific[2] - 0.04;
+        if (toColl[r] >= 0 && toColl[r] < collProfile.length && dOcean < collProfile.length) {
+            paintBelt(r, collProfile[Math.max(toColl[r], dOcean)], true);
+            continue;
+        }
+        if (!pacSide) continue;
+        if (toAndes[r] < 0 || toAndes[r] >= andeanProfile.length) continue;
+        if (dOcean >= andeanProfile.length) continue;
+        paintBelt(r, andeanProfile[Math.max(toAndes[r], dOcean)], false);
+    }
+
+    /* Trench on the water next to an Andean coast, so the crust view and
+     * the bathymetry agree with the belt. */
+    if (map.r_boundary) {
+        for (let r = 0; r < n; r++) {
+            if (!andean[r]) continue;
+            mesh.r_circulate_r(nb, r);
+            for (const k of nb) {
+                if (isLand[k]) continue;
+                map.r_boundary[k] = BOUNDARY_CONVERGENT;
+            }
+        }
+    }
+
+    /* Oceania: one island-arc chain in the empty ocean, a geodesic between
+     * two Pacific points. Not a copy of every coast. */
+    const pacOcean = [];
+    for (let r = 0; r < n; r++) {
+        if (isLand[r] || toLand[r] < 4) continue;
+        const d = r_xyz[3 * r] * pacific[0]
+            + r_xyz[3 * r + 1] * pacific[1]
+            + r_xyz[3 * r + 2] * pacific[2];
+        if (d > 0.18) pacOcean.push(r);
+    }
+    if (pacOcean.length >= 8) {
+        let a = pacOcean[Math.floor(randFloat() * pacOcean.length)];
+        let b = a, best = -1;
+        for (let tries = 0; tries < 24; tries++) {
+            const c = pacOcean[Math.floor(randFloat() * pacOcean.length)];
+            const ang = angleBetween(
+                [r_xyz[3 * a], r_xyz[3 * a + 1], r_xyz[3 * a + 2]],
+                [r_xyz[3 * c], r_xyz[3 * c + 1], r_xyz[3 * c + 2]]);
+            if (ang > best && ang < 1.8) { best = ang; b = c; }
+        }
+        const A = [r_xyz[3 * a], r_xyz[3 * a + 1], r_xyz[3 * a + 2]];
+        const B = [r_xyz[3 * b], r_xyz[3 * b + 1], r_xyz[3 * b + 2]];
+        const halfW = 0.048;
+        const along = tangentToward(A, B);
+        for (let r = 0; r < n; r++) {
+            if (isLand[r]) continue;
+            const p = [r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]];
+            if (!onShortArc(p, A, B)) continue;
+            const d = distToGeodesic(p, A, B);
+            if (d >= halfW) continue;
+            const w = 1 - d / halfW;
+            r_arc[r] = Math.max(r_arc[r], 0.85 + 0.5 * w);
+            setStrike(r_arcDir, r, p, along);
+        }
+    }
+
+    /* Caribbean: a small sea, mostly wrapped by land, gets an island arc
+     * across its mouth rather than a wall of continent. */
+    const openSeed = new Uint8Array(n);
+    for (let r = 0; r < n; r++) if (!isLand[r] && toLand[r] >= 7) openSeed[r] = 1;
+    const toOpen = hopDistance(mesh, openSeed, n);
+    const mouth = [];
+    for (let r = 0; r < n; r++) {
+        if (isLand[r] || toLand[r] > 4) continue;
+        if (toOpen[r] < 0 || toOpen[r] < 5) continue;
+        mesh.r_circulate_r(nb, r);
+        let nextOpen = false;
+        for (const k of nb) {
+            if (!isLand[k] && toOpen[k] >= 0 && toOpen[k] < toOpen[r]) nextOpen = true;
+        }
+        if (nextOpen) mouth.push(r);
+    }
+    if (mouth.length >= 4 && mouth.length < n * 0.04) {
+        for (const r of mouth) {
+            const p = [r_xyz[3 * r], r_xyz[3 * r + 1], r_xyz[3 * r + 2]];
+            r_arc[r] = Math.max(r_arc[r], 1.15);
+            setStrike(r_arcDir, r, p, vec3.cross([], p, pacific));
+            mesh.r_circulate_r(nb, r);
+            for (const k of nb) {
+                if (isLand[k]) continue;
+                r_arc[k] = Math.max(r_arc[k], 0.7);
+            }
+        }
+    }
+}
+
+
 /* Runs the whole model and leaves r_elevation, the crust fields and the
  * boundary classification on `map`. */
 function simulateTectonics(mesh, map, seed, options) {
@@ -2849,9 +3485,29 @@ function simulateTectonics(mesh, map, seed, options) {
     map.hotspots = Array.from({length: opts.hotspots},
         () => randomUnitVector(randFloat));
 
+    /* The continent plan is a still. The run paints sea-floor age, arcs
+     * and belts; it does not redraw coasts. Matching coasts from a later
+     * rift are a later trial. */
+    const birthType = Uint8Array.from(map.r_crust_type);
+    const birthThickness = Float32Array.from(map.r_thickness);
+    const oceanKm = opts.crustOceanKm;
+    const restoreContinents = () => {
+        const n = birthType.length;
+        for (let r = 0; r < n; r++) {
+            if (birthType[r] === CRUST_CONTINENTAL) {
+                map.r_crust_type[r] = CRUST_CONTINENTAL;
+                map.r_thickness[r] = birthThickness[r];
+            } else if (map.r_crust_type[r] === CRUST_CONTINENTAL) {
+                map.r_crust_type[r] = CRUST_OCEANIC;
+                map.r_thickness[r] = oceanKm;
+            }
+        }
+    };
+
     for (let step = 0; step < opts.steps; step++) {
         map.elapsedMyr += opts.stepMyr;
         const collisions = stepTectonics(mesh, map, opts);
+        restoreContinents();
 
         let changed = subductSites(mesh, map, randFloat);
         if (weldPlates(mesh, map, collisions, opts)) changed = true;
@@ -2888,6 +3544,8 @@ function simulateTectonics(mesh, map, seed, options) {
     }
 
     Object.assign(map, classifyBoundaries(mesh, map));
+    composeTectonicStory(mesh, map, randFloat, opts);
+    stampLifetime(map);
     crustToElevation(mesh, map, seed, opts);
     return map;
 }

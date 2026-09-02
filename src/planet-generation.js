@@ -41,8 +41,9 @@ const u_colormap = regl.texture({
 
 const SURFACE_GLSL = Look.SURFACE_GLSL;
 const RELIEF_GLSL = Look.RELIEF_GLSL;
+const CLIMATE_GLSL = Look.CLIMATE_GLSL;
 const DRAW_MODES = ['quads', 'centroid', 'plates', 'crust', 'climate', 'relief'];
-const FLAT_OVERLAYS = ['plates', 'crust', 'climate'];
+const FLAT_OVERLAYS = ['plates', 'crust'];
 
 
 /* UI parameters */
@@ -56,8 +57,9 @@ let northHeadingAngle = 0;
 let viewAnimId = 0;
 let drawMode = 'quads';
 let viewMode = 'equirect';
-let draw_plateVectors = false;
-let draw_plateBoundaries = false;
+let draw_plateVectors = true;
+let draw_plateBoundaries = true;
+let platesPaint = 'plates';
 let merge_ocean_plates = false;
 let connect_oceans = false;
 let simulate_tectonics = true;
@@ -73,8 +75,8 @@ function askedLook() {
     return drawMode;
 }
 
-/* Flat per-region overlays. Relief is a surface look (hypsometric + hillshade),
- * not one of these — it keeps lighting and does not paint plate colours. */
+/* Flat per-region overlays. Relief and Climate are surface looks: they
+ * keep lighting. Climate is the moisture ramp on the same shaded globe. */
 function overlayMode() {
     const asked = askedLook();
     return FLAT_OVERLAYS.indexOf(asked) !== -1 ? asked : null;
@@ -88,8 +90,23 @@ function useReliefLook() {
     return askedLook() === 'relief';
 }
 
+function useClimateLook() {
+    return askedLook() === 'climate';
+}
+
+function surfaceLookKey() {
+    if (usePlateOverlay()) return overlayMode();
+    if (useReliefLook()) return 'relief';
+    if (useClimateLook()) return 'climate';
+    return 'surf';
+}
+
 function useCentroid() {
-    return drawMode === 'centroid' && !useReliefLook();
+    return drawMode === 'centroid' && !useReliefLook() && !useClimateLook();
+}
+
+function showPlateBoundaries() {
+    return overlayMode() === 'plates' && draw_plateBoundaries;
 }
 
 let mapId = 0;
@@ -102,7 +119,7 @@ window.__PLANET_READY__ = false;
 function setTdCrops(flag) {
     TdOverlay.setEnabled(flag);
     const toggle = document.getElementById('td-crops-toggle');
-    if (toggle) toggle.checked = !!flag;
+    if (toggle) toggle.setAttribute('aria-pressed', String(!!flag));
     draw();
 }
 
@@ -252,11 +269,12 @@ precision mediump float;
 
 uniform sampler2D u_colormap;
 uniform vec2 u_light_angle;
-uniform float u_inverse_texture_size, u_slope, u_flat, u_c, u_d, u_outline_strength, u_relief;
+uniform float u_inverse_texture_size, u_slope, u_flat, u_c, u_d, u_outline_strength, u_relief, u_climate;
 
 varying vec3 v_tm;
 ${SURFACE_GLSL}
 ${RELIEF_GLSL}
+${CLIMATE_GLSL}
 void main() {
    float dedx = dFdx(v_tm.x);
    float dedy = dFdy(v_tm.x);
@@ -265,6 +283,7 @@ void main() {
    float light = u_c + max(0.0, dot(light_vector, slope_vector));
    float outline = 1.0 + u_outline_strength * max(dedx,dedy);
    vec3 albedo = mix(surfaceAlbedo(u_colormap, v_tm), reliefAlbedo(u_colormap, v_tm), u_relief);
+   albedo = mix(albedo, climateAlbedo(u_colormap, v_tm), u_climate);
    gl_FragColor = vec4(albedo * light / outline, 1);
 }
 `,
@@ -287,6 +306,7 @@ void main() {
         ...Look.globeLightUniforms,
         u_outline_strength: 0,
         u_relief: regl.prop('u_relief'),
+        u_climate: regl.prop('u_climate'),
     },
 
     elements: regl.prop('elements'),
@@ -655,6 +675,7 @@ function animateView(apply) {
         if (animId !== viewAnimId) return;
         const t = Math.min(1, (now - startedAt) / duration);
         apply(1 - (1 - t) ** 3);
+        syncZoomButtons();
         draw();
         if (t < 1) requestAnimationFrame(step);
     }
@@ -770,21 +791,12 @@ function syncViewModeDom() {
     if (viewMode === 'equirect') {
         document.body.classList.add('view-equirect');
         syncEquirectCanvasSize();
-        const toggle = document.querySelector('.view-mode-toggle');
-        if (toggle) {
-            toggle.title = 'Globe view';
-            toggle.setAttribute('aria-label', 'Globe view');
-        }
     } else {
         canvas.width = GLOBE_SIZE;
         canvas.height = GLOBE_SIZE;
         document.body.classList.remove('view-equirect');
-        const toggle = document.querySelector('.view-mode-toggle');
-        if (toggle) {
-            toggle.title = 'Map view';
-            toggle.setAttribute('aria-label', 'Map view');
-        }
     }
+    syncZoomButtons();
 }
 
 function applyViewMode(mode) {
@@ -1168,10 +1180,7 @@ function drawEquirect() {
         withEquirectScissor({box}, () => {
             drawSurface(u_projection, geo.xyz, geo.tm, geo.count);
             drawBakedTiles(u_projection, 'equirect');
-            if (!overlay && draw_plateVectors) {
-                drawEquirectPlateVectors(u_projection, simMesh, simMap);
-            }
-            if (overlay || draw_plateBoundaries) {
+            if (showPlateBoundaries()) {
                 drawEquirectPlateBoundaries(u_projection, mesh, map);
             }
         });
@@ -1277,6 +1286,7 @@ function globeProjectionMatrix() {
 function drawSurface(u_projection, xyz, tm, count) {
     const overlay = usePlateOverlay();
     const relief = useReliefLook() ? 1 : 0;
+    const climate = useClimateLook() ? 1 : 0;
     if (useCentroid()) {
         const cmd = overlay ? renderFlatTriangles : renderTriangles;
         cmd({u_projection, a_xyz: xyz, a_tm: tm, count});
@@ -1284,7 +1294,7 @@ function drawSurface(u_projection, xyz, tm, count) {
     }
     const elements = count == null ? quadGeometry.I : sequentialElements(count);
     const cmd = overlay ? renderFlatIndexed : renderIndexedTriangles;
-    cmd({u_projection, a_xyz: xyz, a_tm: tm, elements, u_relief: relief});
+    cmd({u_projection, a_xyz: xyz, a_tm: tm, elements, u_relief: relief, u_climate: climate});
 }
 
 function _draw() {
@@ -1312,10 +1322,7 @@ function _draw() {
 
     if (!overlay) drawNorthPole(u_projection);
 
-    if (!overlay && draw_plateVectors) {
-        drawPlateVectors(u_projection, simMesh, simMap);
-    }
-    if (overlay || draw_plateBoundaries) {
+    if (showPlateBoundaries()) {
         drawPlateBoundaries(u_projection, mesh, map);
     }
 
@@ -1760,9 +1767,9 @@ function exportPreview(view, opts = {}) {
     const savedOverlay = previewOverlay;
     const overlay = opts.overlay || (opts.plates ? 'plates' : null);
     previewOverlay = overlay;
-    if (overlay && overlay !== 'relief') {
+    if (overlay === 'plates') {
         draw_plateBoundaries = true;
-        draw_plateVectors = false;
+        draw_plateVectors = true;
     }
     try {
         if (view === 'globe') return captureGlobePreview(overlay);
@@ -1826,7 +1833,7 @@ function drawHaloLabel(ctx, text, x, y) {
     ctx.fillText(text, x, y);
 }
 
-function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0) {
+function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0, motion = true) {
     if (!map.plates || !map.plate_centroid) return;
     ctx.save();
     ctx.lineJoin = 'round';
@@ -1864,35 +1871,37 @@ function paintPlateAnnotations(ctx, width, height, mode, projection, xshift = 0)
         start.x = Math.min(width - 16, Math.max(16, start.x));
         start.y = Math.min(height - 16, Math.max(16, start.y));
 
-        const tip = [
-            c[0] + v[0] * PLATE_ARROW_SCALE,
-            c[1] + v[1] * PLATE_ARROW_SCALE,
-            c[2] + v[2] * PLATE_ARROW_SCALE,
-        ];
-        let end = toCanvas(tip);
-        if (mode === 'equirect' && Math.abs(end.x - start.x) > width * 0.5) {
-            const shift = end.x > start.x ? -width : width;
-            ctx.lineWidth = 6;
-            ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
-            strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
-            strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
-            ctx.lineWidth = 2.4;
-            ctx.strokeStyle = Look.PLATE_ARROW.hex;
-            strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
-            strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
-        } else {
-            let dx = end.x - start.x, dy = end.y - start.y;
-            let len = Math.hypot(dx, dy);
-            if (len < 22 && len > 0.5) {
-                const s = 22 / len;
-                end = {x: start.x + dx * s, y: start.y + dy * s, front: end.front};
+        if (motion) {
+            const tip = [
+                c[0] + v[0] * PLATE_ARROW_SCALE,
+                c[1] + v[1] * PLATE_ARROW_SCALE,
+                c[2] + v[2] * PLATE_ARROW_SCALE,
+            ];
+            let end = toCanvas(tip);
+            if (mode === 'equirect' && Math.abs(end.x - start.x) > width * 0.5) {
+                const shift = end.x > start.x ? -width : width;
+                ctx.lineWidth = 6;
+                ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
+                strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
+                strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
+                ctx.lineWidth = 2.4;
+                ctx.strokeStyle = Look.PLATE_ARROW.hex;
+                strokeArrow(ctx, start.x, start.y, end.x + shift, start.y + (end.y - start.y));
+                strokeArrow(ctx, start.x - shift, start.y, end.x, end.y);
+            } else {
+                let dx = end.x - start.x, dy = end.y - start.y;
+                let len = Math.hypot(dx, dy);
+                if (len < 22 && len > 0.5) {
+                    const s = 22 / len;
+                    end = {x: start.x + dx * s, y: start.y + dy * s, front: end.front};
+                }
+                ctx.lineWidth = 6;
+                ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
+                strokeArrow(ctx, start.x, start.y, end.x, end.y);
+                ctx.lineWidth = 2.4;
+                ctx.strokeStyle = Look.PLATE_ARROW.hex;
+                strokeArrow(ctx, start.x, start.y, end.x, end.y);
             }
-            ctx.lineWidth = 6;
-            ctx.strokeStyle = Look.PLATE_ARROW.haloHex;
-            strokeArrow(ctx, start.x, start.y, end.x, end.y);
-            ctx.lineWidth = 2.4;
-            ctx.strokeStyle = Look.PLATE_ARROW.hex;
-            strokeArrow(ctx, start.x, start.y, end.x, end.y);
         }
 
         ctx.lineWidth = 4;
@@ -1950,11 +1959,11 @@ function paintLivePlateOverlay() {
         for (const shift of [-2, 0, 2]) {
             ctx.save();
             clipCanvasToEquirectCopy(ctx, width, height, shift);
-            paintPlateAnnotations(ctx, width, height, 'equirect', null, shift);
+            paintPlateAnnotations(ctx, width, height, 'equirect', null, shift, draw_plateVectors);
             ctx.restore();
         }
     } else {
-        paintPlateAnnotations(ctx, width, height, 'globe', globeProjectionMatrix());
+        paintPlateAnnotations(ctx, width, height, 'globe', globeProjectionMatrix(), 0, draw_plateVectors);
     }
 }
 
@@ -2359,6 +2368,60 @@ function restCursor(canvas) {
     canvas.style.cursor = Measure.isActive() ? 'crosshair' : 'grab';
 }
 
+const ZOOM_MIN = TdTile.ZOOM_MIN;
+const ZOOM_MAX = TdTile.ZOOM_MAX;
+const ZOOM_STEP = 2;
+
+function clampZoom(value) {
+    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+}
+
+function currentZoom() {
+    return viewMode === 'equirect' ? equirectZoom : zoom;
+}
+
+function setCurrentZoom(value, focus) {
+    const canvas = document.getElementById('output');
+    if (!canvas) return;
+    const next = clampZoom(value);
+    if (viewMode === 'equirect') {
+        const prev = equirectZoom;
+        if (focus && next !== prev) {
+            const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
+            const fit = canvasEquirectFit(canvas);
+            equirectPanX = wrapPanX(equirectPanX + (clip.x / fit.x) * (1 / next - 1 / prev));
+            equirectPanY += (clip.y / fit.y) * (1 / next - 1 / prev);
+        }
+        equirectZoom = next;
+        clampEquirectPanY();
+    } else {
+        const prev = zoom;
+        const at = focus && next !== prev
+            ? canvasToLonLat(focus.x, focus.y, canvas.width, canvas.height)
+            : null;
+        zoom = next;
+        if (at) {
+            const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
+            rotateGlobePointToClip(at, clip.x, clip.y);
+        }
+    }
+    syncZoomButtons();
+}
+
+function nudgeZoom(dir) {
+    const factor = dir > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+    setCurrentZoom(currentZoom() * factor);
+    draw();
+}
+
+function syncZoomButtons() {
+    const z = currentZoom();
+    const zoomIn = document.querySelector('[data-action="zoom-in"]');
+    const zoomOut = document.querySelector('[data-action="zoom-out"]');
+    if (zoomIn) zoomIn.disabled = z >= ZOOM_MAX * 0.999;
+    if (zoomOut) zoomOut.disabled = z <= ZOOM_MIN * 1.001;
+}
+
 function syncMeasureUi() {
     const on = Measure.isActive();
     document.body.classList.toggle('measuring', on);
@@ -2380,8 +2443,6 @@ function setupDragRotation() {
     canvas.style.touchAction = 'none';
     canvas.style.userSelect = 'none';
 
-    const ZOOM_MIN = TdTile.ZOOM_MIN;
-    const ZOOM_MAX = TdTile.ZOOM_MAX;
     const pointers = new Map();
     let dragging = false;
     let lastX = 0;
@@ -2418,39 +2479,6 @@ function setupDragRotation() {
         const tile = show && !picking ? tileAtCanvas(hoverX, hoverY, canvas) : null;
         if (TdOverlay.setHoverTile(show ? tile : null)) changed = true;
         return changed;
-    }
-
-    function clampZoom(value) {
-        return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
-    }
-
-    function currentZoom() {
-        return viewMode === 'equirect' ? equirectZoom : zoom;
-    }
-
-    function setCurrentZoom(value, focus) {
-        const next = clampZoom(value);
-        if (viewMode === 'equirect') {
-            const prev = equirectZoom;
-            if (focus && next !== prev) {
-                const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
-                const fit = canvasEquirectFit(canvas);
-                equirectPanX = wrapPanX(equirectPanX + (clip.x / fit.x) * (1 / next - 1 / prev));
-                equirectPanY += (clip.y / fit.y) * (1 / next - 1 / prev);
-            }
-            equirectZoom = next;
-            clampEquirectPanY();
-            return;
-        }
-        const prev = zoom;
-        const at = focus && next !== prev
-            ? canvasToLonLat(focus.x, focus.y, canvas.width, canvas.height)
-            : null;
-        zoom = next;
-        if (at) {
-            const clip = canvasToClip(focus.x, focus.y, canvas.width, canvas.height);
-            rotateGlobePointToClip(at, clip.x, clip.y);
-        }
     }
 
     function pointerDistance() {
@@ -2783,9 +2811,16 @@ function paintTdSurface(crop) {
             const i = y * w + x;
             const fx = (x + 0.5) / w;
             const fy = (y + 0.5) / h;
+            const gx = Math.min(climate.n - 1, Math.floor(fx * climate.n));
+            const gy = Math.min(climate.n - 1, Math.floor(fy * climate.n));
+            const gi = gy * climate.n + gx;
+            const moist = climate.moist[gi];
+            const temp = climate.temp[gi];
             const [r, g, b] = useReliefLook()
                 ? Look.reliefAlbedo(e[i])
-                : Look.surfaceAlbedo(e[i], moist, temp);
+                : useClimateLook()
+                    ? Look.climateAlbedo(e[i], moist)
+                    : Look.surfaceAlbedo(e[i], moist, temp);
             const x0 = x === 0 ? x : x - 1;
             const x1 = x === w - 1 ? x : x + 1;
             const shade = Look.hillshade(
@@ -3025,9 +3060,10 @@ function showLayout() {
 
 function applyDrawMode(mode) {
     if (DRAW_MODES.indexOf(mode) === -1) return;
-    const prev = drawMode;
+    const prevKey = surfaceLookKey();
     drawMode = mode;
-    if ((prev === 'relief') !== (mode === 'relief')) TdOverlay.repaintSurfaces();
+    if (mode === 'plates' || mode === 'crust') platesPaint = mode;
+    if (prevKey !== surfaceLookKey()) TdOverlay.repaintSurfaces();
     draw();
 }
 
@@ -3045,7 +3081,11 @@ Studio.mount(studio, {
     getShapeSpacing: () => shapeSpacingKm,
     getRotation: () => rotation,
     setViewMode: applyViewMode,
+    nudgeZoom,
     setDrawMode: applyDrawMode,
+    getPlatesPaint: () => platesPaint,
+    getDrawPlateVectors: () => draw_plateVectors,
+    getDrawPlateBoundaries: () => draw_plateBoundaries,
     setDrawPlateVectors(flag) { draw_plateVectors = flag; draw(); },
     setDrawPlateBoundaries(flag) { draw_plateBoundaries = flag; draw(); },
     setN(n) { N = n; clearLayout(); generateMesh(); },

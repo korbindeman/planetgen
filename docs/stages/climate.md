@@ -26,8 +26,10 @@ second tier would run. The first tier is already inside Discover.
 | body — tilt, day length, radius | the variant | season swing, wind band spacing |
 | climate genes | the variant's ranges | rain-out rate, recycling, season shift |
 
-**Wishes** — nothing outstanding from upstream. This stage needs better
-physics. See [§ Open](#open).
+**Wishes** — nothing outstanding from upstream stages. Star and orbit
+would come from a **system**, not from Layout. See
+[systems.md](../systems.md). This stage needs better physics. See
+[§ Open](#open).
 
 ## Hands on
 
@@ -136,10 +138,20 @@ temperate terrain.
 Compare precip and temp against `climate.js` by eye. If ExoPlaSim's
 fields are not clearly more believable, drop the stage and keep
 exporting from `climate.js`. This trial does not couple to the
-cubesphere bake. It is worth doing first.
+cubesphere bake. It is worth doing first. It does not wait for a
+**system**. Thalos at 1 AU around a G2V is already the implicit Sun in
+`world.js`. See [systems.md](../systems.md).
 
 When it graduates, `export:td` grows a mode that takes bake-time rasters
 instead of deriving channels.
+
+**Sea-surface temperature and ice history — open.** Reefs need SST.
+A late sea-level cut needs an ice-history number. Neither ships today.
+Water is a **body** fact. Sea sits at 0 m from Layout onward. Air
+temperature is the stand-in Carve uses for reefs. See
+[carve-landforms.md § Open](carve-landforms.md#open). A later Terrain
+would flood after the 90 m residual. That file is
+[custom-model.md](../custom-model.md).
 
 **Also open:** after Carve incises, elevation changes. Temperature
 should be recomputed with a lapse rate if climate must stay consistent.
@@ -151,7 +163,8 @@ Biomes may need a pass. See [carve-hydrology.md](carve-hydrology.md).
 bun run preview climate   # the moisture field on its own
 ```
 
-Crop in on a continent that should show a wet coast and a dry coast. That
+This is the same shaded globe as Surface, not the Plates diagram. Crop
+in on a continent that should show a wet coast and a dry coast. That
 asymmetry is what this stage is for. You should be able to see it.
 
 **Do not judge from the finished biome map.** The biome table needs

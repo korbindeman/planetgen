@@ -1220,16 +1220,44 @@ function syncVariantsUI(session) {
 }
 
 function syncModeButtons(session) {
-    const drawMode = session.host.getDrawMode();
+    const host = session.host;
+    const drawMode = host.getDrawMode();
+    const platesOn = drawMode === 'plates' || drawMode === 'crust';
     for (const b of document.querySelectorAll('[data-action="draw"]')) {
-        b.setAttribute('aria-pressed', String(b.dataset.draw === drawMode));
+        const on = b.dataset.draw === 'plates' ? platesOn : b.dataset.draw === drawMode;
+        b.setAttribute('aria-pressed', String(on));
     }
-    /* Tiles read the sketch. Hide the look-bar toggle on Layout. */
+    const viewMode = host.getViewMode();
+    for (const b of document.querySelectorAll('[data-action="view"]')) {
+        b.setAttribute('aria-pressed', String(b.dataset.view === viewMode));
+    }
+
+    const paint = host.getPlatesPaint ? host.getPlatesPaint() : 'plates';
+    for (const b of document.querySelectorAll('[data-action="plate-paint"]')) {
+        const mode = b.dataset.paint === 'floor' ? 'crust' : 'plates';
+        b.setAttribute('aria-pressed', String(platesOn && paint === mode));
+    }
+    const motion = document.querySelector('[data-action="plate-vectors"]');
+    if (motion && host.getDrawPlateVectors) {
+        motion.setAttribute('aria-pressed', String(!!host.getDrawPlateVectors()));
+    }
+    const edges = document.querySelector('[data-action="plate-boundaries"]');
+    if (edges && host.getDrawPlateBoundaries) {
+        edges.hidden = paint === 'crust';
+        edges.setAttribute('aria-pressed', String(!!host.getDrawPlateBoundaries()));
+    }
+
+    const shaped = !!(host.isShaped && host.isShaped());
     const tiles = document.getElementById('td-crops-toggle');
-    const label = tiles && tiles.closest('label');
-    if (label) {
-        const live = !!(session.host.isShaped && session.host.isShaped());
-        label.hidden = !live;
+    const surfaceTools = document.querySelector('.look-tools-surface');
+    const platesTools = document.querySelector('.look-tools-plates');
+    const tools = document.getElementById('look-tools');
+    if (surfaceTools) surfaceTools.hidden = !(drawMode === 'quads' && shaped);
+    if (platesTools) platesTools.hidden = !platesOn;
+    if (tiles) tiles.setAttribute('aria-pressed', String(!!TdOverlay.isEnabled()));
+    if (tools) {
+        const open = (surfaceTools && !surfaceTools.hidden) || (platesTools && !platesTools.hidden);
+        tools.classList.toggle('is-open', !!open);
     }
 }
 
@@ -1723,27 +1751,35 @@ function bind(session) {
             session.host.setViewMode(el.dataset.view);
             syncModeButtons(session);
         } else if (action === 'draw') {
-            session.host.setDrawMode(el.dataset.draw);
+            const mode = el.dataset.draw === 'plates' && session.host.getPlatesPaint
+                ? session.host.getPlatesPaint()
+                : el.dataset.draw;
+            session.host.setDrawMode(mode);
             syncModeButtons(session);
             paint(session);
-        } else if (action === 'view-toggle') {
-            const next = session.host.getViewMode() === 'globe' ? 'equirect' : 'globe';
-            session.host.setViewMode(next);
+        } else if (action === 'plate-paint') {
+            session.host.setDrawMode(el.dataset.paint === 'floor' ? 'crust' : 'plates');
             syncModeButtons(session);
+        } else if (action === 'plate-vectors') {
+            const on = el.getAttribute('aria-pressed') !== 'true';
+            session.host.setDrawPlateVectors(on);
+            syncModeButtons(session);
+        } else if (action === 'plate-boundaries') {
+            const on = el.getAttribute('aria-pressed') !== 'true';
+            session.host.setDrawPlateBoundaries(on);
+            syncModeButtons(session);
+        } else if (action === 'td-crops') {
+            if (session.host.isShaped && session.host.isShaped()) {
+                const on = el.getAttribute('aria-pressed') !== 'true';
+                session.host.setTdCrops(on);
+                syncModeButtons(session);
+            }
+        } else if (action === 'zoom-in') {
+            session.host.nudgeZoom(1);
+        } else if (action === 'zoom-out') {
+            session.host.nudgeZoom(-1);
         } else if (action === 'toggle-sidebar') {
             session.sidebar && session.sidebar.toggle({focusToggle: true});
-        }
-    });
-
-    root.addEventListener('input', event => {
-        const el = closestAction(event);
-        if (!el) return;
-        const action = el.dataset.action;
-        if (action === 'plate-vectors') session.host.setDrawPlateVectors(el.checked);
-        else if (action === 'plate-boundaries') session.host.setDrawPlateBoundaries(el.checked);
-        else if (action === 'td-crops') {
-            if (session.host.isShaped && session.host.isShaped()) session.host.setTdCrops(el.checked);
-            else el.checked = false;
         }
     });
 
