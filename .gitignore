@@ -2,6 +2,7 @@ node_modules/
 build/
 preview/**
 !preview/.gitkeep
+bake/**/shard-*.json
 src/.td-overlays/
 .DS_Store
 __pycache__/

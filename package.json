@@ -27,6 +27,7 @@
         "sheet": "bun ./scripts/seed-sheet.mjs",
         "climate": "bun ./scripts/climate-stats.mjs",
         "export:td": "bun ./scripts/export-td.mjs",
+        "bake": "bun ./scripts/bake.mjs",
         "build": "bun build ./src/planet-generation.js --target=browser --minify --sourcemap=linked --outdir=build --entry-naming=_bundle.[ext]",
         "check:earth": "bun ./scripts/check-earth.mjs",
         "check:projects": "bun ./scripts/check-projects.mjs",
