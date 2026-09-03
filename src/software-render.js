@@ -20,7 +20,7 @@ const TWO_PI = 2 * PI;
 const POLE_LAT = PI / 2 - 1e-6;
 const POLE_SNAP = 3 * PI / 180;
 const {OVERLAY_LEGEND, PLATE_ARROW, BOUNDARY_INK} = Look;
-const {surfaceAlbedo, reliefAlbedo, climateAlbedo, hillshade, northPoleLines} = Look;
+const {surfaceAlbedo, reliefAlbedo, climateAlbedo, drainageAlbedo, hillshade, northPoleLines} = Look;
 
 function paintedOverlay(overlay) {
     return overlay === 'plates' || overlay === 'crust';
@@ -29,6 +29,7 @@ function paintedOverlay(overlay) {
 function surfaceLook(overlay) {
     if (overlay === 'relief') return 'relief';
     if (overlay === 'climate') return 'climate';
+    if (overlay === 'drainage') return 'drainage';
     return 'surface';
 }
 
@@ -134,6 +135,7 @@ function rasterTriangle(target, a, b, c, shade, overlay, look) {
                 const t = u * a.t + v * b.t + w * c.t;
                 const alb = look === 'relief' ? reliefAlbedo(e)
                     : look === 'climate' ? climateAlbedo(e, m)
+                    : look === 'drainage' ? drainageAlbedo(e, m)
                     : surfaceAlbedo(e, m, t);
                 putPixelOpaque(target, x, y, z,
                     Math.round(Math.max(0, Math.min(1, alb[0] * light)) * 255),
@@ -590,8 +592,34 @@ function paintPlateAnnotations(rgba, width, height, planet, mode, projection, xs
     }
 }
 
+function drainageTm(planet) {
+    const {mesh, map, geometry} = planet;
+    const q = map && map.r_discharge;
+    if (!q || !geometry || !geometry.tm) return geometry.tm;
+    const nR = mesh.numRegions;
+    const nT = mesh.numTriangles;
+    const tm = new Float32Array(geometry.tm);
+    let maxQ = 0;
+    for (let r = 0; r < nR; r++) {
+        if (map.r_elevation[r] >= 0 && q[r] > maxQ) maxQ = q[r];
+    }
+    const denom = Math.log(1 + maxQ) || 1;
+    for (let r = 0; r < nR; r++) {
+        tm[3 * r + 1] = map.r_elevation[r] < 0 ? 0 : Math.log(1 + Math.max(0, q[r])) / denom;
+    }
+    for (let t = 0; t < nT; t++) {
+        const r1 = mesh.s_begin_r(3 * t);
+        const r2 = mesh.s_begin_r(3 * t + 1);
+        const r3 = mesh.s_begin_r(3 * t + 2);
+        tm[3 * (nR + t) + 1] = (tm[3 * r1 + 1] + tm[3 * r2 + 1] + tm[3 * r3 + 1]) / 3;
+    }
+    return tm;
+}
+
+
 function surfaceTm(planet, overlay) {
     if (paintedOverlay(overlay)) return Planet.buildOverlayColorTm(planet.mesh, planet.map, overlay);
+    if (overlay === 'drainage') return drainageTm(planet);
     return planet.geometry.tm;
 }
 

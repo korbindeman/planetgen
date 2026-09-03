@@ -1,7 +1,11 @@
 # @planetgen/hydrology
 
-Named slot for fine drainage on the baked DEM: priority-flood, D8 routing across cubesphere face edges, stream-power incision, lakes.
+Named slot for fine drainage on the baked DEM. Nothing here runs yet.
+`run()` throws. See `docs/stages/carve-hydrology.md`.
 
-The detail pass in this repo only roughs in valleys. Do not carve a river network on the ~220 km sim mesh.
+The grain-independent drain lives in `src/route.js`. Shape uses a light
+cut of that for valley texture and a drain tree. This package would call
+the same core on the 90 m cubesphere when Carve starts.
 
-How hard to cut is **open**. The 90 m bake already looks eroded; this pass has to connect drainage without a second landscape-evolution. See `docs/stages/carve-hydrology.md`.
+How hard to cut on the bake is **open**. Do not rerun Shape's incision
+knobs here.

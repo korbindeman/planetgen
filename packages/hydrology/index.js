@@ -2,9 +2,10 @@
  * Fine hydrology — not implemented. How hard to cut is open.
  *
  * Real river networks, discharge, lakes and canyons on the baked 90 m
- * (or 30 m) DEM. Not on the planetgen mesh. The bake already looks
- * eroded; this pass connects drainage. Do not rerun Shape's
- * stream-power recipe here. See docs/stages/carve-hydrology.md.
+ * (or 30 m) DEM. Not on the planetgen mesh. The grain-independent drain
+ * is src/route.js. Shape already uses a light cut of that. This package
+ * would call the same core on the bake. Do not rerun Shape's incision
+ * knobs here. See docs/stages/carve-hydrology.md.
  */
 'use strict';
 

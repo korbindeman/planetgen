@@ -50,7 +50,8 @@ function run(seed) {
     if (EarthFixture.isEarthSeed(seed)) {
         EarthFixture.buildEarthMap(mesh, map, {seed});
     } else {
-        Object.assign(map, Tectonics.generatePlates(mesh, seed, {plates: P}));
+        const birthCrust = Tectonics.planCrust(mesh, r_xyz, seed, {plates: P});
+        Object.assign(map, Tectonics.generatePlates(mesh, seed, {plates: P, birthCrust}));
         Tectonics.simulateTectonics(mesh, map, seed);
     }
     const started = Date.now();

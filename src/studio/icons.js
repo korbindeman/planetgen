@@ -6,14 +6,18 @@ import { faChevronLeft } from '@fortawesome/free-solid-svg-icons/faChevronLeft';
 import { faChevronRight } from '@fortawesome/free-solid-svg-icons/faChevronRight';
 import { faCompass } from '@fortawesome/free-solid-svg-icons/faCompass';
 import { faHouse } from '@fortawesome/free-solid-svg-icons/faHouse';
+import { faMountain } from '@fortawesome/free-solid-svg-icons/faMountain';
 import { faRuler } from '@fortawesome/free-solid-svg-icons/faRuler';
+import { faWater } from '@fortawesome/free-solid-svg-icons/faWater';
 
 const ICONS = {
     'chevron-left': faChevronLeft,
     'chevron-right': faChevronRight,
     compass: faCompass,
     house: faHouse,
+    mountain: faMountain,
     ruler: faRuler,
+    water: faWater,
 };
 
 function svgFor(def, className) {

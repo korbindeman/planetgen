@@ -17,6 +17,7 @@
  *   bun run preview plates equirect
  *   bun run preview crust           sea-floor age, orogeny and boundary types
  *   bun run preview climate         the moisture field on its own
+ *   bun run preview drainage        log discharge on land, ocean unchanged
  *   bun run preview relief          hypsometric tint and hillshade
  *   bun run preview --no-tectonics  the original 1843 distance-field blend, for comparison
  *   bun run preview --no-polar-straits
@@ -98,6 +99,21 @@ const CLIMATE = {
   },
 };
 
+const DRAINAGE = {
+  globe: {
+    file: "drainage.png",
+    before: "drainage-before.png",
+    compare: "drainage-compare.png",
+    historyPrefix: "drainage",
+  },
+  equirect: {
+    file: "equirect-drainage.png",
+    before: "equirect-drainage-before.png",
+    compare: "equirect-drainage-compare.png",
+    historyPrefix: "equirect-drainage",
+  },
+};
+
 const RELIEF = {
   globe: {
     file: "relief.png",
@@ -113,7 +129,7 @@ const RELIEF = {
   },
 };
 
-const OVERLAY_VIEWS = { plates: PLATES, crust: CRUST, climate: CLIMATE, relief: RELIEF };
+const OVERLAY_VIEWS = { plates: PLATES, crust: CRUST, climate: CLIMATE, drainage: DRAINAGE, relief: RELIEF };
 
 const { views, lon0, seed, project, overlay, connectOceans, noTectonics, noPolarStraits } = parseArgs(process.argv.slice(2));
 const VIEWS = OVERLAY_VIEWS[overlay] ?? GEOGRAPHY;
@@ -219,6 +235,8 @@ function parseArgs(argv) {
       overlay = "crust";
     } else if (arg === "climate" || arg === "--climate") {
       overlay = "climate";
+    } else if (arg === "drainage" || arg === "--drainage") {
+      overlay = "drainage";
     } else if (arg === "relief" || arg === "--relief") {
       overlay = "relief";
     } else if (arg === "--connect-oceans") {
@@ -230,7 +248,7 @@ function parseArgs(argv) {
     } else {
       throw new Error(
         `unknown preview arg: ${arg}\n` +
-          "usage: bun run preview [globe|equirect|all|plates|crust|climate|relief] [--lon=degrees] [--seed=n] [--project=thalos|earth] [--earth] [--connect-oceans] [--no-polar-straits] [--no-tectonics]",
+          "usage: bun run preview [globe|equirect|all|plates|crust|climate|drainage|relief] [--lon=degrees] [--seed=n] [--project=thalos|earth] [--earth] [--connect-oceans] [--no-polar-straits] [--no-tectonics]",
       );
     }
   }

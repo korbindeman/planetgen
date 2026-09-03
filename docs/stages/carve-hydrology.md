@@ -16,7 +16,10 @@ already look right. What it does not have is **non-local coherence**: a
 catchment, a mouth, a hanging valley that actually joins the next one.
 That gap is why this stage exists.
 
-`@planetgen/hydrology` is a named slot. Nothing there runs yet.
+`@planetgen/hydrology` is a named slot. Nothing there runs yet. The
+grain-independent drain lives in `src/route.js`. Shape uses a light
+cut of that for valley texture and a drain tree. This stage would call
+the same core on the 90 m cubesphere. It has not started.
 
 ## Reads
 
@@ -169,9 +172,11 @@ bake before it breaks the landform statistics diffusion just drew?**
 Judge a trial the same way as everything else: crop a bake, run a light
 pass, crop the same valley. **If the ridges moved, `K` is too high.**
 
-A drainage graph on Terrain's cheap whole-planet pass would be a
-preview. Those rivers do not constrain the 90 m pass. The later
-inversion — rivers before valleys — waits for
+Shape now writes a 23 km drain tree (`r_drainTo`, `r_discharge`). That
+graph is a preview. Judge it with `bun run preview drainage`. Those
+rivers do not constrain the 90 m pass. A drainage graph on Terrain's
+cheap whole-planet pass would be another preview. The later inversion
+— rivers before valleys — waits for
 [custom-model.md](../custom-model.md).
 
 ## How to judge it

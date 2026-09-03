@@ -148,6 +148,7 @@ const OVERLAY_LEGEND = {
     crust: 'sea floor: pale = young, dark = old   land: red = orogeny   orange = ridge   cyan = trench   yellow = transform',
     climate: 'moisture only: sand = arid   olive = steppe   green = forest   teal = saturated',
     relief: 'hillshade relief   blue = ocean   green = low   brown = mountains   white = peaks',
+    drainage: 'log discharge: sand = headwater   green = creek   teal = trunk   ocean unchanged',
 };
 
 /* --- annotation / chrome -------------------------------------------- */
@@ -170,6 +171,11 @@ const MEASURE = {
     haloHex: '#111111',
     labelHex: '#ffffff',
     vertexR: 6,
+};
+
+const SCULPT = {
+    hex: '#7dd3fc',
+    haloHex: '#111111',
 };
 
 const NORTH_POLE = {
@@ -290,12 +296,20 @@ vec3 surfaceAlbedo(sampler2D colormap, vec3 tm) {
 /* Hypsometric land tint for the Relief look. Ocean uses the colormap's
  * bathymetry so ridges and trenches stay visible; ice and biomes do not
  * sit on top. The same stops feed the GLSL. */
+/* Stops sit on metersToElevation, so 0.09 ≈ 200 m, 0.17 ≈ 500 m,
+ * 0.28 ≈ 1000 m, 0.46 ≈ 2000 m. Earth's hypsometric maps spend the
+ * greens on the coastal plain and turn tan before the platform height.
+ * A ramp that stayed green past 0.16 painted every quiet continent one
+ * colour. */
 const RELIEF_LAND = [
-    [0.00, [0.40, 0.62, 0.34]],
-    [0.16, [0.58, 0.70, 0.36]],
-    [0.34, [0.80, 0.76, 0.46]],
-    [0.55, [0.64, 0.46, 0.28]],
-    [0.78, [0.80, 0.76, 0.70]],
+    [0.00, [0.16, 0.48, 0.20]],
+    [0.08, [0.30, 0.60, 0.26]],
+    [0.14, [0.55, 0.70, 0.34]],
+    [0.22, [0.86, 0.78, 0.40]],
+    [0.34, [0.78, 0.56, 0.30]],
+    [0.50, [0.56, 0.36, 0.22]],
+    [0.66, [0.50, 0.42, 0.36]],
+    [0.82, [0.84, 0.82, 0.78]],
     [1.00, [0.96, 0.96, 0.97]],
 ];
 
@@ -307,6 +321,11 @@ function reliefAlbedo(e) {
 function climateAlbedo(e, m) {
     if (e <= 0) return CLIMATE_OCEAN.slice();
     return sampleRamp(CLIMATE_STOPS, clamp01(m));
+}
+
+function drainageAlbedo(e, q) {
+    if (e <= 0) return CLIMATE_OCEAN.slice();
+    return sampleRamp(CLIMATE_STOPS, clamp01(q));
 }
 
 const CLIMATE_GLSL = (() => {
@@ -459,6 +478,7 @@ module.exports = {
     BOUNDARY_INK,
     PLATE_ARROW,
     MEASURE,
+    SCULPT,
     NORTH_POLE,
     CROP_COLORS,
     CROP_COLORS_HEX,
@@ -468,6 +488,7 @@ module.exports = {
     reliefAlbedo,
     RELIEF_GLSL,
     climateAlbedo,
+    drainageAlbedo,
     CLIMATE_GLSL,
     hillshade,
     northPoleLines,

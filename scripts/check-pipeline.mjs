@@ -213,5 +213,27 @@ let hydroThrew = false;
 try { Hydrology.run(); } catch (e) { hydroThrew = /named slot/.test(e.message); }
 check("hydrology stub refuses to pretend it exists", hydroThrew);
 
+{
+    const Route = require(join(root, "src/route"));
+    const built = SphereMesh.makeSphere(400, 0.5, makeRandFloat(3));
+    const n = built.mesh.numRegions;
+    const meters = new Float32Array(n);
+    const moisture = new Float32Array(n);
+    for (let r = 0; r < n; r++) {
+        meters[r] = built.r_xyz[3 * r + 2] > 0.2 ? 500 : -600;
+        moisture[r] = 0.4;
+    }
+    const graph = Route.dualMesh(built.mesh, built.r_xyz, 6371);
+    const out = Route.route(graph, meters, moisture, {});
+    let land = 0, hanging = 0;
+    for (let r = 0; r < n; r++) {
+        if (out.ocean[r] || out.lake[r]) continue;
+        land++;
+        if (out.drainTo[r] < 0) hanging++;
+    }
+    check("routing drains land to the ocean or a lake", land > 0 && hanging === 0,
+        `land=${land} hanging=${hanging}`);
+}
+
 console.log(failures.length ? `\n${failures.length} failed` : "\nall passed");
 process.exit(failures.length ? 1 : 0);

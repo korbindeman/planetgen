@@ -20,6 +20,7 @@ const TdOverlay = require('./td-overlay');
 const TdTile = require('./td-tile');
 const Cubesphere = require('./cubesphere');
 const Measure = require('./measure');
+const Sculpt = require('./sculpt');
 const Studio = require('./studio');
 const {clamp01} = Tectonics;
 
@@ -523,6 +524,7 @@ function generateMap() {
     mesh = result.mesh;
     map = result.map;
     quadGeometry = result.geometry;
+    Sculpt.clearHistory();
     overlayColorCache.clear();
     mapId++;
     equirectCache = null;
@@ -1259,6 +1261,69 @@ function paintMeasureOverlay() {
     Measure.paint(overlayView());
 }
 
+function paintSculptOverlay() {
+    Sculpt.paint(overlayView());
+}
+
+function sculptOpts() {
+    const tect = studio.lastResolved && studio.lastResolved.options && studio.lastResolved.options.tectonics;
+    return {
+        layout: !isShaped(),
+        seaLevelThicknessKm: tect && tect.seaLevelThicknessKm != null
+            ? tect.seaLevelThicknessKm
+            : Tectonics.DEFAULTS.seaLevelThicknessKm,
+        orogenyReliefM: tect && tect.orogenyReliefM != null
+            ? tect.orogenyReliefM
+            : Tectonics.DEFAULTS.orogenyReliefM,
+    };
+}
+
+function syncSculptCache() {
+    if (isShaped()) {
+        pending_shape = captureShape();
+        return;
+    }
+    const payload = captureLayout();
+    if (payload) pending_layout = LayoutArtifact.toFields(payload);
+}
+
+function refreshAfterSculpt() {
+    if (!mesh || !map || !map.r_elevation || !map.t_elevation) return;
+    Planet.assignTriangleValues(mesh, map);
+    quadGeometry = Planet.refreshQuadGeometry(mesh, map, quadGeometry);
+    overlayColorCache.clear();
+    equirectCache = null;
+    draw();
+}
+
+function markSculpted() {
+    if (typeof studio.syncSculptDirty === 'function') {
+        studio.syncSculptDirty(Sculpt.canUndo() || Sculpt.canRedo());
+    } else if (typeof studio.markSculpted === 'function') {
+        studio.markSculpted();
+    }
+}
+
+function sculptUndo() {
+    if (!Sculpt.canUndo() || !map) return false;
+    if (!Sculpt.undo(map)) return false;
+    syncSculptCache();
+    refreshAfterSculpt();
+    paintSculptOverlay();
+    markSculpted();
+    return true;
+}
+
+function sculptRedo() {
+    if (!Sculpt.canRedo() || !map) return false;
+    if (!Sculpt.redo(map)) return false;
+    syncSculptCache();
+    refreshAfterSculpt();
+    paintSculptOverlay();
+    markSculpted();
+    return true;
+}
+
 function finishDraw() {
     _draw_pending = false;
     if (!viewPersistSuspended) {
@@ -1266,6 +1331,7 @@ function finishDraw() {
         const view = overlayView();
         TdOverlay.paint(view);
         Measure.paint(view);
+        Sculpt.paint(view);
     }
     persistViewState();
     if (!window.__PLANET_READY__) {
@@ -2360,12 +2426,26 @@ function pickAtCanvas(x, y, canvas) {
     const at = canvasToLonLat(x, y, canvas.width, canvas.height);
     if (!at) return null;
     at.elevM = sampleElevM(at.lon, at.lat);
+    at.xyz = Cubesphere.lonLatToXyz(at.lon, at.lat);
+    const rect = canvas.getBoundingClientRect();
+    at.screenX = x / canvas.width * rect.width;
+    at.screenY = y / canvas.height * rect.height;
+    const radiusPx = Sculpt.getRadiusPx();
+    const offset = canvasToLonLat(
+        x + radiusPx * canvas.width / rect.width,
+        y,
+        canvas.width,
+        canvas.height,
+    );
+    const fallback = radiusPx / Math.max(32, currentZoom() * Math.min(rect.width, rect.height) / 2);
+    at.radiusRad = Sculpt.screenToRadiusRad(at, offset, fallback);
     return at;
 }
 
 function restCursor(canvas) {
     if (!canvas) return;
-    canvas.style.cursor = Measure.isActive() ? 'crosshair' : 'grab';
+    if (Sculpt.isActive()) canvas.style.cursor = 'crosshair';
+    else canvas.style.cursor = Measure.isActive() ? 'crosshair' : 'grab';
 }
 
 const ZOOM_MIN = TdTile.ZOOM_MIN;
@@ -2431,6 +2511,34 @@ function syncMeasureUi() {
     if (canvas && canvas.style.cursor !== 'grabbing') restCursor(canvas);
 }
 
+function syncSculptUi() {
+    const on = Sculpt.isActive();
+    document.body.classList.toggle('sculpting', on);
+    if (!on) document.body.classList.remove('sculpting-orbit');
+    for (const btn of document.querySelectorAll('.sculpt-toggle')) {
+        btn.setAttribute('aria-pressed', String(btn.dataset.tool === Sculpt.getTool()));
+    }
+    const canvas = document.getElementById('output');
+    if (canvas && canvas.style.cursor !== 'grabbing') restCursor(canvas);
+    paintSculptOverlay();
+}
+
+function setSculptTool(name) {
+    const next = Sculpt.getTool() === name ? null : name;
+    if (next) {
+        if (Measure.isActive()) {
+            Measure.setActive(false);
+            Measure.clear();
+            syncMeasureUi();
+            paintMeasureOverlay();
+        }
+        Sculpt.setTool(next);
+    } else {
+        Sculpt.setTool(null);
+    }
+    syncSculptUi();
+}
+
 function typingTarget(el) {
     if (!el) return false;
     const tag = el.tagName;
@@ -2464,6 +2572,8 @@ function setupDragRotation() {
     let shiftHeld = false;
     let overCanvas = false;
     let measuringPress = null;
+    let sculpting = false;
+    let spaceHeld = false;
 
     /* Where the pointer last was, so pressing shift without moving the mouse
      * still lights up the tile under it. */
@@ -2474,7 +2584,7 @@ function setupDragRotation() {
      * shift is held *over the canvas*, so a shift-something shortcut typed
      * elsewhere does not flash it. Preview tiles live on Shape. */
     function refreshGrid() {
-        const show = isShaped() && (picking || (shiftHeld && overCanvas));
+        const show = isShaped() && !Sculpt.isActive() && (picking || (shiftHeld && overCanvas));
         let changed = TdOverlay.setGridShown(show);
         const tile = show && !picking ? tileAtCanvas(hoverX, hoverY, canvas) : null;
         if (TdOverlay.setHoverTile(show ? tile : null)) changed = true;
@@ -2492,13 +2602,44 @@ function setupDragRotation() {
         if (pointers.size === 2) {
             dragging = false;
             measuringPress = null;
+            if (sculpting) {
+                Sculpt.cancelStroke();
+                sculpting = false;
+                refreshAfterSculpt();
+            }
             restCursor(canvas);
             pinchStartDist = pointerDistance();
             pinchStartZoom = currentZoom();
             return;
         }
+        const orbit = spaceHeld || (Sculpt.isActive() && event.button === 2);
+        if (Sculpt.isActive() && event.button === 0 && !orbit) {
+            const pt = eventCanvasPoint(event, canvas);
+            const at = pickAtCanvas(pt.x, pt.y, canvas);
+            if (at && mesh && map) {
+                Sculpt.setInvert(event.shiftKey);
+                Sculpt.beginStroke(mesh, map, at, sculptOpts());
+                sculpting = true;
+                canvas.setPointerCapture(event.pointerId);
+                canvas.style.cursor = 'crosshair';
+                event.preventDefault();
+                refreshAfterSculpt();
+                paintSculptOverlay();
+                return;
+            }
+        }
+        if (orbit) {
+            dragging = true;
+            lastX = event.clientX;
+            lastY = event.clientY;
+            canvas.setPointerCapture(event.pointerId);
+            canvas.style.cursor = 'grabbing';
+            document.body.classList.toggle('sculpting-orbit', Sculpt.isActive());
+            event.preventDefault();
+            return;
+        }
         if (event.button !== 0) return;
-        if (event.shiftKey && isShaped()) {
+        if (event.shiftKey && isShaped() && !Sculpt.isActive()) {
             const pt = eventCanvasPoint(event, canvas);
             const tile = tileAtCanvas(pt.x, pt.y, canvas);
             if (tile) {
@@ -2549,6 +2690,12 @@ function setupDragRotation() {
             draw();
             return;
         }
+        if (sculpting && Sculpt.isLive()) {
+            const at = pickAtCanvas(hoverX, hoverY, canvas);
+            if (at && Sculpt.moveStroke(at)) refreshAfterSculpt();
+            paintSculptOverlay();
+            return;
+        }
         if (measuringPress && measuringPress.id === event.pointerId) {
             const dist = Math.hypot(event.clientX - measuringPress.x, event.clientY - measuringPress.y);
             if (dist > 6) {
@@ -2576,10 +2723,13 @@ function setupDragRotation() {
             }
             return;
         }
+        if (!dragging && Sculpt.isActive()) {
+            if (Sculpt.setHover(pickAtCanvas(hoverX, hoverY, canvas))) paintSculptOverlay();
+        }
         if (!dragging && Measure.isActive()) {
             if (Measure.setHover(pickAtCanvas(hoverX, hoverY, canvas))) paintMeasureOverlay();
         }
-        if (!dragging && shiftHeld && isShaped()) {
+        if (!dragging && shiftHeld && isShaped() && !Sculpt.isActive()) {
             if (TdOverlay.setHoverTile(tileAtCanvas(hoverX, hoverY, canvas))) draw();
             return;
         }
@@ -2610,6 +2760,15 @@ function setupDragRotation() {
     });
 
     function endDrag(event) {
+        if (sculpting) {
+            if (Sculpt.endStroke()) {
+                syncSculptCache();
+                markSculpted();
+            }
+            sculpting = false;
+            refreshAfterSculpt();
+            paintSculptOverlay();
+        }
         if (measuringPress && measuringPress.id === event.pointerId) {
             const pt = eventCanvasPoint(event, canvas);
             const at = pickAtCanvas(pt.x, pt.y, canvas);
@@ -2644,6 +2803,7 @@ function setupDragRotation() {
         }
         dragging = false;
         pinchStartDist = 0;
+        document.body.classList.remove('sculpting-orbit');
         restCursor(canvas);
     }
 
@@ -2656,17 +2816,25 @@ function setupDragRotation() {
         hoverX = here.x;
         hoverY = here.y;
         const gridChanged = refreshGrid();
+        const sculptHover = Sculpt.isActive()
+            && Sculpt.setHover(pickAtCanvas(hoverX, hoverY, canvas));
         const hoverChanged = Measure.isActive()
             && Measure.setHover(pickAtCanvas(hoverX, hoverY, canvas));
         if (gridChanged) draw();
+        else if (sculptHover) paintSculptOverlay();
         else if (hoverChanged) paintMeasureOverlay();
     });
     canvas.addEventListener('pointerleave', () => {
         overCanvas = false;
         const gridChanged = refreshGrid();
+        const sculptCleared = Sculpt.setHover(null);
         const hoverCleared = Measure.setHover(null);
         if (gridChanged) draw();
+        else if (sculptCleared) paintSculptOverlay();
         else if (hoverCleared) paintMeasureOverlay();
+    });
+    canvas.addEventListener('contextmenu', (event) => {
+        if (Sculpt.isActive()) event.preventDefault();
     });
 
     /*
@@ -2676,17 +2844,33 @@ function setupDragRotation() {
      * rather than leave the grid stuck on.
      */
     window.addEventListener('keydown', (event) => {
-        if (event.key !== 'Shift' || shiftHeld) return;
-        shiftHeld = true;
-        if (refreshGrid()) draw();
+        if (event.key === 'Shift' && !shiftHeld) {
+            shiftHeld = true;
+            if (Sculpt.setInvert(true)) paintSculptOverlay();
+            if (refreshGrid()) draw();
+        }
+        if (event.key === ' ' && !spaceHeld && !typingTarget(event.target)) {
+            spaceHeld = true;
+            event.preventDefault();
+        }
     });
     window.addEventListener('keyup', (event) => {
-        if (event.key !== 'Shift') return;
-        shiftHeld = false;
-        if (refreshGrid()) draw();
+        if (event.key === 'Shift') {
+            shiftHeld = false;
+            if (Sculpt.setInvert(false)) paintSculptOverlay();
+            if (refreshGrid()) draw();
+        }
+        if (event.key === ' ') spaceHeld = false;
     });
     window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
+            if (Sculpt.isLive()) {
+                Sculpt.cancelStroke();
+                sculpting = false;
+                refreshAfterSculpt();
+                paintSculptOverlay();
+                return;
+            }
             if (Measure.getPoints().length) {
                 Measure.clear();
                 paintMeasureOverlay();
@@ -2695,6 +2879,11 @@ function setupDragRotation() {
             if (TdOverlay.getPicked().length) {
                 TdOverlay.clearPicked();
                 draw();
+                return;
+            }
+            if (Sculpt.isActive()) {
+                Sculpt.setTool(null);
+                syncSculptUi();
                 return;
             }
             if (Measure.isActive()) {
@@ -2710,22 +2899,58 @@ function setupDragRotation() {
             if (Measure.popPoint()) paintMeasureOverlay();
             return;
         }
-        if ((event.key === 'm' || event.key === 'M') && !event.metaKey && !event.ctrlKey && !event.altKey) {
-            if (typingTarget(event.target)) return;
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        if (typingTarget(event.target)) return;
+        const key = event.key;
+        if (key === 'm' || key === 'M') {
             event.preventDefault();
+            if (Sculpt.isActive()) {
+                Sculpt.setTool(null);
+                syncSculptUi();
+            }
             Measure.setActive(!Measure.isActive());
             syncMeasureUi();
             paintMeasureOverlay();
+            return;
+        }
+        if (key === 'c' || key === 'C') {
+            event.preventDefault();
+            setSculptTool('coast');
+            return;
+        }
+        if (key === 'r' || key === 'R') {
+            event.preventDefault();
+            setSculptTool('relief');
+            return;
+        }
+        if (Sculpt.isActive() && (key === '[' || key === ']')) {
+            event.preventDefault();
+            if (Sculpt.nudgeRadius(key === ']' ? 1 : -1)) {
+                paintSculptOverlay();
+            }
+            return;
+        }
+        if (Sculpt.isActive() && (key === ',' || key === '.')) {
+            event.preventDefault();
+            if (Sculpt.nudgeStrength(key === '.' ? 1 : -1)) paintSculptOverlay();
         }
     });
     window.addEventListener('blur', () => {
+        spaceHeld = false;
         if (!shiftHeld) return;
         shiftHeld = false;
+        Sculpt.setInvert(false);
         if (refreshGrid()) draw();
     });
 
     canvas.addEventListener('wheel', (event) => {
         event.preventDefault();
+        if (Sculpt.isActive() && event.altKey) {
+            if (Sculpt.nudgeRadius(event.deltaY < 0 ? 1 : -1)) {
+                paintSculptOverlay();
+            }
+            return;
+        }
         setCurrentZoom(
             currentZoom() * Math.exp(-event.deltaY * 0.002),
             eventCanvasPoint(event, canvas),
@@ -3113,6 +3338,14 @@ Studio.mount(studio, {
     loadLayout,
     clearLayout,
     hasLayoutCache,
+    sculptUndo,
+    sculptRedo,
+    canSculptUndo: () => Sculpt.canUndo(),
+    canSculptRedo: () => Sculpt.canRedo(),
+    clearSculptHistory() {
+        Sculpt.clearHistory();
+        paintSculptOverlay();
+    },
     setTdCrops,
     enableTdCrops,
     startTdJobPoll,
@@ -3145,9 +3378,22 @@ setupDragRotation();
 document.querySelector('.north-compass')?.addEventListener('click', reorientNorth);
 document.querySelector('.view-reset')?.addEventListener('click', resetView);
 document.querySelector('.measure-toggle')?.addEventListener('click', () => {
+    if (Sculpt.isActive()) {
+        Sculpt.setTool(null);
+        syncSculptUi();
+    }
     Measure.setActive(!Measure.isActive());
     syncMeasureUi();
     paintMeasureOverlay();
+});
+for (const btn of document.querySelectorAll('.sculpt-toggle')) {
+    btn.addEventListener('click', () => setSculptTool(btn.dataset.tool));
+}
+document.querySelector('.sculpt-undo')?.addEventListener('click', () => {
+    if (sculptUndo()) markSculpted();
+});
+document.querySelector('.sculpt-redo')?.addEventListener('click', () => {
+    if (sculptRedo()) markSculpted();
 });
 restoreViewState();
 syncViewModeDom();

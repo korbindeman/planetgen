@@ -88,6 +88,10 @@ const TECTONICS = {
         microplateSpin:      p('1'),
         microplateSeparation: p('rad'),
         boundaryWarpScale:   p('1'),
+        marginToll:          p('1'),
+        siteToll:            p('rad'),
+        continentalDrag:     p('1'),
+        continentPlateMin:   p('frac'),
         plateGrowth:         p('/step'),
         plateReversion:      p('/step'),
         plateRetireArea:     p('frac'),
@@ -129,6 +133,8 @@ const TECTONICS = {
         gulfCut:        p('1'),
         bayCut:         p('1'),
         coastGrain:     p('1'),
+        coastOctave:    p('rad'),
+        shelfVary:      p('1'),
         cratonShatter:  p('1'),
         coastContrast:  p('1'),
         coastBlend:     p('count'),
@@ -288,8 +294,9 @@ const DETAIL = {
     },
 
     fluvial: {
-        /* How many stream-power steps the sketch runs. 0 is no fluvial
-         * texture; this grain cannot hold a real river network. */
+        /* How many fluvial passes the sketch runs. 0 is no drain tree
+         * and no valley ramps. This grain cannot hold a real river
+         * network. */
         hydraulicIters: p('index', [0, 12], 'Erosion steps'),
         streamK:        p('1'),
         streamM:        p('1'),
@@ -297,6 +304,10 @@ const DETAIL = {
         streamCap:      p('1'),
         depositFrac:    p('frac'),
         depositSlope:   p('1'),
+        lakeFillCapM:   p('m'),
+        inciseCapM:     p('m'),
+        inciseScaleM:   p('m'),
+        moisturePower:  p('1'),
     },
 
     thermal: {

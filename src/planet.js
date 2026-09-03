@@ -90,6 +90,48 @@ function buildQuadGeometry(mesh, {r_xyz, t_xyz, r_elevation, t_elevation, r_mois
     return {xyz, tm, I};
 }
 
+
+/* Rebuild colours and coast triangles after an authored stroke. xyz is
+ * the mesh and does not move. I does: a coast that crossed sea level
+ * has to switch valley/ridge. */
+function refreshQuadGeometry(mesh, map, geo) {
+    const {r_elevation, t_elevation, r_moisture, t_moisture, r_temperature, t_temperature} = map;
+    const {numSides, numRegions, numTriangles} = mesh;
+    const needTm = 3 * (numRegions + numTriangles);
+    const needI = 3 * numSides;
+    if (!geo || !geo.tm || geo.tm.length !== needTm || !geo.I || geo.I.length !== needI) {
+        return buildQuadGeometry(mesh, map);
+    }
+    const tm = geo.tm;
+    const I = geo.I;
+    let p = 0;
+    for (let r = 0; r < numRegions; r++) {
+        tm[p++] = r_elevation[r];
+        tm[p++] = r_moisture[r];
+        tm[p++] = r_temperature[r];
+    }
+    for (let t = 0; t < numTriangles; t++) {
+        tm[p++] = t_elevation[t];
+        tm[p++] = t_moisture[t];
+        tm[p++] = t_temperature[t];
+    }
+    let i = 0;
+    for (let s = 0; s < numSides; s++) {
+        const opposite_s = mesh.s_opposite_s(s);
+        const r1 = mesh.s_begin_r(s);
+        const r2 = mesh.s_begin_r(opposite_s);
+        const t1 = mesh.s_inner_t(s);
+        const t2 = mesh.s_inner_t(opposite_s);
+        const coast = r_elevation[r1] < 0.0 || r_elevation[r2] < 0.0;
+        if (coast) {
+            I[i++] = r1; I[i++] = numRegions + t2; I[i++] = numRegions + t1;
+        } else {
+            I[i++] = r1; I[i++] = r2; I[i++] = numRegions + t1;
+        }
+    }
+    return geo;
+}
+
 function plateCentroids(mesh, r_xyz, plates, r_plate) {
     const centroid = plates.map(() => [0, 0, 0]);
     for (let r = 0; r < mesh.numRegions; r++) {
@@ -721,6 +763,7 @@ module.exports = {
     generatePlanet,
     generateTriangleCenters,
     buildQuadGeometry,
+    refreshQuadGeometry,
     buildOverlayColorTm,
     overlayColorForRegion,
     crustColorForRegion,

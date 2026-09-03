@@ -89,7 +89,11 @@ the sea-level contour of a continuous elevation field. That field is
 built from crustal thickness and sea-floor age, then relaxed across the
 margin (`coastBlend`). Crust type is seeded from cratons placed
 independently of the plate partition. As a result, a plate can carry a
-continent and an ocean at once.
+continent and an ocean at once. The one place a plate does shape a
+coast is a marginal sea: a small plate under extension has its crust
+thinned by hops in from its edge, so the shoreline is still a contour
+of a continuous field, a cell or two inside the boundary, and the arc
+on its trench side is the boundary itself, as the Antilles are.
 
 Do not:
 
@@ -100,6 +104,8 @@ Do not:
   percolation threshold. That produces stringy maze-like land spread
   evenly over the sphere. No seed escapes it. This was measured.
 - Floor continental plates or flatten ocean basins to a constant depth.
+- Move a coast by rewriting plate ownership or a crust mask. Sculpt
+  writes the metres field. The coastline is still the sea-level contour.
 - Call `Math.max(elevation, …)` on a plate or a cell.
 - Widen `coastBlend`. A wide blend averages a margin against the abyssal
   plain and drowns it.
@@ -122,16 +128,28 @@ Do not:
 - Grow continent blocks away from the mass as a chain. That walk made
   sausages. Extra pieces hang off the shield. A satellite is one
   offshore fragment, not a chain.
+- Seed the plates blind. The partition is fitted to the still: a major
+  on each big continent, a toll on crossing a coast, minors born in the
+  ocean, continental plates slowed. Unfitted, boundaries wandered
+  through shields, the run's belts landed in interiors, and the story
+  had to be composed from distance to the shoreline instead.
+- Paint a belt by distance from the shoreline. A belt is placed by a
+  boundary and sized by its closing speed. The coast-offset profile made
+  every continent a flat plate with one raised rim, the same on every
+  seed, and no plateau, rift, or interior range could exist.
+- Let a belt shape run past a few cells. The first boundary-placed
+  pass used collision widths up to twelve cells and a crest of 1.3.
+  Every continent went white. The Andes are two to four cells at this
+  grain; Tibet is six to eight.
 
-**Per-cell fields belong to their mesh.** `boundaryWarp` and the crust
-arrays are one value per cell. A cached field is valid only for the mesh
-it was built for. `simulateTectonics` stamps `map.tectonicFieldsFor`
-with the region count and seed, and rebuilds when that changes. Without
-that stamp, a caller that keeps one `map` across regenerations indexes
-the wrong mesh. The browser does this. It indexes a 10k field with a
-40k mesh, reads undefined, and hands NaN weights to the ownership pass.
-The planet collapses to two or three plates. That collapse happens only
-after the mesh size changes. The headless scripts never see it.
+**Per-cell fields belong to their mesh and their crust.** `boundaryWarp`
+and the crust arrays are one value per cell. `simulateTectonics` rebuilds
+the warp on every run, from this mesh and this birth crust, and never
+reuses one from a previous run. A field from a previous mesh indexed
+with this one reads undefined and hands NaN weights to the ownership
+pass. The planet collapses to two or three plates. The browser used to
+hit that after a mesh-size change. A field from a previous crust tolls
+the wrong coasts.
 
 ## How it works today
 
@@ -149,13 +167,31 @@ distribution want less than one site each and end up with none. Sites
 are handed to plates by a **capacity-constrained assignment** — nearest
 pairs first, each plate taking exactly its quota.
 
+**The partition is fitted to the still.** The birth crust is planned
+first (`planCrust`) and handed to `generatePlates`. Each birth continent
+above `continentPlateMin` gets a major nucleus at its centre and the
+largest share, largest continent first. At least one major stays
+oceanic, two when there are four or more, so the empty ocean has a
+ridge of its own. A site on the other crust type pays `siteToll` to join
+a nucleus, so a continent's sites stay with the plate that carries it.
+In the ownership Dijkstra a step across a coast costs `marginToll` times
+a step over ocean or interior, so a front arriving from the ocean stops
+at the shore instead of pushing through the shield. A plate whose sites
+mostly stand on continent turns at `continentalDrag` of a normal plate,
+and a plate born from it inherits that: the still does not move, and a
+plate that turned 70° over the run would leave its continent behind.
+The Earth fixture builds its plates from Bird 2003 outlines and skips
+all of this.
+
 **Majors and minors are not seeded alike.** The majors tile the sphere
 between them. The minors are then carved out of the boundaries between
 majors. Each minor is born at the midpoint of a tight cross-plate site
-pair. It prefers margins where the majors converge. Its sites are
-gathered with a stretch along the boundary (`microplateElongation`). The
-result is a sliver hugging the margin, the way the Caribbean, Cocos and
-Scotia do. If every plate is seeded from a free-standing nucleus
+pair. It prefers oceanic pairs, then margins where the majors converge,
+and takes land sites last: Cocos, Juan de Fuca, Scotia and the
+Philippine Sea are oceanic, and a minor carved out of a shield is a
+boundary through it. Its sites are gathered with a stretch along the
+boundary (`microplateElongation`). The result is a sliver hugging the
+margin, the way the Caribbean, Cocos and Scotia do. If every plate is seeded from a free-standing nucleus
 instead, minors drop into the middle of majors. There they sit as
 single-neighbour enclaves. Earth has no enclave plates. This model has
 none either: `absorbEnclaves` hands any plate whose whole edge touches
@@ -211,12 +247,24 @@ belt. A global bisection rescales the plan to the target continental
 area. The Earth fixture authors its blocks and basins directly and
 zeroes `sutures`.
 
+Below the cuts the margin carries a **cell octave** (`coastOctave`):
+two octaves of noise at four and two cells, added to the distance
+field from the shoreline out to the rim, in radians so an island gets
+the same headlands as a shield. It makes coves, headlands and the odd
+shelf island. It is additive on a smooth field, so it cannot string a
+coast out. `shelfVary` swings the shelf width by region, one margin
+drowned wide and another a cliff. The silhouettes stay the still's.
+
 The run does not redraw those coasts. Matching coasts from a rift are
 a later trial.
 
-Interiors are *flat*: a coastal plain climbs to a platform at
-`crustReferenceKm` (~650 m via isostasy) and stays there. Relief on
-land is the composed belts, not a dome from core to coast.
+Interiors start *flat*: a coastal plain climbs to a platform at
+`crustReferenceKm` (~650 m via isostasy). Relief on land is the
+composed belts, not a dome from core to coast. After the belts are
+painted, a load pass thins the column inland of the orogen: a
+foredeep next to the chain, then a decay with hops from the belt so
+a large shield is a gradient, not a second table. A large mass with
+no active margin still gets a worn orogen on its most open coast.
 
 **4. Simulation.** The crust is the state: type, age, thickness, orogeny,
 arc. Each step the plates turn, ownership is rebuilt from the sites, and
@@ -234,12 +282,52 @@ thickness each step it touches a rift also fails: half the continental
 crust ends up too deep to be land.
 
 After the run, `composeTectonicStory` replaces land orogeny and ocean
-arcs. The Voronoi edge that last sat on frozen land is not a coast, so
-the run's belts were interior patches. The story uses Earth's kinds of
-rule: a chain on the Pacific-facing coast, a passive back, a collision
-belt where two masses huddle, an island arc in the empty ocean, an arc
-across the mouth of a small sea. The Earth fixture does not run this
-pass. It paints from authored plate margins.
+arcs. The run's own orogeny accumulated wherever a boundary swept,
+which is a smear, not a belt. The story is authored shapes placed by
+the boundaries the run ended with. Every coast within two cells of a
+boundary on its own plate's edge is a **margin**: convergent facing
+ocean is *active*, convergent facing a mass of another plate's land is
+a *collision*, divergent is *rifted*, strike-slip is *transform*. A
+boundary through land is the axis of the same kinds. Nothing within
+reach is a *passive* margin. Each margin gets one strength: the mean
+closing speed along that stretch against the typical plate speed.
+
+Before any belt, **marginal seas**: a plate of 20 cells to 6% of the
+sphere, mostly land, touching two or more plates and the ocean, either
+born as a back-arc sliver or with at least 45% of its edge divergent or
+transform, is drowned. Landlocked ones are left alone: drowned, they
+were the round interior ponds this stage already calls a fail. Its
+crust thins with hops in from its edge, to about 1.6 km below sea
+level in the middle. Its own coastline at birth, the rim that faced
+water, becomes young oceanic arc crust carrying a full-strength arc: a
+slow noise along it leaves runs of islands and straits between them,
+so the sea opens to the ocean through the arc. Put on the landward
+edge, the arc fused into a peninsula; as a continental ribbon one cell
+wide it was averaged into the basin and never surfaced. That is the
+Sea of Japan behind Japan and the Caribbean inside the Antilles. A
+small plate under compression stays land and gets belts instead, as
+Anatolia does.
+Land, for everything after this, is continental crust standing above
+sea level, not the shelf and not a drowned basin.
+
+The shapes, in cells from the seed: an active margin is a chain that
+crests one cell in and decays over two to four cells, wider and higher
+for a fast trench. A collision crests, holds a plateau for half its
+width, then decays, with a thick root under it. A rift is a valley on
+the axis with shoulders either side; from the coast the sea runs in
+along the axis, five cells for a slow rift and ten for a fast one, so a
+rift across a narrow mass is a seaway. A transform is a low fault range. A
+passive margin stands up as an escarpment where the floor off it is
+young, worn down where it is old, and a slow noise leaves some
+stretches as plain. Strike follows the coast or the boundary. Then a
+worn belt on old welds, a residual orogen on a large mass that has no
+front at all, a flexural load inland of every belt, and a slow swell of
+a few hundred metres over quiet interiors. Inland fill walks land only.
+Hopping through water painted the same profile on the far shore of a
+seaway. In the ocean, an island arc goes on the young side of every
+ocean-ocean trench the run left away from land, and the geodesic arc
+in the empty ocean is drawn only when the run left none. The Earth
+fixture does not run this pass. It paints from authored plate margins.
 
 A plate cut in two by its neighbours is not a bug to patch. The main
 body keeps the name. A piece big enough stands up as a new plate with
@@ -264,6 +352,12 @@ land-fraction dial. It stands for how much water the planet has. It is
 separate from `crustReferenceKm`, the thickness that undisturbed crust
 relaxes towards.
 
+**Sculpt** writes the live metres field. The brush is a screen disk.
+**Coast** grows or eats land at the sea-level contour. The new shore
+stays jagged. **Relief** paints the local high or the local low. The
+target comes from the neighbourhood. They do not stamp a plate
+outline. Regenerate replaces the field. Save writes the live maps.
+
 ### The 1843 path
 
 The original distance-field blend (`findCollisions` +
@@ -280,12 +374,36 @@ default. `mergeOceanPlates` only applies on the 1843 path.
 
 ## Open
 
-- **Composed tectonic story, judged from relief and climate sheets.**
-  Belts and arcs are authored after the run (`composeTectonicStory`).
-  A pass is a coastal chain on the ocean-facing side, a quieter back,
-  a collision where masses huddle, and an island arc in the empty
-  ocean. A fail is interior mountain blobs, or every coast a range.
-  Matching coasts from a rift are not this trial.
+- **Boundary-placed story, judged from the relief sheet with
+  `--no-detail`.** Belts are authored shapes placed by the run's final
+  boundaries and sized by closing speed (`composeTectonicStory`). A pass
+  is a coastal range where the crust view draws a trench, a plateau
+  where two masses meet, a flooded rift where continental crust
+  diverges near a coast, a marginal sea with an arc where a small plate
+  sits under extension, a quieter back that sits lower, and continents
+  that differ from one another. A fail is a pancake shield of one
+  height, every coast a range, a lattice of ranges over a whole mass,
+  or a small plate that only adds mountains where it should have opened
+  a sea. Matching coasts from a rift are not this trial.
+- **Boundaries through land.** Minors are born in the ocean and
+  continental plates are slowed, but sites still drift and pieces still
+  stand up, so some seeds carry a lattice of interior ranges where
+  three or four plates meet on one mass. Judge on `sheet
+  --overlay=plates --no-detail`: mostly one colour per continent is a
+  pass. Not measured yet: how many land cells sit within two hops of a
+  boundary, per seed.
+- **Old oceans.** Median floor age is ~170 Myr against Earth's ~60, so
+  the abyss reads as one dark plain and ridges are rare in the crust
+  view. Two oceanic majors help. What would furnish the ocean is a
+  ridge the empty ocean keeps for the whole run.
+- **Polar continents.** Seven of twelve seeds put a land cap on a
+  pole, and `polarStraits` then cuts the cap off as scattered flecks
+  rather than a seaway. A placement bias away from the poles, or a
+  strait that is one connected cut, is a trial.
+- **The cell octave is texture, not features.** At 0.08 rad it makes
+  coves and headlands of one or two cells. Peninsulas and gulfs of
+  three to eight cells are the still's blocks and the story's rifts and
+  forelands, not more noise.
 - **Composed stills.** Continents are a shield plus pieces, then join
   cuts between huddled masses. The run stamps that plan back each
   step. Round ponds in the interior are still a fail.
@@ -311,6 +429,8 @@ bun run preview crust     # sea-floor age, orogeny, boundary types
 bun run preview relief    # hypsometric tint and hillshade — belts
 bun run sheet             # twelve seeds at once
 bun run sheet --overlay=relief
+bun run sheet --overlay=relief --no-detail   # Layout's own field, no Shape on top
+bun run sheet --overlay=plates --no-detail   # do boundaries hug coasts? one plate per continent?
 bun run sheet --view=globe
 ```
 

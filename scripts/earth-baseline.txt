@@ -18,22 +18,22 @@ plates 16  areas: 20.8 13.7 11.6 11.5 10.9 9.8 8.5 3.7 3.2 2.5
     Scotia             0.38%
     Juan de Fuca       0.04%
   top1 21%  top3 46%  top7 87%
-  land 32.4%  continental crust 41.0% (27% of it submerged)
-  sea floor age median 27 max 180 Myr
-  ocean depth p10 2042 median 3412 p90 5194 m
+  land 31.8%  continental crust 41.0% (29% of it submerged)
+  sea floor age median 26 max 180 Myr
+  ocean depth p10 1798 median 3350 p90 4866 m
   above 2000 m: 3.2% of surface
   raggedness 1.18 (1.0 = straight arcs)  pieces per plate 1.00  enclaves 0
   boundaries  convergent 39%  divergent 50%  transform 11%
 
 === mean over 1 seeds ===
-  land %                      32.4   Earth 29
+  land %                      31.8   Earth 29
   continental crust %         41.0   Earth 41
-  continental submerged %     26.5   Earth 30
+  continental submerged %     28.6   Earth 30
   plate top-1 %               20.8   Earth 20
   plate top-3 %               46.1   Earth 49
   plate top-7 %               86.9   Earth 90
   sea floor max age          180.0   Earth 180
-  ocean depth median m      3411.7   Earth ~4000
+  ocean depth median m      3350.0   Earth ~4000
   surface above 2000 m %       3.2   Earth ~5
   plate count                 16.0   Earth ~15 major+minor
   boundary raggedness          1.2   Earth 1.0 = as straight as this mesh allows (floor 2.15 raw)

@@ -67,8 +67,8 @@ route at 1 km and make those rivers law for the 90 m residual.
 → [docs/stages/carve-hydrology.md](docs/stages/carve-hydrology.md),
 [docs/custom-model.md](docs/custom-model.md)
 _Avoid_: Calling the Finish stage this; treating it as Shape's erosion
-run again; putting rivers before the 90 m pass while terrain-diffusion
-is the bake
+run again; calling Shape's drain tree this; putting rivers before the
+90 m pass while terrain-diffusion is the bake
 
 **Export**:
 The sparse residual pyramid the game installs. Not the bake.
@@ -247,7 +247,26 @@ How tight a **variant**'s **ranges** are versus the vouched intervals.
 Read it off the stored box; do not store a separate score.
 _Avoid_: Fitness, generation count, search depth
 
+**Sculpt**:
+HUD tools that edit the live globe on Layout or Shape. The brush is a
+screen disk: the same pixel size at every zoom. The tools are **Coast**
+and **Relief**. A stroke undoes on its own. Save writes the fields.
+_Avoid_: Terrain editor, paint mode, brush (as the product name)
+
+**Coast**:
+Coastline sculpt tool. Drag grows land. Shift eats land. The new shore
+stays jagged. The coastline is still the sea-level contour.
+_Avoid_: Coastline brush, shore tool, land brush
+
+**Relief**:
+Relief sculpt tool. Drag paints the local high. Shift paints the local
+low. Works on land and under water. The target comes from the
+neighbourhood, not a fixed height.
+_Avoid_: Raise, mountain brush, height stamp
+
 ## Flagged ambiguities
+
+**Relief** is two keys. The look is the hypsometric globe. The sculpt tool paints the local high or the local low. Do not say "open Relief" when you mean the brush.
 
 **Seed** is two keys. **Layout seed** is the planet identity. **Shape seed** is coasts. A variant includes both and is more than a seed. Do not say "save this seed" when you mean save a variant.
 

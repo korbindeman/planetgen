@@ -17,7 +17,7 @@ failure.
 1. Capture. `bun run preview` writes **globe and equirect**. Use `globe` or
    `equirect` only when iterating on that projection. Shift the map with
    `bun run preview equirect --lon=90`. Overlays: `bun run preview plates`
-   (also `crust`, `climate`, `relief`).
+   (also `crust`, `climate`, `drainage`, `relief`).
 2. Read the **compare** sheet if it exists, otherwise the latest capture.
 3. Crop in when the feature is small on the full frame — a coast, a belt, a
    plate edge, a rain shadow. Whole-planet shots hide local shape.
@@ -33,6 +33,7 @@ one. Use `bun run sheet` when judging how a change reads across seeds.
 | globe | `preview/thalos/compare.png` or `preview/thalos/planet.png` | 3D relief, lighting, land on the sphere, polar caps, mesh/camera. 2×2 of longitudes 0° / 90° / 180° / 270°. |
 | equirect | `preview/thalos/equirect-compare.png` or `preview/thalos/equirect.png` | Whole-world layout, continent arrangement, wrap, climate belts, ice bands. |
 | plates | `preview/thalos/plates-compare.png` / `preview/thalos/plates.png` and the equirect pair | Plate shapes, mixed land/ocean on a plate (darker = underwater), motion arrows. |
+| drainage | `preview/thalos/drainage-compare.png` / `preview/thalos/drainage.png` and the equirect pair | Log discharge. Use when judging the Shape drain tree: trunks to the sea, lakes in basins. |
 | relief | `preview/thalos/relief-compare.png` / `preview/thalos/relief.png` and the equirect pair | Hypsometric tint + hillshade. Use when judging elevation: belts, coasts, basin depth. |
 
 Read **both** globe and equirect after geography, climate, or colormap

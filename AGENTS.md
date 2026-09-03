@@ -46,6 +46,7 @@ bun run preview                 # globe 2x2 + equirect — start here
 bun run preview plates          # plate shapes and motion
 bun run preview crust           # ridges, trenches, sea-floor age
 bun run preview climate         # the moisture field on its own
+bun run preview drainage        # log discharge on land — trunks to the sea
 bun run preview relief          # hypsometric tint and hillshade
 bun run preview equirect --lon=90
 bun run preview --no-tectonics  # the 1843 blend, for comparison
@@ -63,6 +64,7 @@ Then read the **compare** sheet for that view if it exists, otherwise the latest
 | **plates** | `plates.png`, `equirect-plates.png` (+ `-compare`) | One colour per plate, darker = underwater, named, motion arrows, age | Plate size and shape, mixed land/ocean on a plate, relative motion |
 | **crust** | `crust.png`, `equirect-crust.png` (+ `-compare`) | Sea floor pale = young to dark = old; land red = orogeny; orange ridge, cyan trench, yellow transform | What the simulation is actually doing |
 | **climate** | `climate.png`, `equirect-climate.png` (+ `-compare`) | Moisture alone: sand arid → teal saturated | Judging moisture. Biome colours compress the middle, so a real change can look like none |
+| **drainage** | `drainage.png`, `equirect-drainage.png` (+ `-compare`) | Log discharge on land. Sand = headwater, teal = trunk | Judging the Shape drain tree. Relief still judges height |
 | **relief** | `relief.png`, `equirect-relief.png` (+ `-compare`) | Hypsometric tint + hillshade | Judging elevation. Surface biomes hide belts and basin shape |
 
 Read **both** globe and equirect after a geography, climate or colormap change. After a plate or plate-motion change, read **both plate captures**. After a change to the simulation itself, read `crust`. A globe hides the far side; an equirect hides how the same land looks as a planet. For lighting, camera or mesh work, globe is enough.

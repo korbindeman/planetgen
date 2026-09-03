@@ -59,10 +59,10 @@ const DEFAULTS = {
     ridgeWarpAmp: 0.006,          // unit-sphere; ~38 km of phase meander
     ridgeWarpOctaves: 5,
 
-    /* First-stage erosion. Grain on a ~50 km cell, not a fjord map.
+    /* First-stage erosion. Grain on a ~23 km cell, not a fjord map.
      * A real Norwegian fjord is 1–6 km across, so one drowned coastal
-     * cell is the whole feature. Catchment-scaled amplitudes cut
-     * hundred-cell canyons and read as a drainage diagram. */
+     * cell is the whole feature. Routing cuts shallow ramps along the
+     * drain tree so the model sees valleys. */
     hydraulicIters: 6,
     streamK: 0.0012,
     streamM: 0.5,
@@ -98,6 +98,10 @@ const DEFAULTS = {
     glacialFjordIceMin: 0.25,
     glacialSmooth: 0.22,
     fjordFloorM: -55,             // drowned coasts, not abyssal trenches
+    lakeFillCapM: 100,
+    inciseCapM: 72,
+    inciseScaleM: 36,
+    moisturePower: 1,
     floodCarve: 0.18,
     floodMidFrac: 0.75,
     floodMidCarve: 0.28,
@@ -825,10 +829,14 @@ function applyErosionPass(detailMesh, detailXyz, map, seed, options) {
     const meters = map.r_meters;
     const r_elevation = map.r_elevation;
     const r_temperature = map.r_temperature;
-    Erosion.applyErosion(
-        detailMesh, detailXyz, meters, r_temperature,
+    const routing = Erosion.applyErosion(
+        detailMesh, detailXyz, meters, r_temperature, map.r_moisture,
         map.r_orogeny, map.r_arc, seed,
         Object.assign({}, opts, {noiseFreq: noiseFrequency(opts.noiseWavelengthKm, opts)}));
+    if (routing) {
+        map.r_drainTo = routing.drainTo;
+        map.r_discharge = routing.discharge;
+    }
     for (let r = 0; r < detailMesh.numRegions; r++) {
         const prevElev = r_elevation[r];
         r_elevation[r] = Tectonics.metersToElevation(meters[r]);

@@ -34,6 +34,7 @@
         "check:tiles": "bun ./scripts/check-tiles.mjs",
         "check:td": "bun ./scripts/check-td-overlay.mjs",
         "check:measure": "bun ./scripts/check-measure.mjs",
+        "check:sculpt": "bun ./scripts/check-sculpt.mjs",
         "check:pipeline": "bun ./scripts/check-pipeline.mjs",
         "check:docs": "bun ./scripts/check-docs.mjs"
     }

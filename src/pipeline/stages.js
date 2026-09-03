@@ -34,8 +34,12 @@ function tectonics(planet, cache) {
         }, tectOpts, config.options.fixture));
         map.plate_is_ocean = Planet.oceanicPlates(mesh, map);
     } else {
-        Object.assign(map, Tectonics.generatePlates(
-            mesh, seed, Object.assign({plates: tectOpts.plates}, tectOpts)));
+        const plateOpts = Object.assign({plates: tectOpts.plates}, tectOpts);
+        if (config.simulateTectonics) {
+            /* the still first, so the plates are fitted to it */
+            plateOpts.birthCrust = Tectonics.planCrust(mesh, map.r_xyz, seed, tectOpts);
+        }
+        Object.assign(map, Tectonics.generatePlates(mesh, seed, plateOpts));
         if (config.simulateTectonics) {
             Tectonics.simulateTectonics(mesh, map, seed, Object.assign({
                 steps: tectOpts.steps,

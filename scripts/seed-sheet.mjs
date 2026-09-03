@@ -11,6 +11,7 @@
  *   bun run sheet --overlay=relief
  *   bun run sheet --project=earth
  *   bun run sheet --no-tectonics
+ *   bun run sheet --no-detail          Layout alone: no Shape pass on top
  *
  * Writes preview/<project>/seed-sheet.png.
  */
@@ -50,6 +51,7 @@ console.log(`${project}: ${Object.keys(pins).length} pinned`);
 const view = args.view ?? "equirect";
 const overlay = args.overlay ?? null;
 const noTectonics = "no-tectonics" in args;
+const noDetail = "no-detail" in args;
 const count = Number(args.count ?? 12);
 const from = Number(args.from ?? 1);
 const seeds = args.seeds
@@ -63,7 +65,7 @@ for (const seed of seeds) {
     simulateTectonics: !noTectonics,
     project,
     values: pins,
-    detailPass: true,
+    detailPass: !noDetail,
   });
   const png = view === "globe"
     ? Render.captureGlobe(planet, { overlay })

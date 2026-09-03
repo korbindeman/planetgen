@@ -1283,6 +1283,7 @@
       }
       body.search-mode .globe,
       body.search-mode .look-bar,
+      body.search-mode .look-view,
       body.search-mode .globe-hud { display: none; }
       #search-sheet {
         display: none;
@@ -1485,35 +1486,54 @@
       }
       /* Window chrome, not sidebar widgets. Lives on the figure so it
          stays in the viewport even when the globe is letterboxed. */
-      .look-bar {
+      .look-bar,
+      .look-view {
         position: absolute;
         top: 0.7rem;
-        left: 0.7rem;
         z-index: 2;
         display: flex;
+        gap: 0.4rem;
+        pointer-events: none;
+        line-height: normal;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+      }
+      .look-bar {
+        left: 0.7rem;
         flex-direction: column;
-        gap: 2px;
+        align-items: flex-start;
         width: max-content;
         max-width: calc(100% - 1.4rem);
+      }
+      .look-view {
+        right: 0.7rem;
+      }
+      .look-row,
+      .look-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 0.4rem;
+      }
+      .look-tools[hidden] {
+        display: none;
+      }
+      .look-card {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px;
         padding: 2px;
         border-radius: 8px;
+        pointer-events: auto;
         color: #2a2e36;
         background: rgba(255, 255, 255, 0.92);
         box-shadow:
           0 0 0 1px rgba(0, 0, 0, 0.08),
           0 1px 2px rgba(0, 0, 0, 0.12),
           0 6px 16px rgba(0, 0, 0, 0.14);
-        pointer-events: auto;
-        line-height: normal;
-        user-select: none;
-        -webkit-font-smoothing: antialiased;
       }
-      .look-bar .row { margin-bottom: 0; }
-      .look-bar .row + .row {
-        padding-top: 2px;
-        box-shadow: 0 -1px 0 rgba(0, 0, 0, 0.08);
-      }
-      .look-bar button {
+      .look-card button {
         appearance: none;
         margin: 0;
         padding: 0.22rem 0.45rem;
@@ -1529,74 +1549,41 @@
         transition-duration: 150ms;
         transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
       }
-      .look-bar button[aria-pressed="true"] {
+      .look-card button[aria-pressed="true"] {
         font-weight: 650;
         background: #fff;
         box-shadow:
           0 0 0 1px rgba(0, 0, 0, 0.08),
           0 1px 2px rgba(0, 0, 0, 0.08);
       }
-      .look-bar button:active {
+      .look-card button:active {
         transform: scale(0.96);
       }
-      .look-split {
-        width: 1px;
-        align-self: stretch;
-        margin: 3px 3px;
-        background: rgba(0, 0, 0, 0.08);
+      .look-card button:disabled {
+        opacity: 0.42;
+        cursor: default;
         pointer-events: none;
       }
-      .look-tools {
-        display: grid;
-        grid-template-rows: 0fr;
-        transition-property: grid-template-rows;
-        transition-duration: 180ms;
-        transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-      }
-      .look-tools.is-open {
-        grid-template-rows: 1fr;
-      }
-      .look-tools-inner {
-        overflow: hidden;
-        min-height: 0;
-      }
-      .look-tools.is-open .look-tools-inner {
-        padding-top: 2px;
-        box-shadow: 0 -1px 0 rgba(0, 0, 0, 0.08);
-      }
-      .look-paints,
-      .look-layers {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 2px;
-      }
-      .look-layers {
-        margin-left: 2px;
-        padding-left: 6px;
-        box-shadow: -1px 0 0 rgba(0, 0, 0, 0.08);
-      }
-      .look-bar :focus {
+      .look-card :focus {
         outline: none;
       }
-      .look-bar :focus-visible {
+      .look-card :focus-visible {
         outline: 2px solid currentColor;
         outline-offset: 2px;
       }
       @media (hover: hover) and (pointer: fine) {
-        .look-bar button:hover {
+        .look-card button:hover {
           background: rgba(0, 0, 0, 0.05);
         }
-        .look-bar button[aria-pressed="true"]:hover {
+        .look-card button[aria-pressed="true"]:hover {
           background: #fff;
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        .look-bar button,
-        .look-tools {
+        .look-card button {
           transition-duration: 0ms;
         }
-        .look-bar button:active {
+        .look-card button:active {
           transform: none;
         }
       }
@@ -1609,12 +1596,19 @@
         user-select: none;
       }
       body.measuring #output,
-      body.measuring #output:active {
+      body.measuring #output:active,
+      body.sculpting #output,
+      body.sculpting #output:active {
         cursor: crosshair;
+      }
+      body.sculpting-orbit #output,
+      body.sculpting-orbit #output:active {
+        cursor: grabbing;
       }
       #plate-overlay,
       #td-overlay,
-      #measure-overlay {
+      #measure-overlay,
+      #sculpt-overlay {
         position: absolute;
         inset: 0;
         width: 100%;
@@ -1695,7 +1689,8 @@
         pointer-events: none;
       }
       .globe-hud-card,
-      .measure-readout {
+      .measure-readout,
+      .sculpt-readout {
         pointer-events: auto;
         color: #2a2e36;
         background: rgba(255, 255, 255, 0.92);
@@ -1759,29 +1754,70 @@
         font-size: 1.35rem;
         font-weight: 400;
       }
-      .measure-readout {
+      .measure-readout,
+      .sculpt-readout {
         min-width: 40px;
-        max-width: 12rem;
+        max-width: 13rem;
         padding: 0.4rem 0.55rem;
         border-radius: 8px;
         text-align: right;
         pointer-events: none;
         user-select: none;
       }
-      .measure-readout[hidden] { display: none; }
-      .measure-readout-value {
+      .sculpt-readout { pointer-events: auto; }
+      .measure-readout[hidden],
+      .sculpt-readout[hidden] { display: none; }
+      .measure-readout-value,
+      .sculpt-readout-value {
         display: block;
         font-weight: 650;
         font-variant-numeric: tabular-nums;
         text-wrap: balance;
       }
-      .measure-readout-value[hidden] { display: none; }
-      .measure-readout-hint {
+      .measure-readout-value[hidden],
+      .sculpt-readout-value[hidden] { display: none; }
+      .measure-readout-hint,
+      .sculpt-readout-hint {
         display: block;
         margin-top: 0.12rem;
         opacity: 0.48;
         font-size: 0.85em;
         text-wrap: pretty;
+      }
+      .sculpt-readout-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.25rem;
+        margin-top: 0.35rem;
+      }
+      .sculpt-readout-actions button {
+        position: relative;
+        padding: 0.15rem 0.45rem;
+        border: 0;
+        border-radius: 6px;
+        color: inherit;
+        background: transparent;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 650;
+        line-height: 1.4;
+        transition-property: transform, background-color;
+        transition-duration: 150ms;
+        transition-timing-function: var(--pg-ease-out);
+      }
+      .sculpt-readout-actions button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .sculpt-readout-actions button:focus {
+        outline: none;
+      }
+      .sculpt-readout-actions button:focus-visible {
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+      .sculpt-readout-actions button:active:not(:disabled) {
+        transform: scale(0.96);
       }
       @media (hover: hover) and (pointer: fine) {
         .globe-hud-btn:hover:not(:disabled) {
@@ -1790,12 +1826,16 @@
         .globe-hud-btn[aria-pressed="true"]:hover:not(:disabled) {
           background: #fff;
         }
+        .sculpt-readout-actions button:hover:not(:disabled) {
+          background: var(--pg-fill-hover);
+        }
       }
       @media (prefers-reduced-motion: reduce) {
         .globe-hud-btn {
           transition-duration: 0ms;
         }
-        .globe-hud-btn:active {
+        .globe-hud-btn:active,
+        .sculpt-readout-actions button:active {
           transform: none;
         }
       }
@@ -2438,33 +2478,34 @@
     <figure>
       <div id="explore-root"></div>
       <div class="look-bar">
-        <div class="row" role="group" aria-label="View">
+        <div class="look-row" id="draw-mode">
+          <div class="look-card" role="group" aria-label="Look">
+            <button type="button" data-action="draw" data-draw="quads">Surface</button>
+            <button type="button" data-action="draw" data-draw="relief" title="Hillshade relief">Relief</button>
+            <button type="button" data-action="draw" data-draw="climate" title="Moisture field">Climate</button>
+          </div>
+          <div class="look-card" role="group" aria-label="Plates">
+            <button type="button" data-action="draw" data-draw="plates">Plates</button>
+          </div>
+          <div class="look-card" role="group" aria-label="Tiles">
+            <button type="button" id="td-crops-toggle" data-action="td-crops" aria-pressed="false" disabled>Tiles</button>
+          </div>
+        </div>
+        <div class="look-tools" id="look-tools" hidden>
+          <div class="look-card look-tools-plates" role="group" aria-label="Plate paint">
+            <button type="button" data-action="plate-paint" data-paint="color" title="One colour per plate">Color</button>
+            <button type="button" data-action="plate-paint" data-paint="floor" title="Sea-floor age and boundary type">Floor</button>
+          </div>
+          <div class="look-card" role="group" aria-label="Plate layers">
+            <button type="button" data-action="plate-vectors" aria-pressed="true">Motion</button>
+            <button type="button" data-action="plate-boundaries" aria-pressed="true">Boundaries</button>
+          </div>
+        </div>
+      </div>
+      <div class="look-view">
+        <div class="look-card" role="group" aria-label="View">
           <button type="button" data-action="view" data-view="globe">Globe</button>
           <button type="button" data-action="view" data-view="equirect" aria-pressed="true">Map</button>
-        </div>
-        <div class="row" id="draw-mode" role="group" aria-label="Look">
-          <button type="button" data-action="draw" data-draw="quads">Surface</button>
-          <button type="button" data-action="draw" data-draw="relief" title="Hillshade relief">Relief</button>
-          <button type="button" data-action="draw" data-draw="climate" title="Moisture field">Climate</button>
-          <span class="look-split" aria-hidden="true"></span>
-          <button type="button" data-action="draw" data-draw="plates">Plates</button>
-        </div>
-        <div class="look-tools" id="look-tools">
-          <div class="look-tools-inner">
-            <div class="row look-tools-surface" hidden>
-              <button type="button" id="td-crops-toggle" data-action="td-crops" aria-pressed="false">Tiles</button>
-            </div>
-            <div class="row look-tools-plates" hidden>
-              <div class="look-paints" role="group" aria-label="Plate paint">
-                <button type="button" data-action="plate-paint" data-paint="color" title="One colour per plate">Color</button>
-                <button type="button" data-action="plate-paint" data-paint="floor" title="Sea-floor age and boundary type">Floor</button>
-              </div>
-              <div class="look-layers" role="group" aria-label="Plate layers">
-                <button type="button" data-action="plate-vectors" aria-pressed="true">Motion</button>
-                <button type="button" data-action="plate-boundaries" aria-pressed="true">Boundaries</button>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
       <div class="globe">
@@ -2472,11 +2513,28 @@
         <canvas id="td-overlay" width="2048" height="1024"></canvas>
         <canvas id="plate-overlay" width="2048" height="1024"></canvas>
         <canvas id="measure-overlay" width="2048" height="1024"></canvas>
+        <canvas id="sculpt-overlay" width="2048" height="1024"></canvas>
       </div>
       <div class="globe-hud">
         <div class="measure-readout" hidden>
           <span class="measure-readout-value" hidden></span>
           <span class="measure-readout-hint"></span>
+        </div>
+        <div class="sculpt-readout" hidden>
+          <span class="sculpt-readout-value" hidden></span>
+          <span class="sculpt-readout-hint"></span>
+          <div class="sculpt-readout-actions">
+            <button type="button" class="sculpt-undo" disabled>Undo</button>
+            <button type="button" class="sculpt-redo" disabled>Redo</button>
+          </div>
+        </div>
+        <div class="globe-hud-card" role="group" aria-label="Sculpt">
+          <button type="button" class="globe-hud-btn sculpt-toggle" data-tool="coast" title="Coast (C)" aria-label="Coast" aria-pressed="false">
+            <i data-icon="water" class="hud-icon" aria-hidden="true"></i>
+          </button>
+          <button type="button" class="globe-hud-btn sculpt-toggle" data-tool="relief" title="Relief (R)" aria-label="Relief" aria-pressed="false">
+            <i data-icon="mountain" class="hud-icon" aria-hidden="true"></i>
+          </button>
         </div>
         <div class="globe-hud-card" role="group" aria-label="Zoom">
           <button type="button" class="globe-hud-btn globe-hud-zoom" data-action="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>

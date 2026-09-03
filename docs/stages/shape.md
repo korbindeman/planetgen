@@ -16,8 +16,8 @@ terrain model later wants a different grain, change the shipped spacing.
 A feature here is **at least two cells**. One-cell cones are dropped.
 They wait for [Carve](carve-landforms.md).
 
-Mechanism in `src/detail.js` and `src/erosion.js`. The cached artifact is
-in `src/shape-artifact.js`.
+Mechanism in `src/detail.js`, `src/erosion.js`, and `src/route.js`. The
+cached artifact is in `src/shape-artifact.js`.
 
 ## Reads
 
@@ -59,6 +59,8 @@ The **sketch**: height plus the story maps, cached on the variant.
 | `r_orogenyDir`, `r_arcDir` | packed3 | carried through |
 | `r_crust_type`, `r_boundary` | u8 | carried through |
 | `r_plate` | i32 | carried through |
+| `r_drainTo` | i32 | optional. Receiver in the drain tree. `-1` at the ocean or a lake sink. Missing on sketches from before this field |
+| `r_discharge` | f32 | optional. Climate-weighted accumulation, km²-equivalent. Missing on sketches from before this field |
 
 **The sketch is not height alone.** Finish still needs the story maps.
 Carve stamps below this grain have nowhere to go without them. A doc or
@@ -95,9 +97,10 @@ The part that constrains Shape:
   too small for a cell stay a list. If they enter height,
   terrain-diffusion heals the cones and Carve has nothing to stamp.
 - **Do not finish coasts, river valleys or eroded slopes.** The sketch
-  stays a sketch. Terrain-diffusion redraws local shape anyway. Erosion
-  here is texture so the model sees valleys. It is not a drainage
-  network.
+  stays a sketch. Terrain-diffusion redraws local shape anyway. Routing
+  here is texture so the model sees valleys, plus a drain tree for
+  `bun run preview drainage`. It is not a river network. Do not cut
+  one-cell slots into `r_meters`. The tree must not enter height.
 - **Do not carve on Layout's ~113–226 km mesh.** Valleys would be
   hundreds of kilometres wide.
 - **Keep the largest warp amplitude below craton scale.** Past that, the
@@ -151,16 +154,23 @@ direction recorded at collision time. World Orogen infers an
 instantaneous stress field because it never integrates motion. This
 model has the actual kinematics.
 
-**E — first-stage erosion.** Priority-flood so every land cell drains to
-the sea, a few iterations of stream-power incision, talus/thermal
-diffusion, soil creep. Latitude- and elevation-gated ice flow on top.
-That ice flow is where drowned glaciated coasts come from. Detail noise
-is modulated per cell so quiet cratons stay subdued and active belts
-read rough.
+**E — first-stage erosion.** `src/route.js` floods from the world ocean
+so every land cell has a downhill receiver. Water reaches the sea or a
+real closed basin. Discharge is contributing area times a moisture
+factor from `r_moisture`. Incision then cuts a shallow ramp along the
+tree, only on the cell, and only where the drop is still shallower
+than a hydraulic target. Depressions deeper than the lake cap stay
+lakes. Talus/thermal diffusion and soil creep follow. Latitude- and
+elevation-gated ice flow on top. That ice flow is where drowned
+glaciated coasts come from. Detail noise is modulated per cell so
+quiet cratons stay subdued and active belts read rough. The pass
+writes `r_drainTo` and `r_discharge` on the sketch. Those fields are
+a preview of the later drain graph. Terrain-diffusion does not read
+them.
 
-Erosion is O(iterations × cells) with a sort per iteration. At ~1M cells
-it is the most expensive step in the generator. Bake-time cost, not
-interactive.
+Routing is one flood plus a light cut. Thermal and ice still iterate.
+At ~1M cells this remains the most expensive step in the generator.
+Bake-time cost, not interactive.
 
 Shape reuses the variant's layout. Plates and `climate.js` do **not**
 rerun when you Shape, shuffle the shape seed, or move a shape gene.
@@ -219,10 +229,13 @@ field. Layout already has the triples.
   high-latitude coasts. A cell is ~23 km. A real fjord is 1–6 km across.
   What you get is one drowned cell, not a Norway coast. Real fjords wait
   for [Carve](carve-landforms.md).
-- **Authored editing** — raising land, draining basins, hand edits to a
-  generated sketch. Implementation open. [World
-  Orogen](https://orogen.studio) already does this. Read that codebase
-  when we get to it. Same planet. Save is a new snapshot.
+- **Authored sculpt** — Coast and Relief write the live `r_meters`
+  field on this mesh and on Layout. The brush is a screen disk.
+  Coast grows or eats the sea-level contour and keeps the new shore
+  jagged. Relief paints the local high or the local low. The target
+  comes from the neighbourhood, not a fixed height. A stroke undoes
+  on its own. Save writes the fields onto the new snapshot. Smooth
+  and flatten are later tools. Do not edit plate outlines by hand.
 - **Supersample the DualMesh into the 23 km TIFF — recommended, not
   tried.** The 90 m model still reads one pixel per 23 km cell. A denser
   TIFF would mis-scale the prior. A finer Shape mesh, rasterized onto
@@ -243,11 +256,16 @@ The sketch is what the terrain model reads. Judge the **heightmap**, not
 the biome colours.
 
 ```sh
+bun run preview drainage  # log discharge on land — trunks should reach the sea
 bun run preview relief    # hypsometric tint + hillshade — belts and basin shape
 bun run preview --earth   # Earth fixture: coasts and shelf islands
 bun run preview           # globe + equirect
 bun run crop preview/thalos/equirect.png --x=800 --y=200 --w=600 --h=400
 ```
+
+Judge the drain tree from `drainage`. Trunks must reach the sea. Lakes
+only in closed basins. Judge height from `relief`. Belts stay ramps.
+Fail if coasts gain 23 km canals or one-cell slots.
 
 After any change to the warp or the ridges, read `bun run preview crust`.
 A warp that is large enough to be interesting can shear the tectonic

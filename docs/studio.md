@@ -77,11 +77,14 @@ here.
 The workspace shell is always: back to projects, the project name,
 **Save**, and **Variants**. The globe and look stay on the canvas. Workspace chrome is Preact; the
 canvases and generator are not.
-The look bar is Surface, Relief, Climate, then Plates. Climate is the
-moisture field on the same shaded globe as Surface. Plates opens Color
-or Floor, plus Motion and Boundaries. Floor hides Boundaries. Tiles
-appear on Surface after Shape.
+The look bar is separate cards on the top left: Surface, Relief, and
+Climate; then Plates; then Tiles. Globe or Map sits on the top right.
+Climate is the moisture field on the same shaded globe as Surface. A
+second row of cards holds tools for the current look. Plates opens
+Color or Floor, plus Motion and Boundaries. Floor hides Boundaries.
+The other looks have no tools yet. Tiles stays off until Shape.
 **Measure** is a HUD tool. Click two points for the great-circle distance in kilometres. Click again to add a leg. Escape clears.
+**Sculpt** is a HUD tool on Layout and on Shape. The brush is a screen disk: the same pixel size at every zoom. **Coast** grows or eats land at the sea-level contour. The new shore stays jagged. **Relief** paints the local high, or the local low with Shift. The target comes from the neighbourhood, not a fixed height. Relief works on land and under water. A stroke undoes on its own (`⌘Z`). Save writes the live fields. Right-drag or Space-drag still turns the globe.
 **Save** is a shell action on the working planet, not a control inside
 the tree. The name field next to it shows the active variant. Save
 continues that name. Change the name and Save starts another variant,
@@ -89,7 +92,8 @@ keeping the ranges you were on. Save never opens **Variants**. Layout's panel is
 tectonics genes, `climate.js` genes, and Explore. Advanced folds
 on Layout only: mesh `N`, shape spacing, jitter, the 1843 toggles —
 shipped values, not genes. Shape's panel is the shape seed, shape genes
-(warp, ridges, erosion, ice), and preview tiles.
+(warp, ridges, erosion, ice), and preview tiles. Sculpt lives on the
+globe HUD, not in the panel.
 
 **Explore** covers the globe with a sheet. The shell stays. Layout's
 panel becomes next / back / Done and the range readout. Done returns to

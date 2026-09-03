@@ -57,6 +57,7 @@ function createSession(startup) {
         pipelineShapeBusy: false,
         pipelineLayoutBusy: false,
         layoutBackfill: false,
+        sculpted: false,
         host: null,
         ui: {
             variantsOpen: false,
@@ -432,6 +433,7 @@ async function shapeVariant(session, opts) {
 
 async function regenerateShape(session) {
     if (!session.host || !session.host.runShape) return;
+    resetSculpt(session);
     await shapeVariant(session, {regenerate: true});
 }
 
@@ -444,6 +446,7 @@ async function regenerateLayout(session) {
     try {
         forgetLayoutCache(session);
         if (session.host.clearShape) session.host.clearShape();
+        resetSculpt(session);
         session.host.generateMesh();
         if (canPersistLayout(session)) {
             const payload = session.host.captureLayout && session.host.captureLayout();
@@ -608,6 +611,7 @@ function commitSeed(session, next) {
         session.seedHistory = session.seedHistory.slice(session.seedHistory.length - SEED_HISTORY_MAX);
     }
     session.seedHistoryIndex = session.seedHistory.length - 1;
+    resetSculpt(session);
     forgetLayoutCache(session);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
@@ -666,6 +670,7 @@ function undoSeed(session) {
     if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
     if (session.host && session.host.clearShape) session.host.clearShape();
+    resetSculpt(session);
     forgetLayoutCache(session);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
@@ -679,6 +684,7 @@ function redoSeed(session) {
     if (session.variant) session.discovery = true;
     applySeed(session, session.seedHistory[session.seedHistoryIndex]);
     if (session.host && session.host.clearShape) session.host.clearShape();
+    resetSculpt(session);
     forgetLayoutCache(session);
     session.host.generateMesh();
     syncSeedHistoryButtons(session);
@@ -1140,7 +1146,28 @@ function variantLabel(list, variant) {
 
 
 function isWorkingDirty(session) {
+    if (session.sculpted) return true;
     return Variants.dirty(workingVariant(session), session.variant);
+}
+
+
+function markSculpted(session) {
+    session.sculpted = true;
+    session.projectModified = true;
+    paint(session);
+}
+
+
+function syncSculptDirty(session, dirty) {
+    session.sculpted = !!dirty;
+    if (dirty) session.projectModified = true;
+    paint(session);
+}
+
+
+function resetSculpt(session) {
+    session.sculpted = false;
+    if (session.host && session.host.clearSculptHistory) session.host.clearSculptHistory();
 }
 
 
@@ -1249,16 +1276,12 @@ function syncModeButtons(session) {
 
     const shaped = !!(host.isShaped && host.isShaped());
     const tiles = document.getElementById('td-crops-toggle');
-    const surfaceTools = document.querySelector('.look-tools-surface');
-    const platesTools = document.querySelector('.look-tools-plates');
     const tools = document.getElementById('look-tools');
-    if (surfaceTools) surfaceTools.hidden = !(drawMode === 'quads' && shaped);
-    if (platesTools) platesTools.hidden = !platesOn;
-    if (tiles) tiles.setAttribute('aria-pressed', String(!!TdOverlay.isEnabled()));
-    if (tools) {
-        const open = (surfaceTools && !surfaceTools.hidden) || (platesTools && !platesTools.hidden);
-        tools.classList.toggle('is-open', !!open);
+    if (tiles) {
+        tiles.disabled = !shaped;
+        tiles.setAttribute('aria-pressed', String(!!TdOverlay.isEnabled()));
     }
+    if (tools) tools.hidden = !platesOn;
 }
 
 
@@ -1446,6 +1469,7 @@ async function applySavedVariant(session, saved) {
     session.discovery = false;
     session.shapeSeed = saved.shapeSeed || saved.seed;
     session.ui.saveName = saved.name || Variants.lineageName(session.catalog.variants, saved);
+    resetSculpt(session);
     Boot.writeStoredVariant(session.project, saved.id);
     if (saved.thumb) persistThumb(session, saved.id, saved.thumb);
     /* A child starts unshaped. Drop a parent's sketch if it is still on
@@ -1472,6 +1496,8 @@ async function saveWorkingVariant(session, opts) {
     if (!force && !newPlanet && !isWorkingDirty(session) && !isRenamed(session) && head) return head;
     const thumb = captureWorkingThumb(session);
     const layout = session.host && session.host.captureLayout && session.host.captureLayout();
+    const shaped = session.host && session.host.isShaped && session.host.isShaped();
+    const shape = shaped && session.host.captureShape && session.host.captureShape();
     const incoming = workingVariant(session, {name, thumb});
     if (!incoming) return session.variant;
     const next = Variants.save(readVariants(session), head, incoming);
@@ -1485,6 +1511,10 @@ async function saveWorkingVariant(session, opts) {
     if (layout && session.host.loadLayout) session.host.loadLayout(layout);
     await applySavedVariant(session, saved);
     if (layout) await persistLayout(session, layout);
+    if (shape) {
+        await persistShape(session, shape);
+        if (session.host.loadShape) session.host.loadShape(shape);
+    }
     return saved;
 }
 
@@ -1818,12 +1848,26 @@ function bind(session) {
         const key = event.key.toLowerCase();
         if (key === 'z') {
             event.preventDefault();
-            if (event.shiftKey) redoSeed(session);
-            else if (Undo.hasUndo(session)) Undo.runUndo(session);
-            else undoSeed(session);
+            if (event.shiftKey) {
+                if (session.host && session.host.canSculptRedo && session.host.canSculptRedo()) {
+                    session.host.sculptRedo();
+                } else {
+                    redoSeed(session);
+                }
+            } else if (session.host && session.host.canSculptUndo && session.host.canSculptUndo()) {
+                session.host.sculptUndo();
+            } else if (Undo.hasUndo(session)) {
+                Undo.runUndo(session);
+            } else {
+                undoSeed(session);
+            }
         } else if (key === 'y' && !event.shiftKey) {
             event.preventDefault();
-            redoSeed(session);
+            if (session.host && session.host.canSculptRedo && session.host.canSculptRedo()) {
+                session.host.sculptRedo();
+            } else {
+                redoSeed(session);
+            }
         }
     });
 }
@@ -1838,6 +1882,8 @@ function mount(session, host) {
     session.setParam = (name, value) => setParam(session, name, value);
     session.syncModeButtons = () => syncModeButtons(session);
     session.markProjectModified = () => markProjectModified(session);
+    session.markSculpted = () => markSculpted(session);
+    session.syncSculptDirty = (dirty) => syncSculptDirty(session, dirty);
     session.setPlanetReady = (value) => {
         session.planetReady = !!value;
         if (!value) return;

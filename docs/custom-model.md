@@ -34,6 +34,9 @@ Finish would then run:
 3. **Hydrology** on that 1 km sphere. Every cell routes downhill. Water
    reaches the sea or a real closed basin. The output is a reach / lake
    graph for the planet. Those rivers are law for the next grain.
+   `src/route.js` is that algorithm. Shape already calls a light cut of
+   it at 23 km for valley texture and a preview tree. The 1 km law
+   inversion is still unbuilt.
 4. A learned **90 m residual** on land and the shelf: above about 200 m
    depth, a band around any sea level Climate chose, and any deep
    feature flagged on its own. About a third of an Earth-like sphere.
