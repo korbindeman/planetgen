@@ -32,8 +32,9 @@ const args = parseArgs(process.argv.slice(2));
 const project = Projects.byName(args.project || Projects.DEFAULT);
 
 const catalog = await loadCatalog(project.name);
-const variant = pickVariant(catalog, args);
-if (!variant) throw new Error(`no live variant matching ${args.variantName || args.variant || "(latest)"}`);
+let variant = pickVariant(catalog, args);
+if (!variant) variant = await loadVendored(project.name, args);
+if (!variant) throw new Error(`no live variant matching ${args.variantName || args.variant || "(latest)"} and no vendored fallback`);
 
 const slug = String(variant.name || variant.id).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || variant.id;
 const bakeDir = join(root, "bake", `${project.name}-${slug}`);
@@ -65,6 +66,7 @@ await writeFile(join(bakeDir, `shard-${args.shard}-of-${args.shards}.json`), JSO
 if (args.dryRun) {
   const exported = await exportProjectCrops(root, {
     project: project.name,
+    seed: variant.seed,
     values: Projects.recipeOf(variant, project.body),
     variant: variant.id,
   });
@@ -95,11 +97,16 @@ function splitTiles(tiles, shards) {
 }
 
 async function loadCatalog(name) {
-  const raw = JSON.parse(await readFile(join(root, Projects.catalogPath(name)), "utf8"));
-  return Projects.parseCatalog(raw, name);
+  try {
+    const raw = JSON.parse(await readFile(join(root, Projects.catalogPath(name)), "utf8"));
+    return Projects.parseCatalog(raw, name);
+  } catch {
+    return null; // preview/ is gitignored; the bake box falls back to the vendored variant
+  }
 }
 
 function pickVariant(catalog, { variant, variantName }) {
+  if (!catalog) return null;
   const live = catalog.variants.filter((v) => !v.deleted);
   if (variant) return live.find((v) => v.id === variant) || null;
   if (variantName) {
@@ -108,6 +115,33 @@ function pickVariant(catalog, { variant, variantName }) {
       || live.find((v) => String(v.name || "").toLowerCase().includes(want)) || null;
   }
   return live[0] || null;
+}
+
+async function loadVendored(projectName, { variant, variantName }) {
+  /*
+   * preview/ is gitignored so the catalog does not travel. bake/<slug>/
+   * vendors the one variant the bake needs; match by id or name.
+   */
+  const { readdir } = await import("node:fs/promises");
+  let dirs;
+  try {
+    dirs = await readdir(join(root, "bake"));
+  } catch {
+    return null;
+  }
+  for (const dir of dirs) {
+    if (!dir.startsWith(`${projectName}-`)) continue;
+    try {
+      const v = JSON.parse(await readFile(join(root, "bake", dir, "variant.json"), "utf8"));
+      if (variant && v.id === variant) return v;
+      if (variantName) {
+        const want = variantName.toLowerCase();
+        const name = String(v.name || "").toLowerCase();
+        if (name === want || name.includes(want)) return v;
+      } else if (!variant) return v;
+    } catch { /* no vendored variant here */ }
+  }
+  return null;
 }
 
 function parseArgs(argv) {
