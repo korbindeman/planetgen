@@ -95,7 +95,21 @@ function splitTiles(tiles, shards) {
 }
 
 async function loadCatalog(name) {
-  const raw = JSON.parse(await readFile(join(root, Projects.catalogPath(name)), "utf8"));
+  const rel = Projects.catalogPath(name);
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(join(root, rel), "utf8"));
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error([
+        `no variant catalog at ${rel}`,
+        "preview/ is local, gitignored state: the studio writes the catalog and git never carries it,",
+        "so a fresh checkout has no variants to lock.",
+        "Open the studio with `bun run dev`, save a variant, then bake again.",
+      ].join("\n"));
+    }
+    throw err;
+  }
   return Projects.parseCatalog(raw, name);
 }
 
