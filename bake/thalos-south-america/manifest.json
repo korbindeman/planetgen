@@ -108,6 +108,6 @@
     "f5l2x3y3"
   ],
   "tdRoot": "~/dev/terrain-diffusion",
-  "device": "mps",
+  "device": "cuda",
   "status": "face-raster-open"
 }
