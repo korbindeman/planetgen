@@ -1,0 +1,49 @@
+{
+  "id": "v1788432736770",
+  "seed": 1226542989,
+  "body": {
+    "radiusKm": 3186,
+    "gravityG": 0.91,
+    "rotationHours": 21.3,
+    "axialTiltDeg": 23
+  },
+  "values": {},
+  "pins": {
+    "radiusKm": 3186,
+    "gravityG": 0.91,
+    "rotationHours": 21.3,
+    "axialTiltDeg": 23
+  },
+  "ranges": {
+    "steps": [
+      11,
+      28
+    ],
+    "plates": [
+      9,
+      22
+    ],
+    "cratons": [
+      3,
+      10
+    ],
+    "continentFraction": [
+      0.41584031307266117,
+      0.5118403130726612
+    ],
+    "seaLevelThicknessKm": [
+      26.498031243413408,
+      29.69803124341341
+    ],
+    "hotspots": [
+      0,
+      5
+    ],
+    "ageGyr": [
+      2.5567702594453348,
+      8.364542040246521
+    ]
+  },
+  "name": "south america",
+  "shaped": true
+}
