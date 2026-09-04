@@ -17,6 +17,9 @@ const World = require(join(root, "src", "world.js"));
 const Tectonics = require(join(root, "src", "tectonics.js"));
 const Bake = require(join(root, "packages/bake"));
 const Hydrology = require(join(root, "packages/hydrology"));
+const Cube = require(join(root, "src", "cubesphere.js"));
+const TdTile = require(join(root, "src", "td-tile.js"));
+const Seam = require(join(root, "src", "td-seam.js"));
 const {makeRandFloat} = require("@redblobgames/prng");
 
 const failures = [];
@@ -233,6 +236,60 @@ check("hydrology stub refuses to pretend it exists", hydroThrew);
     }
     check("routing drains land to the ocean or a lake", land > 0 && hanging === 0,
         `land=${land} hanging=${hanging}`);
+}
+
+/*
+ * Bake conditioning. A cube tile is conditioned on its face's conformal bake
+ * plane, so this needs a real planet — check:tiles can only prove the
+ * geometry. Two things go wrong here and neither shows in the shape of the
+ * raster: the plane can sample nothing, because the projector has an answer
+ * for almost the whole sphere and one far-side triangle's bounding box then
+ * covers the raster and paints the tile a single elevation (a whole tile came
+ * out flat at -0.920 that way); or it can sample the wrong ground. So check
+ * both — it has relief, and it agrees with the tile-square rasterizer it
+ * replaced.
+ *
+ * On `ran.mesh`, the detail mesh the app draws and conditions from. The sim
+ * mesh is too coarse to reproduce the smear: its triangles never straddle
+ * the horizon the way the finer ones do.
+ */
+console.log("  bake  conditioning on the bake plane");
+{
+    const cells = 14;
+    const pad = TdTile.CONTEXT_PAD;
+    for (const name of ["f1l4x15y0", "f2l4x0y0", "f1l4x2y11"]) {
+        const tile = Cube.parseTileName(name);
+        const rect = Cube.tileBakeRect(tile, cells, pad, TdTile.haloCellsFor(tile));
+        const plane = Planet.rasterizeBakeRect(ran.mesh, ran.map, tile, rect, 0);
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (let i = 0; i < plane.elev.length; i++) {
+            lo = Math.min(lo, plane.elev[i]);
+            hi = Math.max(hi, plane.elev[i]);
+        }
+        check(`${name} conditioning has relief`, hi - lo > 0.05, `range ${(hi - lo).toFixed(4)}`);
+
+        const square = Planet.rasterizeCubeTile(ran.mesh, ran.map, tile, cells, cells, 0, pad);
+        const toSquare = Cube.paddedProjector(tile, cells, cells, pad, pad);
+        let worst = 0;
+        let n = 0;
+        for (let gy = 1; gy < 24; gy++) {
+            for (let gx = 1; gx < 24; gx++) {
+                const d = Cube.tileDirection(tile, gx / 24, gy / 24);
+                const ll = Cube.xyzToLonLat(d);
+                const a = Cube.bakePixel(tile, rect, d);
+                const b = toSquare(ll.lon * Math.PI / 180, ll.lat * Math.PI / 180);
+                if (!a || !b) continue;
+                n++;
+                worst = Math.max(worst, Math.abs(
+                    Seam.sampleBilinear(plane.elev, plane.width, plane.height, a.x, a.y)
+                    - Seam.sampleBilinear(square.elev, square.width, square.height, b.x, b.y),
+                ));
+            }
+        }
+        check(`${name} plane and square condition the same ground`,
+            n > 400 && worst < 0.1, `n=${n}, worst ${worst.toFixed(4)}`);
+    }
 }
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall passed");

@@ -7,9 +7,21 @@
  * The pad already carries real neighbour-face terrain; this module uses a
  * generated halo past the fold, resamples it into the other tile's UV, and
  * blends. Proven against a spherical field in `bun run check:tiles` — a
- * GPU bake is not required to know the warp is right. Still untested on
- * a real pair: bake two tiles that share a cube edge (not the same face)
- * and crop the join. A three-face corner is worse.
+ * GPU bake is not required to know the warp is right.
+ *
+ * Now checked on a real pair, the three level-4 tiles at one cube corner.
+ * The warp is right and the elevations meet to a few metres. What was left
+ * was a resampling loss: a 90-degree turn puts every stitched pixel between
+ * the neighbour's samples, so the stitched side arrives smoother than the
+ * side it meets. That is why `sampleSrc` is bicubic and why check:tiles
+ * measures detail retention on a rough field as well as a smooth one.
+ *
+ * What this cannot fix is that the two tiles are separate diffusions: their
+ * terrain does not agree at the fold, only their elevations do. Same-face
+ * neighbours do not have that problem — they share one bake-plane lattice,
+ * so the bake hands them the same noise where they overlap. A fold has no
+ * shared plane to share, so until the two sides of one are generated in a
+ * single pass the fade is what hides the difference.
  *
  * The new tile conforms to whatever neighbour is already on disk. First
  * bake owns the edge; the join is still C0.
@@ -33,6 +45,39 @@ function sampleBilinear(data, width, height, x, y) {
         + at(x0 + 1, y0) * tx * (1 - ty)
         + at(x0, y0 + 1) * (1 - tx) * ty
         + at(x0 + 1, y0 + 1) * tx * ty;
+}
+
+function catmullRom(t, a, b, c, d) {
+    const t2 = t * t;
+    return 0.5 * (2 * b + (c - a) * t
+        + (2 * a - 5 * b + 4 * c - d) * t2
+        + (3 * b - a - 3 * c + d) * t2 * t);
+}
+
+/*
+ * The fold is a 90-degree turn, so every stitched pixel lands between the
+ * neighbour's samples and the interpolator decides how much of its terrain
+ * survives the trip. Measured on a real halo — 1792 samples of 180 m ground
+ * across one level-4 fold — bilinear kept 58% of the along-seam roughness
+ * and Catmull-Rom keeps 70%. The missing detail is what made the join read
+ * as a line even once the elevations matched: one side of it was visibly
+ * smoother than the other. `bun run check:tiles` pins the retention.
+ */
+function sampleBicubic(data, width, height, x, y) {
+    const u = x - 0.5;
+    const v = y - 0.5;
+    const x0 = Math.floor(u);
+    const y0 = Math.floor(v);
+    const tx = u - x0;
+    const ty = v - y0;
+    const at = (ix, iy) => data[
+        Math.max(0, Math.min(height - 1, iy)) * width
+        + Math.max(0, Math.min(width - 1, ix))
+    ];
+    const row = (iy) => catmullRom(
+        tx, at(x0 - 1, iy), at(x0, iy), at(x0 + 1, iy), at(x0 + 2, iy),
+    );
+    return catmullRom(ty, row(y0 - 1), row(y0), row(y0 + 1), row(y0 + 2));
 }
 
 function rasterizeTile(tile, width, height, field) {
@@ -82,19 +127,19 @@ function sampleHalo(halo, edge, x, y, tileW, tileH) {
     if (!halo) return null;
     if (edge === 'east') {
         if (!(x > tileW && y >= 0 && y <= tileH)) return null;
-        return sampleBilinear(halo.data, halo.width, halo.height, x - tileW, y);
+        return sampleBicubic(halo.data, halo.width, halo.height, x - tileW, y);
     }
     if (edge === 'west') {
         if (!(x < 0 && y >= 0 && y <= tileH)) return null;
-        return sampleBilinear(halo.data, halo.width, halo.height, -x, y);
+        return sampleBicubic(halo.data, halo.width, halo.height, -x, y);
     }
     if (edge === 'south') {
         if (!(y > tileH && x >= 0 && x <= tileW)) return null;
-        return sampleBilinear(halo.data, halo.width, halo.height, x, y - tileH);
+        return sampleBicubic(halo.data, halo.width, halo.height, x, y - tileH);
     }
     if (edge === 'north') {
         if (!(y < 0 && x >= 0 && x <= tileW)) return null;
-        return sampleBilinear(halo.data, halo.width, halo.height, x, -y);
+        return sampleBicubic(halo.data, halo.width, halo.height, x, -y);
     }
     return null;
 }
@@ -106,7 +151,7 @@ function sampleSrc(src, lon, lat) {
     const w = src.width;
     const h = src.height;
     if (x >= 0 && x <= w && y >= 0 && y <= h) {
-        return sampleBilinear(src.elev, w, h, x, y);
+        return sampleBicubic(src.elev, w, h, x, y);
     }
     if (!src.halo) return null;
     for (let i = 0; i < Cube.EDGES.length; i++) {
@@ -115,6 +160,31 @@ function sampleSrc(src, lon, lat) {
         if (v != null && Number.isFinite(v)) return v;
     }
     return null;
+}
+
+/*
+ * A bake comes off the face's conformal plane; the drape, the exporter and
+ * everything downstream want the tile's own raster. So put it back.
+ *
+ * `rect` is the *interior* lattice rectangle the bake covered — tileBakeRect
+ * minus its pad — in bake-plane cells. Bicubic for the same reason the fold
+ * stitch is: a resample between grids at an angle is where a bake loses the
+ * detail that makes one side of a join look softer than the other.
+ */
+function bakeToTile(tile, rect, src, srcW, srcH, outW, outH) {
+    const out = new Float32Array(outW * outH);
+    const sx = srcW / rect.width;
+    const sy = srcH / rect.height;
+    for (let y = 0; y < outH; y++) {
+        for (let x = 0; x < outW; x++) {
+            const d = Cube.tileDirection(tile, (x + 0.5) / outW, (y + 0.5) / outH);
+            const px = Cube.bakePixel(tile, rect, d);
+            out[y * outW + x] = px
+                ? sampleBicubic(src, srcW, srcH, px.x * sx, px.y * sy)
+                : 0;
+        }
+    }
+    return out;
 }
 
 function edgeDistPx(x, y, w, h, edge) {
@@ -179,6 +249,8 @@ function blendFromNeighbor(dest, src) {
 
 module.exports = {
     sampleBilinear,
+    sampleBicubic,
+    bakeToTile,
     rasterizeTile,
     rasterizeHalo,
     sampleSrc,

@@ -19,6 +19,55 @@ ratio at √2 so a drift back toward gnomonic fails loudly. (This was
 recorded as ~1.3× / ~115 m before `src/cubesphere.js` made it
 measurable.)
 
+**Scale is only half of it, and the other half is what a bake shows.** The
+two face axes are not perpendicular on the ground. The skew is 0° at a face
+centre and at an edge midpoint — exactly where the scale ratio is worst —
+and −30° at a face **corner**, where the scale ratio is 1. Two equal axes
+120° apart turn a circle into a **√3 = 1.73× ellipse**, so the real ground
+anisotropy is worst at a corner and worse than the √2 above. check:tiles
+pins all three points.
+
+This is not academic. terrain-diffusion paints terrain that is isotropic in
+its own square grid — measured at 0.5–5% anisotropy in raster axes — so
+whatever this map does to a circle is printed on the ground, and it points a
+different way on every face. Measured on the three level-4 tiles that meet
+at one cube corner, the terrain's smoothest direction ran at 75°, 120° and
+165° on the ground, each within one bin of its own tile's stretch axis. Two
+tiles across a fold therefore meet with their terrain combed 60–120° apart,
+which reads as a hard line even though the elevations, the roughness and the
+colour are all continuous across it. Stitching cannot fix it: nothing about
+the elevations is wrong.
+
+## The bake plane
+
+So the model does not paint on the tile square. It paints on the face's
+**bake plane**: stereographic from the face centre, which is conformal, so
+anisotropy is exactly 1 everywhere and the terrain has no direction to
+inherit. What it spends instead is scale — 1.27× across a face, *less* than
+the equal-angle square's √2, and scale is the distortion the model's learned
+statistics already tolerate.
+
+One plane per face, not one per tile. Per tile would be conformal too and
+would throw away what the face-wide lattice buys: two tiles that touch name
+overlapping cells of one grid, so the bake hands them the same noise there
+and a same-face join is not a join at all.
+
+`tileBakeRect(tile, cells, pad)` is a tile's rectangle on that lattice — its
+footprint rounded out to whole cells, then grown by the pad. Rectangles are
+**not** all `cells²`: a conformal plane does not cut a face into equal
+squares, and a corner tile spans up to 1.5× the nominal count. Callers read
+`cropW`/`cropH` off the rect, and `usableLevels` tests `worstBakeCells`
+against the job cap rather than `tileCells`, or the picker would offer a
+level the bake then refuses.
+
+After the bake, `Seam.bakeToTile` resamples the result onto the tile's own
+raster. **`output.elev` is always the tile raster** — the drape, the stitch,
+the painter and the exporter never see the bake plane.
+
+A fold is still two separate diffusions, so their terrain still differs
+there; that is what the halo fade is for, and the cure for it is generating
+both sides of a fold in one pass.
+
 The **face-adjacency table** — edges and rotations — is the foundation
 everything else shares: conditioning margins, hydrology routing across
 face edges, rendering skirts.
@@ -29,6 +78,14 @@ face edges, rendering skirts.
 - tile centres round-trip through the addressing
 - levels nest, so picking a coarse tile picks whole finer tiles
 - the equal-angle scale ratio stays at √2
+- the ground anisotropy is 1 at a face centre, √2 at an edge midpoint and
+  √3 at a corner — the number a bake's texture actually follows
+- the bake plane is conformal (anisotropy 1 everywhere) and costs 1.27× of
+  scale, under the equal-angle √2
+- neighbouring bake rects are cells of one lattice, so the bake still shares
+  noise along a same-face edge
+- a bake rect covers its whole tile, and resamples back onto it keeping 85%+
+  of a rough field's detail
 - the seam warp resamples correctly across a fold — on a **spherical
   field**, not on 90 m noise
 
@@ -50,9 +107,9 @@ face edges, rendering skirts.
 
 ## Seams
 
-Same-face neighbours already share a `WorldPipeline` plane, so their 90 m
-pixels abut: the exporter feeds the pad at a face-grid origin and
-adjacent tiles share coordinates at the seam instead of each starting at
+Same-face neighbours share one bake-plane lattice, so their 90 m pixels
+abut: the exporter feeds the pad at lattice cells the neighbour also names,
+and adjacent tiles share coordinates at the seam instead of each starting at
 (0, 0).
 
 **A cube fold is a 90° turn in that plane.** Two native grids sample the
@@ -62,11 +119,18 @@ already baked, the new tile's DEM is resampled into the other tile's UV
 and blended (`src/td-seam.js`). The new tile conforms to whatever is
 already on disk — first bake owns the edge, and the join is C0.
 
-**Still unproven on a real bake.** `check:tiles` proves the warp on a
-spherical field, which is enough to know the transform is right and not
-enough to know the terrain matches. Two tiles sharing a **cube edge**
-(not the same face) need baking and cropping. A three-face corner is
-worse and is untouched. Tracked in [terrain.md § Open](../stages/terrain.md#open).
+**Proven on a real bake, and it was not enough.** Three level-4 tiles at one
+cube corner were baked and cropped. The warp is right: elevations meet to a
+few metres, roughness is continuous, and the painted colour step across a
+join is 1.05–2.0× an ordinary neighbouring-pixel step. The join was still
+obvious, because the two sides were *combed* differently — see the ground
+anisotropy above. That is what the bake plane fixes, and `bun run seam` is
+the capture that shows a corner without a browser.
+
+What is left at a fold is that its two sides are separate diffusions. The
+halo fade hides it over ~8 km; widening `SEAM_HALO_CELLS`, or generating
+both sides in one pass, is the next lever. Tracked in
+[terrain.md § Open](../stages/terrain.md#open).
 
 ## Prior art
 

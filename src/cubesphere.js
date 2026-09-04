@@ -389,6 +389,164 @@ function tileBBox(tile) {
     return {west, east, south, north};
 }
 
+/*
+ * ---- the bake plane -------------------------------------------------
+ *
+ * The equal-angle face square is what a tile *is*: addressing, coverage,
+ * nesting, and where the overlay drapes. It is not what the model should
+ * paint on. Its two axes are not perpendicular on the ground — 0 degrees of
+ * skew at a face centre and at an edge midpoint, but 30 degrees at a face
+ * corner — so a circle comes out a sqrt(3) ellipse there. terrain-diffusion
+ * paints terrain that is isotropic in its own square grid, so that ellipse
+ * gets printed on the ground, pointing a different way on every face. Two
+ * tiles across a fold then meet with their terrain combed 60-120 degrees
+ * apart. Measured on a real corner bake: the smoothest ground bearing on the
+ * three tiles ran 75, 120 and 165 degrees, each within a bin of its own
+ * tile's stretch axis. Elevations, roughness and colour were all continuous
+ * across the joins; the grain was not, and that is what the eye sees.
+ *
+ * So the model gets a different plane: stereographic from the face centre.
+ * It is conformal, so anisotropy is exactly 1 everywhere and the grain has
+ * no direction to inherit. Scale runs 1.00 at the face centre to 1.27 at a
+ * corner — tighter than the equal-angle square's sqrt(2), and scale is the
+ * distortion the model's learned statistics already tolerate.
+ *
+ * One plane per face, not one per tile. Per tile would be conformal too, and
+ * would throw away the property the old face-wide cell origin bought:
+ * neighbours on a face name overlapping cells of one lattice, so the bake
+ * gives them the same noise there and their join is not a join at all. A
+ * face-wide plane keeps that and drops the shear. `tileBakeRect` is what
+ * hands a job its cells now.
+ *
+ * A bake still resamples back into the tile's own raster afterwards, so
+ * output.elev, the drape and the tile grid are unchanged by any of this.
+ */
+
+/* Half-width of a face's footprint here. Edge midpoints reach furthest —
+ * 2/(1+sqrt(2)) = 0.8284 against sqrt(3)-1 = 0.7321 at a corner — so the
+ * face is a square with bulging sides, not a square. */
+const FACE_STEREO_HALF = 2 / (1 + Math.SQRT2);
+
+/* Direction -> the face's bake plane. Null behind the face's horizon. */
+function faceStereo(face, p) {
+    const f = FACES[face];
+    const c = dot(p, f.n);
+    if (!(c > -0.999999)) return null;
+    const k = 2 / (1 + c);
+    return {X: dot(p, f.u) * k, Y: dot(p, f.v) * k};
+}
+
+/* And back. r = 2 tan(rho/2), so the inverse is a rational map. */
+function faceStereoDirection(face, X, Y) {
+    const f = FACES[face];
+    const d = 4 + X * X + Y * Y;
+    const a = 4 * X / d;
+    const b = 4 * Y / d;
+    const c = (4 - X * X - Y * Y) / d;
+    return [
+        a * f.u[0] + b * f.v[0] + c * f.n[0],
+        a * f.u[1] + b * f.v[1] + c * f.n[1],
+        a * f.u[2] + b * f.v[2] + c * f.n[2],
+    ];
+}
+
+/*
+ * Ground metres per unit of the bake plane at (X, Y). The conformal scale
+ * factor is (4 + r^2)/4, so ground step is its reciprocal: a uniform grid
+ * here is finest at the corners, by 1.27x, and square everywhere.
+ */
+function faceStereoGroundStep(X, Y, radiusM) {
+    return radiusM * 4 / (4 + X * X + Y * Y);
+}
+
+/*
+ * The tile's footprint in its face's bake plane. The edges are curved here,
+ * so walk the outline rather than mapping the four corners.
+ */
+/*
+ * The tile's face-space square grown by `halo` coarse cells on the named
+ * sides only. A fold needs ground past its edge to stitch with; the other
+ * sides do not, because same-face neighbours already share this lattice.
+ * Asymmetric, so `paddedExtent` cannot do it.
+ */
+function haloExtent(tile, cells, halo) {
+    const e = tileExtent(tile);
+    if (!halo) return e;
+    const da = (e.a1 - e.a0) / Math.max(1, cells);
+    const db = (e.b1 - e.b0) / Math.max(1, cells);
+    return {
+        a0: e.a0 - da * (halo.west || 0),
+        a1: e.a1 + da * (halo.east || 0),
+        b0: e.b0 - db * (halo.south || 0),
+        b1: e.b1 + db * (halo.north || 0),
+    };
+}
+
+function tileStereoBox(tile, steps = 16, extent = null) {
+    const e = extent || tileExtent(tile);
+    let X0 = Infinity, X1 = -Infinity, Y0 = Infinity, Y1 = -Infinity;
+    const at = (a, b) => {
+        const s = faceStereo(tile.face, faceDirection(tile.face, a, b));
+        if (!s) return;
+        X0 = Math.min(X0, s.X); X1 = Math.max(X1, s.X);
+        Y0 = Math.min(Y0, s.Y); Y1 = Math.max(Y1, s.Y);
+    };
+    for (let k = 0; k <= steps; k++) {
+        const ta = e.a0 + (e.a1 - e.a0) * (k / steps);
+        const tb = e.b0 + (e.b1 - e.b0) * (k / steps);
+        at(ta, e.b0);
+        at(ta, e.b1);
+        at(e.a0, tb);
+        at(e.a1, tb);
+    }
+    return {X0, X1, Y0, Y1};
+}
+
+/*
+ * The shared lattice. Cells are square in the plane and indexed from the
+ * face centre, so two tiles of one face that touch land on the same cells
+ * and the bake gives them the same noise there.
+ */
+function stereoCellSize(level, cells) {
+    return 2 * FACE_STEREO_HALF / (tiles(level) * Math.max(1, cells));
+}
+
+/*
+ * The lattice rectangle a bake covers for this tile: its footprint rounded
+ * out to whole cells, then grown by `pad`. Sizes vary a little between
+ * tiles, because a conformal plane does not cut a face into equal squares —
+ * the caller reads cropW/cropH off this rather than assuming cells^2.
+ */
+function tileBakeRect(tile, cells, pad = 0, halo = null) {
+    const step = stereoCellSize(tile.level, cells);
+    const box = tileStereoBox(tile, 16, haloExtent(tile, cells, halo));
+    const i0 = Math.floor(box.X0 / step) - pad;
+    const j0 = Math.floor(box.Y0 / step) - pad;
+    const i1 = Math.ceil(box.X1 / step) + pad;
+    const j1 = Math.ceil(box.Y1 / step) + pad;
+    return {step, originI: i0, originJ: j0, width: i1 - i0, height: j1 - j0};
+}
+
+/* A bake-plane sample (x, y) of `rect`, as a unit direction. Row 0 is the
+ * high-Y edge, matching the tile raster's north-up rows. */
+function bakeDirection(tile, rect, x, y) {
+    return faceStereoDirection(
+        tile.face,
+        (rect.originI + x) * rect.step,
+        (rect.originJ + rect.height - y) * rect.step,
+    );
+}
+
+/* Where a direction lands in `rect`, in samples. Null behind the horizon. */
+function bakePixel(tile, rect, p) {
+    const s = faceStereo(tile.face, p);
+    if (!s) return null;
+    return {
+        x: s.X / rect.step - rect.originI,
+        y: rect.originJ + rect.height - s.Y / rect.step,
+    };
+}
+
 const EDGES = ['east', 'north', 'west', 'south'];
 
 /* Which sides of the face this tile sits on. Empty when the tile is
@@ -495,11 +653,35 @@ function tileCells(level, radiusKm, scaleKm) {
  * one bake stays a preview. The picker uses one of these (see bestLevel);
  * cover more ground by picking more tiles. Coarse to fine.
  */
-function usableLevels(radiusKm, scaleKm, minCells, maxCells) {
+/*
+ * The largest bake rectangle any tile of this level needs. A conformal plane
+ * does not cut a face into equal squares: a corner tile's footprint spans up
+ * to 1.5x the nominal cell count, because that is where the plane's scale is
+ * furthest from the face centre's. The cap has to be tested against this and
+ * not against `tileCells`, or the picker offers a level the bake then
+ * refuses — the exact failure the MIN/MAX comment in src/td-tile.js is about,
+ * one step further back.
+ */
+function worstBakeCells(level, cells, haloCells = 0) {
+    const n = tiles(level);
+    let worst = 0;
+    for (const [i, j] of [[n - 1, n - 1], [n - 1, n >> 1], [n >> 1, n >> 1], [0, 0]]) {
+        const tile = {face: 0, level, i, j};
+        const halo = {};
+        for (const edge of faceEdges(tile)) halo[edge] = haloCells;
+        const r = tileBakeRect(tile, cells, 0, halo);
+        worst = Math.max(worst, r.width, r.height);
+    }
+    return worst;
+}
+
+/* `haloCells` is TdTile.SEAM_HALO_CELLS — a fold tile bakes its own overlap,
+ * so the cap has to be measured against the rectangle that includes it. */
+function usableLevels(radiusKm, scaleKm, minCells, maxCells, haloCells = 0) {
     const out = [];
     for (let level = MIN_LEVEL; level <= MAX_LEVEL; level++) {
         const cells = tileCells(level, radiusKm, scaleKm);
-        if (cells > maxCells) continue;
+        if (worstBakeCells(level, cells, haloCells) > maxCells) continue;
         if (cells < minCells) break;
         out.push(level);
     }
@@ -516,8 +698,8 @@ function usableLevels(radiusKm, scaleKm, minCells, maxCells) {
  * level hard-coded for one planet silently becomes an impossible bake on
  * another, which is exactly what happened.
  */
-function bestLevel(targetKm, radiusKm, scaleKm, minCells, maxCells) {
-    const levels = usableLevels(radiusKm, scaleKm, minCells, maxCells);
+function bestLevel(targetKm, radiusKm, scaleKm, minCells, maxCells, haloCells = 0) {
+    const levels = usableLevels(radiusKm, scaleKm, minCells, maxCells, haloCells);
     if (!levels.length) return levelForKm(targetKm, radiusKm);
     let best = levels[0];
     let bestErr = Infinity;
@@ -573,6 +755,16 @@ module.exports = {
     tileOutline,
     tileBBox,
     EDGES,
+    FACE_STEREO_HALF,
+    faceStereo,
+    faceStereoDirection,
+    faceStereoGroundStep,
+    haloExtent,
+    tileStereoBox,
+    stereoCellSize,
+    tileBakeRect,
+    bakeDirection,
+    bakePixel,
     faceEdges,
     neighborTile,
     sharedEdge,
@@ -580,6 +772,7 @@ module.exports = {
     faceEdgeKm,
     tileEdgeKm,
     tileCells,
+    worstBakeCells,
     usableLevels,
     bestLevel,
     levelForKm,

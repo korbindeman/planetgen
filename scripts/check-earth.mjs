@@ -64,7 +64,9 @@ if (!existsSync(baselinePath)) {
     process.exit(1);
 }
 
-const expected = readFileSync(baselinePath, "utf8");
+/* git hands a Windows checkout CRLF, and the report is built with LF, so an
+ * exact compare called every line drifted on a tree nobody had touched. */
+const expected = readFileSync(baselinePath, "utf8").replace(/\r\n/g, "\n");
 
 if (actual === expected) {
     console.log("earth fixture matches baseline");

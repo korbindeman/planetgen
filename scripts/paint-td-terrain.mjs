@@ -14,37 +14,25 @@ import { readFloat32GeoTiff } from "./td-geotiff.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(join(here, "..", "package.json"));
 const Look = require(join(here, "..", "src", "look.js"));
+const Shade = require(join(here, "..", "src", "td-shade.js"));
+const TdTile = require(join(here, "..", "src", "td-tile.js"));
 const Tectonics = require(join(here, "..", "src", "tectonics.js"));
 const {encodePng} = require(join(here, "..", "src", "png.js"));
 
-const TD_TEMP_OFFSET = -15;
-const TD_TEMP_SCALE = 40;
-const TD_PRECIP_MIN = 60;
-const TD_PRECIP_RANGE = 3400;
-const TD_PRECIP_POWER = 1.55;
+/* The inverse of the export's conversions, and it has to stay the inverse:
+ * colouring a tile on a different scale from the one it was conditioned on is
+ * a whole-crop colour error. So the constants come from there. */
+const {
+  TEMP_OFFSET, TEMP_SCALE, PRECIP_MIN, PRECIP_RANGE, PRECIP_POWER,
+} = require(join(here, "..", "src", "td-export.js"));
 
 function tempCToT(c) {
-  return (Number(c) - TD_TEMP_OFFSET) / TD_TEMP_SCALE;
+  return (Number(c) - TEMP_OFFSET) / TEMP_SCALE;
 }
 
 function precipToM(mm) {
-  const x = Math.max(0, (Number(mm) - TD_PRECIP_MIN) / TD_PRECIP_RANGE);
-  return Math.pow(x, 1 / TD_PRECIP_POWER);
-}
-
-/* `x`,`y` in [0, 1] over the interior. Cube crops store a neighbour pad
- * around the GeoTIFF; skip it so climate lines up with the DEM. */
-function sampleField(field, fw, fh, x, y, pad = 0) {
-  const innerW = Math.max(1, fw - 2 * pad);
-  const innerH = Math.max(1, fh - 2 * pad);
-  const u = Math.max(0, Math.min(innerW - 1.001, pad + x * innerW));
-  const v = Math.max(0, Math.min(innerH - 1.001, pad + y * innerH));
-  const x0 = Math.floor(u), y0 = Math.floor(v);
-  const x1 = Math.min(fw - 1, x0 + 1), y1 = Math.min(fh - 1, y0 + 1);
-  const tx = u - x0, ty = v - y0;
-  const a = field[y0 * fw + x0], b = field[y0 * fw + x1];
-  const c = field[y1 * fw + x0], d = field[y1 * fw + x1];
-  return a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
+  const x = Math.max(0, (Number(mm) - PRECIP_MIN) / PRECIP_RANGE);
+  return Math.pow(x, 1 / PRECIP_POWER);
 }
 
 async function readChannel(dir, name) {
@@ -55,12 +43,16 @@ async function readChannel(dir, name) {
   }
 }
 
-async function readPad(dir) {
+/* padCells, and where on the sphere this crop sits — the shading frame
+ * needs the latter or the tile is lit in its own texel axes. */
+async function readCropMeta(dir) {
   try {
-    const tile = JSON.parse(await readFile(join(dir, "tile.json"), "utf8"));
-    return Math.max(0, tile.padCells | 0);
+    const meta = JSON.parse(await readFile(join(dir, "tile.json"), "utf8"));
+    const {face, level, i, j} = meta;
+    const tile = [face, level, i, j].every(Number.isInteger) ? {face, level, i, j} : null;
+    return {pad: Math.max(0, meta.padCells | 0), tile, ...(meta.nominalBounds || {})};
   } catch {
-    return 0;
+    return {pad: 0, tile: null};
   }
 }
 
@@ -71,13 +63,15 @@ export async function paintCropTerrain(dir) {
   const raw = await readFile(join(dir, "output.elev"));
   if (raw.byteLength < w * h * 4) throw new Error(`elev dump is short in ${dir}`);
   const elevM = new Float32Array(raw.buffer, raw.byteOffset, w * h);
-  const pad = await readPad(dir);
+  const crop = await readCropMeta(dir);
+  const pad = crop.pad;
 
   const tempTiff = await readChannel(dir, "temperature");
   const precipTiff = await readChannel(dir, "precipitation");
 
   const e = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) e[i] = Tectonics.metersToElevation(elevM[i]);
+  const shading = Shade.cropShade(e, w, h, crop);
 
   const fade = Math.max(6, Math.round(Math.min(w, h) * 0.04));
   const rgba = Buffer.alloc(w * h * 4);
@@ -88,19 +82,13 @@ export async function paintCropTerrain(dir) {
       const fx = (x + 0.5) / w;
       const fy = (y + 0.5) / h;
       const temp = tempTiff
-        ? tempCToT(sampleField(tempTiff.data, tempTiff.width, tempTiff.height, fx, fy, pad))
+        ? tempCToT(TdTile.samplePadded(tempTiff.data, tempTiff.width, tempTiff.height, fx, fy, pad))
         : 0.85;
       const moist = precipTiff
-        ? precipToM(sampleField(precipTiff.data, precipTiff.width, precipTiff.height, fx, fy, pad))
+        ? precipToM(TdTile.samplePadded(precipTiff.data, precipTiff.width, precipTiff.height, fx, fy, pad))
         : 0.55;
       const [r, g, b] = Look.surfaceAlbedo(e[i], moist, temp);
-      const x0 = x === 0 ? x : x - 1;
-      const x1 = x === w - 1 ? x : x + 1;
-      const y0 = y === 0 ? y : y - 1;
-      const y1 = y === h - 1 ? y : y + 1;
-      const dedx = (e[y * w + x1] - e[y * w + x0]) / (x1 - x0);
-      const dedy = (e[y1 * w + x] - e[y0 * w + x]) / (y1 - y0);
-      const shade = Look.hillshade(dedx, dedy);
+      const shade = shading[i];
       const edge = Math.min(x, y, w - 1 - x, h - 1 - y);
       const alpha = edge >= fade ? 255 : Math.round(255 * (edge / fade));
       rgba[i * 4] = Math.round(r * shade * 255);

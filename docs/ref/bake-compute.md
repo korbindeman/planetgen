@@ -33,6 +33,9 @@ body at 1 m is vanity.
 ## Compute — decided
 
 Bake on the **home RTX 4070 Ti**. Do not rent for the Thalos 90 m job.
+Bake in **WSL2**, not native Windows — `torch.compile` is unsupported on
+Windows and measured ~1.4× slower there (~26 h vs ~19 h). Env setup and bench
+numbers: [wsl-bake-env](wsl-bake-env.md).
 
 Thalos is half Earth's radius (`radiusKm: 3186`), a quarter of the
 surface: ~16 billion 90 m pixels, ~150k overlapping tiles, ~30 GB of

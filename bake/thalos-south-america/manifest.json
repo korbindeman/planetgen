@@ -1,6 +1,6 @@
 {
   "project": "thalos",
-  "variant": "v1788432736770",
+  "variant": "v1788473173180",
   "variantName": "south america",
   "seed": 1226542989,
   "model": "xandergos/terrain-diffusion-90m",
@@ -107,7 +107,7 @@
     "f5l2x3y2",
     "f5l2x3y3"
   ],
-  "tdRoot": "~/dev/terrain-diffusion",
+  "tdRoot": "../terrain-diffusion",
   "device": "cuda",
   "status": "face-raster-open"
 }

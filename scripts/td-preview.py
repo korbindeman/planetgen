@@ -9,6 +9,11 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
+# Default cap on the dumped raster. A cube-tile bake overrides it with
+# --max-dim: its raster covers the tile *and* its context halo, so capping the
+# whole thing at 2048 quietly cost the tile itself resolution — 21 cells
+# decimated to 1792 leaves the 14-cell tile only 1195 px, where it used to get
+# 1792. The caller knows how many cells it asked for; this does not.
 MAX_DIM = 2048
 
 
@@ -21,14 +26,19 @@ def _dump(path: Path, elev: np.ndarray) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print("usage: td-preview.py input.tif output.png", file=sys.stderr)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if len(args) < 2:
+        print("usage: td-preview.py input.tif output.png [--max-dim N]", file=sys.stderr)
         return 2
-    src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+    max_dim = MAX_DIM
+    for a in sys.argv[1:]:
+        if a.startswith("--max-dim="):
+            max_dim = max(64, int(a.split("=", 1)[1]))
+    src, dst = Path(args[0]), Path(args[1])
     with rasterio.open(src) as ds:
         elev = ds.read(1).astype(np.float32)
     h, w = elev.shape
-    step = max(1, int(np.ceil(max(w, h) / MAX_DIM)))
+    step = max(1, int(np.ceil(max(w, h) / max_dim)))
     elev = np.ascontiguousarray(elev[::step, ::step])
     folder = dst.parent
     _dump(folder / "output.elev", elev)

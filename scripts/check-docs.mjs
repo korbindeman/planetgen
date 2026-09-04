@@ -211,7 +211,9 @@ console.log("\nstatus claims match the code");
     const UNBUILT = /not started|not built|not written|not tried|named slot/i;
     const readme = readFileSync(join(root, "docs", "README.md"), "utf8");
     const state = new Map();
-    for (const line of readme.split("\n")) {
+    /* A Windows checkout hands this file CRLF, and the row regex anchors at
+     * end of line — same class of fix as check-earth's baseline compare. */
+    for (const line of readme.split(/\r?\n/)) {
         const m = line.match(/^\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*\[.*?\]\((.+?)\)\s*\|$/);
         if (m && m[4].startsWith("stages/")) state.set(m[4].replace("stages/", "").replace(".md", ""), m[3]);
     }

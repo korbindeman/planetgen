@@ -45,20 +45,6 @@ const CONTEXT_PAD = 64;
  */
 const SEAM_HALO_CELLS = 1;
 
-/*
- * WorldPipeline cell of the padded raster's top-left. Adjacent tiles on
- * one face share this plane, so they share noise at the edge instead of
- * each starting at (0, 0) with a repeated rim. Row 0 is north (high j):
- * a face is one north-up mosaic.
- */
-function contextOrigin(tile, cells, pad = CONTEXT_PAD) {
-    const n = 1 << tile.level;
-    return {
-        originI: (n - 1 - tile.j) * cells - pad,
-        originJ: tile.i * cells - pad,
-    };
-}
-
 /* Output halo only on cube folds. Same-face edges already share a plane. */
 function haloCellsFor(tile, cells = SEAM_HALO_CELLS) {
     if (!tile) return {north: 0, east: 0, south: 0, west: 0};
@@ -72,6 +58,13 @@ function haloCellsFor(tile, cells = SEAM_HALO_CELLS) {
     };
 }
 
+/*
+ * Pixels of baked DEM per conditioning cell, once the bake is back on the
+ * tile raster. 128 against a 23 km cell is ~180 m/px — half the model's
+ * native 90 m, which is what the dump has always been decimated to.
+ */
+const TILE_PX_PER_CELL = 128;
+
 /* What a preview tile covers on the ground. The picker uses this one size:
  * the bakeable cube level nearest it, per planet. Cover more ground by
  * picking more tiles, not a coarser level. A tile is a fixed slice of the
@@ -81,6 +74,35 @@ const TARGET_TILE_KM = 310;
  * screen pixels — Maps-style inspect, not a street view. */
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 512;
+
+/*
+ * Bilinear read of a conditioning raster that carries `pad` cells of context
+ * on every side. `fx`, `fy` are cell-centre fractions over the *interior*.
+ *
+ * Both painters had their own copy of this and one of them clamped the index
+ * to the interior width while indexing the padded raster: with 14 cells and
+ * 64 of pad every sample landed on column 13 of the pad, fifty cells outside
+ * the tile, so a crop was coloured with one wrong climate from end to end.
+ * That is what made a cube fold read as a flat tone break — the shading was
+ * only half of it. One copy, and it clamps against the raster it indexes.
+ */
+function samplePadded(field, width, height, fx, fy, pad = 0) {
+    const p = Math.max(0, pad | 0);
+    const innerW = Math.max(1, width - 2 * p);
+    const innerH = Math.max(1, height - 2 * p);
+    const u = Math.max(0, Math.min(width - 1.001, p + fx * innerW - 0.5));
+    const v = Math.max(0, Math.min(height - 1.001, p + fy * innerH - 0.5));
+    const x0 = Math.floor(u);
+    const y0 = Math.floor(v);
+    const x1 = Math.min(width - 1, x0 + 1);
+    const y1 = Math.min(height - 1, y0 + 1);
+    const tx = u - x0;
+    const ty = v - y0;
+    return field[y0 * width + x0] * (1 - tx) * (1 - ty)
+        + field[y0 * width + x1] * tx * (1 - ty)
+        + field[y1 * width + x0] * (1 - tx) * ty
+        + field[y1 * width + x1] * tx * ty;
+}
 
 function wrapLon(lon) {
     let l = lon;
@@ -96,10 +118,11 @@ module.exports = {
     MAX_CELLS,
     CONTEXT_PAD,
     SEAM_HALO_CELLS,
+    TILE_PX_PER_CELL,
     TARGET_TILE_KM,
     ZOOM_MIN,
     ZOOM_MAX,
     wrapLon,
-    contextOrigin,
+    samplePadded,
     haloCellsFor,
 };

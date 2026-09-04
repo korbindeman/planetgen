@@ -4,8 +4,42 @@ What the model reads and how to run it. This changes when the model
 changes, not when we learn something about planets. Stage context is
 [terrain.md](../stages/terrain.md).
 
-Sibling checkout, never vendored: `~/dev/terrain-diffusion`. Weights:
-Hugging Face `xandergos/terrain-diffusion-90m` or `…-30m`.
+## Where it lives
+
+Sibling checkout of this repo, never vendored — `../terrain-diffusion`,
+next to `planetgen`. On the 4070 Ti box that is
+`C:\Users\korbi\Documents\terrain-diffusion`. `TD_ROOT` overrides it;
+`tdCheckout()` in `scripts/td-jobs.mjs` resolves it.
+
+*Do not look in `~/dev/terrain-diffusion`.* Every doc said that until Sep
+2026 and no such directory has ever existed. An agent that checked there
+found nothing, concluded the model was not on this machine, and reported a
+bake-side fix as unverifiable when both environments were sitting right
+here.
+
+There are **two** working environments, and which one you want depends on
+what you are doing:
+
+| | Path | Torch | Used for |
+| --- | --- | --- | --- |
+| **Native Windows** | `<checkout>/.venv/Scripts/python.exe` | 2.13.0+cu132 | The studio's in-app tile bakes. This is what `td-jobs.mjs` spawns. |
+| **WSL2** | `~/td-env/bin/python` in distro `Thalos-Ubuntu` | 2.14.0+cu130, triton 3.8.0 | Campaign bakes. ~1.4× faster because `torch.compile` works. |
+
+The WSL distro reads the *same* Windows checkout cross-mount, at
+`/mnt/c/Users/korbi/Documents/terrain-diffusion`. There is no second copy of
+the source. Setup, pinned versions and the bench are
+[wsl-bake-env.md](wsl-bake-env.md).
+
+To reach the WSL env from a Windows agent shell (`Thalos-Ubuntu` is the
+default distro, so `-d` is optional but worth being explicit about):
+
+```powershell
+wsl.exe -d Thalos-Ubuntu -- bash -lc '~/td-env/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"'
+```
+
+Weights: Hugging Face `xandergos/terrain-diffusion-90m` or `…-30m`. The WSL
+env keeps its own cache at `~/td-hub` — do not point `HF_HUB_CACHE` at the
+Windows one.
 
 The model does **not** want a globe, an equirectangular planet, or a
 finished DEM. It wants a small **planar coarse map**: one pixel per
@@ -204,19 +238,32 @@ will not invent a master canyon on a flat.
 
 ## How to run it
 
-From the terrain-diffusion checkout. Prefer the inference module — the
-top-level `python -m terrain_diffusion tiff-export` CLI imports training
-deps:
+From the terrain-diffusion checkout ([where it lives](#where-it-lives)).
+Prefer the inference module — the top-level `python -m terrain_diffusion
+tiff-export` CLI imports training deps.
 
-```bash
-cd ~/dev/terrain-diffusion
-MPLBACKEND=Agg PYTORCH_ENABLE_MPS_FALLBACK=1 \
-  .venv/bin/python -m terrain_diffusion.inference.tiff_export \
+Native Windows, which is what the studio spawns:
+
+```
+cd <checkout>
+MPLBACKEND=Agg PYTHONIOENCODING=utf-8 \
+  .venv/Scripts/python.exe -m terrain_diffusion.inference.tiff_export \
   xandergos/terrain-diffusion-90m \
   /path/to/crop-folder \
   /path/to/crop-folder/output.tif \
   --snr 0.2,0.2,1.0,0.2,1.0 \
-  --no-compile --device mps --seed 88
+  --no-compile --device cuda --seed 88
+```
+
+WSL2, for a campaign bake. Run from the checkout dir: `bind()` resolves its
+stats cache relative to cwd, and otherwise prompts for a WorldClim download
+and hangs headless.
+
+```
+wsl.exe -d Thalos-Ubuntu -- bash -lc '
+  cd /mnt/c/Users/korbi/Documents/terrain-diffusion &&
+  PYTHONPATH=$PWD HF_HUB_CACHE=~/td-hub MPLBACKEND=Agg \
+  ~/td-env/bin/python -m terrain_diffusion.inference.tiff_export ...'
 ```
 
 On NVIDIA, `--device cuda` and compile can stay on. The README claims Mac

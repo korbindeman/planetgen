@@ -56,7 +56,7 @@ const manifest = {
   shards: args.shards,
   shard: args.shard,
   shardTiles: shard.map(Cube.tileName),
-  tdRoot: process.env.TD_ROOT || "~/dev/terrain-diffusion",
+  tdRoot: process.env.TD_ROOT || "../terrain-diffusion",
   device: process.platform === "darwin" ? "mps" : "cuda",
   status: "face-raster-open",
 };
@@ -79,7 +79,9 @@ if (args.dryRun) {
   const dir = projectBakeDir(root, project.name, variant.id);
   console.log(`bake dir: ${dir}`);
   console.log(`shard file: bake/${project.name}-${slug}/shard-${args.shard}-of-${args.shards}.json`);
-  console.log(`next on 4070 Ti box: TD_ROOT=~/dev/terrain-diffusion bun scripts/td-bake.py ... (face jobs land here once face raster lands)`);
+  console.log("next on 4070 Ti box: bun scripts/td-bake.py ... from ../terrain-diffusion"
+    + " (face jobs land here once face raster lands). Campaign bakes go through WSL2 —"
+    + " docs/ref/wsl-bake-env.md.");
 }
 
 function listTiles(level) {

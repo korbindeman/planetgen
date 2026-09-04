@@ -13,7 +13,9 @@ learned grains with Hydrology between them. That file is
 [custom-model.md](../custom-model.md). Do not rewrite this stage to
 match that order.
 
-The model is a sibling checkout at `~/dev/terrain-diffusion`. It is never
+The model is a sibling checkout at `../terrain-diffusion` — see
+[ref/terrain-diffusion.md § Where it lives](../ref/terrain-diffusion.md#where-it-lives)
+for that path and for the native-Windows and WSL2 environments. It is never
 vendored into this tree. What it reads is
 [ref/terrain-diffusion.md](../ref/terrain-diffusion.md).
 
@@ -130,15 +132,29 @@ Isolated lon/lat crops still go through `tiff-export`. CLI:
 
 ## Open
 
-- **Seams.** Overlap generation bands across face edges and blend
-  elevation in the overlap. Corners, where three faces meet, are the hard
-  case. `bun run check:tiles` proves the warp on a spherical field, not
-  on 90 m noise. This needs a real bake. Pick two tiles that share a
-  **cube edge**, not two on the same face. Same-face tiles use the
-  shared-origin path. Bake both. Crop the join from orbit and at
-  Maps-style zoom. Then crop a corner. The unmerged terrain-diffusion
-  PR #15 "Sphere export" does cube-face sampling. It is prior art to
-  read, not code to trust.
+- **Seams — a corner is done; the rest of the sphere is not.** The three
+  tiles at one cube corner were baked and read as a 3D box, and the cause
+  was not the stitch: the equal-angle face square skews 30° at a corner, so
+  the model's isotropic terrain arrived combed 60–120° differently on each
+  face. The bake now runs on a conformal per-face plane and that corner
+  draws as continuous ground. The whole argument, and the three pipeline
+  bugs the first real bake exposed, are
+  [cubesphere-seam-2026-09.md](../history/cubesphere-seam-2026-09.md).
+  What is still open:
+  - **Only one corner has been looked at**, on one variant, in the
+    orthographic `bun run seam` capture. Not in the app on the globe, not
+    at an edge midpoint (where scale is worst instead of skew), not at a
+    polar fold, not on a second variant.
+  - **A fold's two sides are still separate diffusions.** Their elevations
+    agree; their terrain does not. The halo fade hides it over ~8 km and it
+    did not read on this corner. `SEAM_HALO_CELLS`, or generating both
+    sides of a fold in one pass, is the lever if it ever does.
+  - **Same-face joins are still unproven on a real bake.** They should be
+    seamless by construction — neighbours share the bake plane's lattice,
+    so the model gives them the same noise — but that has only been checked
+    as geometry, never baked and cropped.
+  - The unmerged terrain-diffusion PR #15 "Sphere export" does cube-face
+    sampling. It is prior art to read, not code to trust.
 - **Poles.** The cubesphere removes equirect distortion. The ±60°
   training clip remains. Mitigation is pinning climate channels cold at
   high SNR and treating ice sheets as a post-pass. Open until a polar
@@ -166,7 +182,10 @@ the 90 m DEM.
 1. Cubesphere face raster + adjacency table, and one face generated via
    `WorldPipeline` with imported conditioning. Compare against a
    `tiff-export` crop of the same region.
-2. One face edge, then one corner, seam-blended and cropped.
+2. One face edge, then one corner, seam-blended and cropped. **One corner
+   done** — `bun run bake:tiles <variant> <tile>...` bakes without a
+   browser, `bun run seam` crops it. An edge midpoint and a polar fold are
+   not done.
 3. Cheap whole-planet pass: all six faces at 23 km conditioning, coarse
    model only. First look at the planet as a planet. A drainage graph
    on that pass would be a preview. Those rivers do not constrain the

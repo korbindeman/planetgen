@@ -746,6 +746,46 @@ function rasterizeLonLatBox(mesh, map, westDeg, southDeg, eastDeg, northDeg, wid
  * repeated rim. Zero is the tile itself.
  */
 const NO_SHIFT = [0];
+
+/*
+ * Conditioning for a bake, on the face's conformal plane rather than on the
+ * tile's own square. That plane is what stops the model's isotropic terrain
+ * arriving on the ground combed in a direction that changes per face — see
+ * the bake plane in src/cubesphere.js. `rect` comes from tileBakeRect, so
+ * every tile of a face lands on one lattice and neighbours still share
+ * noise. The result is resampled back onto the tile raster after the bake.
+ */
+function rasterizeBakeRect(mesh, map, tile, rect, lon0) {
+    const f = Cubesphere.FACES[tile.face];
+    return rasterizeSphereGrid(
+        mesh, map, rect.width, rect.height,
+        (pt) => {
+            const cl = Math.cos(pt.lat);
+            const p = [cl * Math.cos(pt.lon), cl * Math.sin(pt.lon), Math.sin(pt.lat)];
+            const c = p[0] * f.n[0] + p[1] * f.n[1] + p[2] * f.n[2];
+            /*
+             * Refuse the far hemisphere, the way the equal-angle projector
+             * refuses w <= 0. Stereographic has an answer for almost the whole
+             * sphere, and taking it here is a trap: a triangle with one vertex
+             * near the antipode projects to enormous coordinates, its bounding
+             * box covers the raster, and it paints the tile a single far-away
+             * elevation. That is exactly what happened — one tile's whole
+             * conditioning came out flat at -0.920.
+             */
+            if (!(c > 1e-6)) return null;
+            const k = 2 / (1 + c);
+            const X = (p[0] * f.u[0] + p[1] * f.u[1] + p[2] * f.u[2]) * k;
+            const Y = (p[0] * f.v[0] + p[1] * f.v[1] + p[2] * f.v[2]) * k;
+            return {
+                x: X / rect.step - rect.originI,
+                y: rect.originJ + rect.height - Y / rect.step,
+            };
+        },
+        lon0,
+        () => NO_SHIFT,
+    );
+}
+
 function rasterizeCubeTile(mesh, map, tile, width, height, lon0, padCells) {
     const pad = padCells | 0;
     const rw = width + 2 * pad;
@@ -781,6 +821,7 @@ module.exports = {
     rasterizeEquirect,
     rasterizeLonLatBox,
     rasterizeCubeTile,
+    rasterizeBakeRect,
     BOUNDARY_CONVERGENT,
     BOUNDARY_DIVERGENT,
     BOUNDARY_TRANSFORM,

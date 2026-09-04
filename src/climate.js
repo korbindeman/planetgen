@@ -37,13 +37,13 @@ const DEFAULTS = {
     stormStrength: 0.40,          // mid-latitude storm track
     stormCentre: 52,
     stormWidth: 18,
-    subsidenceStrength: 0.34,     // subtropical high, suppresses rain
+    subsidenceStrength: 0.38,     // subtropical high, suppresses rain
     subsidenceCentre: 26,
-    subsidenceWidth: 11,
+    subsidenceWidth: 12,
     rainBase: 0.45,
 
-    orographicGain: 2.6,          // extra rainout per unit of upwind elevation gain
-    rainEfficiency: 0.14,         // share of the passing air that rains out per cell;
+    orographicGain: 2.9,          // extra rainout per unit of upwind elevation gain
+    rainEfficiency: 0.155,        // share of the passing air that rains out per cell;
                                   // at ~226 km per cell this empties a parcel over a
                                   // continent's width rather than in a few steps
     recycling: 0.64,              // share of rain that the land returns to the passing
@@ -54,7 +54,7 @@ const DEFAULTS = {
                                   // more land before it reaches an interior
     evaporation: 0.55,            // ocean humidity at freezing
     evaporationWarm: 0.60,        // extra ocean humidity when warm
-    moistureGain: 1.62,           // maps delivered rain onto the 0..1 biome axis
+    moistureGain: 1.55,           // maps delivered rain onto the 0..1 biome axis
 
     seasonShift: 12,              // degrees the rain belt moves with the sun
     windSeasonShift: 3,           // how far the wind bands themselves move. Less than

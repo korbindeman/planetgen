@@ -90,7 +90,7 @@ Judge the **batch**, not one seed: a failure mode that hits every seed reads as 
 
 - Real river networks, discharge, lakes, canyons, fjords, atolls — those wait for **Carve**, after the 90 m bake
 - Photographic globe effects (atmosphere, clouds, specular water) unless we are judging the base
-- Vendoring terrain-diffusion or the hydrology sim into this tree. The studio orchestrates the sibling checkout at `~/dev/terrain-diffusion`.
+- Vendoring terrain-diffusion or the hydrology sim into this tree. The studio orchestrates the sibling checkout at `../terrain-diffusion` (not `~/dev`) — it runs natively on Windows for tile bakes and in WSL2 for campaign bakes. Both are [docs/ref/terrain-diffusion.md § Where it lives](docs/ref/terrain-diffusion.md#where-it-lives).
 
 ## Origin
 

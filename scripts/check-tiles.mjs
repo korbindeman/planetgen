@@ -332,6 +332,287 @@ function lonlat(d) {
     console.log(`        a 90 m pixel is 90–${(90 * Math.SQRT2).toFixed(0)} m depending where it lands`);
 }
 
+/*
+ * 9b. Scale was only half the story, and the missing half is what a bake
+ * shows. The two face axes are not perpendicular on the ground: the skew is
+ * 0 at a face centre and at an edge midpoint — where the scale ratio is
+ * worst — and 30 degrees at a face corner, where the scale ratio is 1. Two
+ * equal axes 120 degrees apart turn a circle into a sqrt(3) ellipse, so the
+ * ground anisotropy peaks at a *corner*, and is worse than the sqrt(2) above.
+ *
+ * It matters because the model paints terrain that is isotropic in its own
+ * square grid, so whatever this map does to a circle is printed on the
+ * ground — and it points a different way on each face. Two tiles across a
+ * fold then meet with their terrain combed 60-120 degrees apart, which no
+ * amount of stitching the elevations can hide. Report it, so a change of
+ * projection is judged on this number and not only on scale.
+ */
+{
+    const at = (a, b) => {
+        const h = 1e-4;
+        const d = (u0, v0, u1, v1) => {
+            const A = Cube.faceDirection(0, u0, v0);
+            const B = Cube.faceDirection(0, u1, v1);
+            return [A[0] - B[0], A[1] - B[1], A[2] - B[2]];
+        };
+        const du = d(a + h, b, a - h, b);
+        const dv = d(a, b + h, a, b - h);
+        const la = Math.hypot(du[0], du[1], du[2]);
+        const lb = Math.hypot(dv[0], dv[1], dv[2]);
+        const cos = (du[0] * dv[0] + du[1] * dv[1] + du[2] * dv[2]) / (la * lb);
+        /* Singular values of [du dv]: what the unit circle becomes. */
+        const p = la * la + lb * lb;
+        const q = la * lb * Math.sqrt(Math.max(0, 1 - cos * cos));
+        const disc = Math.sqrt(Math.max(0, p * p - 4 * q * q));
+        return {
+            aniso: Math.sqrt((p + disc) / 2) / Math.sqrt(Math.max(1e-30, (p - disc) / 2)),
+            skew: 90 - Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI,
+        };
+    };
+    const SQRT3 = Math.sqrt(3);
+    const centre = at(0, 0);
+    const edge = at(1 - 1e-4, 0);
+    const corner = at(1 - 1e-4, 1 - 1e-4);
+    check("a face centre is isotropic", Math.abs(centre.aniso - 1) < 0.01,
+        `${centre.aniso.toFixed(3)} : 1`);
+    check("an edge midpoint is skew-free, so there its anisotropy is the scale ratio",
+        Math.abs(edge.skew) < 0.01 && Math.abs(edge.aniso - Math.SQRT2) < 0.01,
+        `skew ${edge.skew.toFixed(2)} deg, ${edge.aniso.toFixed(3)} : 1`);
+    check(`a face corner is sqrt(3) = ${SQRT3.toFixed(3)}, the worst on the sphere`,
+        Math.abs(corner.skew + 30) < 0.05 && Math.abs(corner.aniso - SQRT3) < 0.01,
+        `skew ${corner.skew.toFixed(2)} deg, ${corner.aniso.toFixed(3)} : 1`);
+    console.log(`        terrain isotropic in the raster comes out `
+        + `${corner.aniso.toFixed(2)}:1 stretched at a face corner, and the`);
+    console.log(`        stretch points a different way on each face that meets there`);
+}
+
+/*
+ * 9c. The bake plane answers 9b. Stereographic from the face centre is
+ * conformal, so the anisotropy above becomes exactly 1 everywhere and the
+ * model's isotropic terrain has no direction to inherit. What it spends
+ * instead is scale, and it spends less of it than the equal-angle square
+ * does: 1.27x across a face against sqrt(2).
+ */
+{
+    const aniso = (face, X, Y) => {
+        const h = 1e-5;
+        const d = (x0, y0, x1, y1) => {
+            const A = Cube.faceStereoDirection(face, x0, y0);
+            const B = Cube.faceStereoDirection(face, x1, y1);
+            return [A[0] - B[0], A[1] - B[1], A[2] - B[2]];
+        };
+        const du = d(X + h, Y, X - h, Y);
+        const dv = d(X, Y + h, X, Y - h);
+        const la = Math.hypot(du[0], du[1], du[2]);
+        const lb = Math.hypot(dv[0], dv[1], dv[2]);
+        const cos = (du[0] * dv[0] + du[1] * dv[1] + du[2] * dv[2]) / (la * lb);
+        const p = la * la + lb * lb;
+        const q = la * lb * Math.sqrt(Math.max(0, 1 - cos * cos));
+        const disc = Math.sqrt(Math.max(0, p * p - 4 * q * q));
+        return Math.sqrt((p + disc) / 2) / Math.sqrt(Math.max(1e-30, (p - disc) / 2));
+    };
+    const H = Cube.FACE_STEREO_HALF;
+    let worst = 0;
+    let at = "";
+    for (let face = 0; face < 6; face++) {
+        for (let gy = 0; gy <= 12; gy++) {
+            for (let gx = 0; gx <= 12; gx++) {
+                const X = -H + 2 * H * gx / 12;
+                const Y = -H + 2 * H * gy / 12;
+                const a = aniso(face, X, Y);
+                if (a > worst) { worst = a; at = `face ${face} (${X.toFixed(2)}, ${Y.toFixed(2)})`; }
+            }
+        }
+    }
+    check("the bake plane is conformal — anisotropy 1 everywhere",
+        worst < 1.0005, `worst ${worst.toFixed(6)} at ${at}`);
+
+    const step = (X, Y) => Cube.faceStereoGroundStep(X, Y, 1);
+    const centre = step(0, 0);
+    const cornerXY = Math.sqrt(3) - 1;
+    const ratio = centre / step(cornerXY, cornerXY);
+    check(`the bake plane spends ${ratio.toFixed(3)}x of scale instead`,
+        Math.abs(ratio - (3 - Math.sqrt(3))) < 0.002 && ratio < Math.SQRT2,
+        `expected 3 - sqrt(3) = ${(3 - Math.sqrt(3)).toFixed(3)}, and under the equal-angle sqrt(2)`);
+
+    /* Round trip, or a bake cannot be put back on the tile it came from. */
+    let err = 0;
+    for (let k = 0; k < 4000; k++) {
+        const {lon, lat} = randomLonLat();
+        const p = Cube.lonLatToXyz(lon, lat);
+        const face = Cube.faceOf(p);
+        const s = Cube.faceStereo(face, p);
+        const q = Cube.faceStereoDirection(face, s.X, s.Y);
+        err = Math.max(err, Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]));
+    }
+    check("bake plane round-trips a direction", err < 1e-12, `worst ${err.toExponential(2)}`);
+
+    /* One lattice per face is the whole point: neighbours must land on the
+     * same cells, or the bake stops sharing noise and every same-face edge
+     * becomes a join. Rects are sized off the footprint, so they differ. */
+    const cells = 14;
+    const a = Cube.tileBakeRect({face: 0, level: 4, i: 7, j: 7}, cells, 64);
+    const b = Cube.tileBakeRect({face: 0, level: 4, i: 8, j: 7}, cells, 64);
+    const c = Cube.tileBakeRect({face: 0, level: 4, i: 15, j: 15}, cells, 64);
+    check("same-face neighbours share one lattice",
+        a.step === b.step && a.step === c.step
+        && Number.isInteger(a.originI) && Number.isInteger(b.originI)
+        && b.originI > a.originI && b.originI < a.originI + a.width,
+        `steps ${a.step.toExponential(3)}, origins ${a.originI} then ${b.originI}, widths ${a.width}/${b.width}`);
+    console.log(`        a level-4 bake rect is ${a.width}x${a.height} at the face centre,`
+        + ` ${c.width}x${c.height} at a corner`);
+
+    /* And the rect really does cover its tile, or the resample back into the
+     * tile raster would read off the end of the bake. */
+    let outside = 0;
+    for (const tile of [{face: 0, level: 4, i: 7, j: 7}, {face: 1, level: 4, i: 15, j: 0},
+                        {face: 5, level: 4, i: 15, j: 0}, {face: 4, level: 4, i: 0, j: 0}]) {
+        const rect = Cube.tileBakeRect(tile, cells, 0);
+        for (let gy = 0; gy <= 24; gy++) {
+            for (let gx = 0; gx <= 24; gx++) {
+                const px = Cube.bakePixel(tile, rect, Cube.tileDirection(tile, gx / 24, gy / 24));
+                if (!px || px.x < -1e-6 || px.y < -1e-6
+                    || px.x > rect.width + 1e-6 || px.y > rect.height + 1e-6) outside++;
+            }
+        }
+    }
+    check("a bake rect covers its whole tile", outside === 0, `${outside} samples off the rect`);
+
+    /*
+     * And the whole trip: rasterize a rough field on the bake plane, resample
+     * it onto the tile raster, compare with the field sampled there directly.
+     * This is the step that replaces "the model painted on the tile square",
+     * so if it loses the terrain there is no point in the plane being nicer.
+     */
+    {
+        const Seam = require(join(root, "src", "td-seam.js"));
+        const rough = (p) => {
+            let v = 0;
+            for (let k = 1; k <= 5; k++) {
+                const f = 600 * k;
+                v += Math.sin(f * p[0] + 1.7 * k) * Math.cos(f * p[1] - 0.9 * k)
+                    * Math.sin(f * p[2] + 2.3 * k) / k;
+            }
+            return v;
+        };
+        let worstErr = 0;
+        let worstKept = 1;
+        for (const tile of [{face: 0, level: 4, i: 7, j: 7}, {face: 1, level: 4, i: 15, j: 0}]) {
+            const cells = 14;
+            const full = Cube.tileBakeRect(tile, cells, 0);
+            /* The bake is 2x the tile raster in production (3584 native, 1792
+             * dumped), so test the resample at the ratio it really runs at. */
+            const S = 384;
+            const src = new Float32Array(S * S);
+            for (let y = 0; y < S; y++) {
+                for (let x = 0; x < S; x++) {
+                    src[y * S + x] = rough(Cube.bakeDirection(
+                        tile, full, (x + 0.5) / S * full.width, (y + 0.5) / S * full.height,
+                    ));
+                }
+            }
+            const T = 192;
+            const got = Seam.bakeToTile(tile, full, src, S, S, T, T);
+            const want = Seam.rasterizeTile(tile, T, T, rough);
+            let err = 0;
+            const bend = (a) => {
+                let s = 0, n = 0;
+                for (let y = 1; y < T - 1; y++) {
+                    for (let x = 1; x < T - 1; x++) {
+                        s += Math.abs(a[y * T + x] * 2 - a[y * T + x - 1] - a[y * T + x + 1]);
+                        n++;
+                    }
+                }
+                return s / n;
+            };
+            for (let i = 0; i < T * T; i++) err = Math.max(err, Math.abs(got[i] - want[i]));
+            worstErr = Math.max(worstErr, err);
+            worstKept = Math.min(worstKept, bend(got) / bend(want));
+        }
+        check("a bake resamples back onto its tile", worstErr < 0.06 && worstKept > 0.85,
+            `worst error ${worstErr.toFixed(4)}, kept ${(worstKept * 100).toFixed(0)}% of the detail`);
+    }
+
+    /*
+     * And the halo, which is the part that has to line up with a *neighbour*.
+     * The bake plane broke the old arrangement: td-bake.py grew the raster on
+     * a named side, which meant "past the tile's east edge" only while the
+     * raster was the tile square. Now the exporter grows the rect and the job
+     * cuts the halo back out through `rasterizeHalo`, so it lands in the
+     * tile's own continuation. This walks the whole path — grow, bake,
+     * resample, cut, then read it the way `blendFromNeighbor` does — and
+     * checks the neighbour finds its own ground there.
+     */
+    {
+        const Seam = require(join(root, "src", "td-seam.js"));
+        const TdTile = require(join(root, "src", "td-tile.js"));
+        const field = (p) => p[2];
+        const tile = {face: 0, level: 2, i: 3, j: 2};
+        const nb = Cube.neighborTile(tile, "east");
+        const halo = TdTile.haloCellsFor(tile);
+        check("the halo fixture is a fold with an east halo",
+            nb && nb.face !== tile.face && halo.east === TdTile.SEAM_HALO_CELLS);
+
+        const cells = 8;
+        const rect = Cube.tileBakeRect(tile, cells, 0, halo);
+        const S = 256;
+        const src = new Float32Array(S * S);
+        for (let y = 0; y < S; y++) {
+            for (let x = 0; x < S; x++) {
+                src[y * S + x] = field(Cube.bakeDirection(
+                    tile, rect, (x + 0.5) / S * rect.width, (y + 0.5) / S * rect.height,
+                ));
+            }
+        }
+        const side = 128;
+        const sx = S / rect.width;
+        const sy = S / rect.height;
+        const sample = (d) => {
+            const px = Cube.bakePixel(tile, rect, d);
+            return px ? Seam.sampleBicubic(src, S, S, px.x * sx, px.y * sy) : 0;
+        };
+        const haloPx = Math.round(side * halo.east / cells);
+        const strip = Seam.rasterizeHalo(tile, "east", side, side, haloPx, sample);
+        check("the cut halo is a strip of the tile raster's width",
+            strip.width === haloPx && strip.height === side && haloPx > 0,
+            `${strip.width}x${strip.height}`);
+
+        const baked = {
+            tile,
+            width: side,
+            height: side,
+            elev: Seam.bakeToTile(tile, rect, src, S, S, side, side),
+            halo: {east: strip},
+        };
+        let hits = 0;
+        let worst = 0;
+        for (let y = 0; y < side; y++) {
+            const d = Cube.tileDirection(nb, 0.5 / side, (y + 0.5) / side);
+            const ll = Cube.xyzToLonLat(d);
+            const got = Seam.sampleSrc(baked, ll.lon, ll.lat);
+            if (got == null || !Number.isFinite(got)) continue;
+            hits++;
+            worst = Math.max(worst, Math.abs(got - field(d)));
+        }
+        check("the neighbour reads its own ground out of the cut halo",
+            hits > side * 0.9 && worst < 0.02,
+            `hits ${hits}/${side}, err ${worst.toFixed(4)}`);
+
+        /* The grown rect must actually contain what the cut asks for, or the
+         * halo is bicubic-clamped rim rather than terrain. */
+        let off = 0;
+        for (let k = 0; k <= 32; k++) {
+            for (const past of [0.001, 0.5, 0.999]) {
+                const d = Cube.tileDirection(tile, 1 + past * halo.east / cells, (k + 0.5) / 33);
+                const px = Cube.bakePixel(tile, rect, d);
+                if (!px || px.x < 0 || px.y < 0 || px.x > rect.width || px.y > rect.height) off++;
+            }
+        }
+        check("the grown rect covers the halo it will be cut for", off === 0,
+            `${off} halo samples outside the bake`);
+    }
+}
+
 function arc(p, q) {
     const a = Cube.lonLatToXyz(p.lon, p.lat);
     const b = Cube.lonLatToXyz(q.lon, q.lat);
@@ -351,11 +632,12 @@ function arc(p, q) {
 /* 11. The picker uses one tile size: the bakeable level nearest 310 km. */
 {
     const scaleKm = 23;
+    const HALO = require(join(root, "src", "td-tile.js")).SEAM_HALO_CELLS;
     for (const [name, radiusKm, want] of [["thalos", 3186, 4], ["earth", 6371, 5]]) {
-        const level = Cube.bestLevel(310, radiusKm, scaleKm, 6, 24);
+        const level = Cube.bestLevel(310, radiusKm, scaleKm, 6, 24, HALO);
         const cells = Cube.tileCells(level, radiusKm, scaleKm);
         const km = Cube.tileEdgeKm(level, radiusKm);
-        const window = Cube.usableLevels(radiusKm, scaleKm, 6, 24);
+        const window = Cube.usableLevels(radiusKm, scaleKm, 6, 24, HALO);
         check(`${name} picker is L${want}`, level === want, `got L${level}`);
         check(`${name} picker stays inside the job cap`, cells >= 6 && cells <= 24, `${cells} cells`);
         check(`${name} picker is in the bakeable window`, window.includes(level), `${window}`);
@@ -376,20 +658,28 @@ function arc(p, q) {
     const TdTile = require(join(root, "src", "td-tile.js"));
     for (const [name, radiusKm] of [["thalos", 3186], ["earth", 6371], ["small", 1800], ["big", 12000]]) {
         const level = Cube.bestLevel(
-            TdTile.TARGET_TILE_KM, radiusKm, TdTile.SCALE_KM, TdTile.MIN_CELLS, TdTile.MAX_CELLS,
+            TdTile.TARGET_TILE_KM, radiusKm, TdTile.SCALE_KM,
+            TdTile.MIN_CELLS, TdTile.MAX_CELLS, TdTile.SEAM_HALO_CELLS,
         );
         const cells = Cube.tileCells(level, radiusKm, TdTile.SCALE_KM);
+        /* The rect a fold tile really submits, halo and all — that is what
+         * submitJob measures against the cap, not the nominal cell count. */
+        const worst = Cube.worstBakeCells(level, cells, TdTile.SEAM_HALO_CELLS);
         check(`${name} starts on a level the bake accepts`,
-            cells >= TdTile.MIN_CELLS && cells <= TdTile.MAX_CELLS,
-            `L${level} is ${cells} cells, cap is ${TdTile.MIN_CELLS}-${TdTile.MAX_CELLS}`);
-        console.log(`        ${name}: L${level}, ${cells} cells, ${Cube.tileEdgeKm(level, radiusKm).toFixed(0)} km`);
+            cells >= TdTile.MIN_CELLS && worst <= TdTile.MAX_CELLS,
+            `L${level} is ${cells} cells, worst rect ${worst}, cap is ${TdTile.MIN_CELLS}-${TdTile.MAX_CELLS}`);
+        console.log(`        ${name}: L${level}, ${cells} cells (worst rect ${worst}),`
+            + ` ${Cube.tileEdgeKm(level, radiusKm).toFixed(0)} km`);
     }
     /* The bakeable window bestLevel chooses from has to stay in cap too. */
     let bad = 0;
     for (let radiusKm = 1000; radiusKm <= 20000; radiusKm += 250) {
-        for (const level of Cube.usableLevels(radiusKm, TdTile.SCALE_KM, TdTile.MIN_CELLS, TdTile.MAX_CELLS)) {
+        for (const level of Cube.usableLevels(
+            radiusKm, TdTile.SCALE_KM, TdTile.MIN_CELLS, TdTile.MAX_CELLS, TdTile.SEAM_HALO_CELLS,
+        )) {
             const cells = Cube.tileCells(level, radiusKm, TdTile.SCALE_KM);
-            if (cells < TdTile.MIN_CELLS || cells > TdTile.MAX_CELLS) bad++;
+            const worst = Cube.worstBakeCells(level, cells, TdTile.SEAM_HALO_CELLS);
+            if (cells < TdTile.MIN_CELLS || worst > TdTile.MAX_CELLS) bad++;
         }
     }
     check("every bakeable level stays in cap, at every radius", bad === 0, `${bad} out of range`);
@@ -433,14 +723,24 @@ function arc(p, q) {
         inPad && Math.abs(inPad.x - (pad + 1.5 * cells)) < 0.05,
         inPad ? `x=${inPad.x.toFixed(3)}` : "null");
 
-    const oL = TdTile.contextOrigin(left, cells);
-    const oR = TdTile.contextOrigin(right, cells);
-    const oN = TdTile.contextOrigin(north, cells);
-    check("east neighbour originJ steps by the interior width",
-        oR.originJ === oL.originJ + cells, `${oR.originJ} vs ${oL.originJ + cells}`);
-    check("east neighbour shares originI", oR.originI === oL.originI);
-    check("north neighbour originI steps toward row 0",
-        oN.originI === oL.originI - cells, `${oN.originI} vs ${oL.originI - cells}`);
+    /*
+     * The bake asks in bake-plane cells now, not in the tile square's, so
+     * this is the property that has to hold there: two tiles that touch must
+     * name overlapping cells of one lattice, or they stop sharing noise and
+     * every same-face edge becomes a join. (contextOrigin held it for the old
+     * square. tileBakeRect holds it for the plane the model actually sees.)
+     */
+    const rL = Cube.tileBakeRect(left, cells, TdTile.CONTEXT_PAD);
+    const rR = Cube.tileBakeRect(right, cells, TdTile.CONTEXT_PAD);
+    const rN = Cube.tileBakeRect(north, cells, TdTile.CONTEXT_PAD);
+    const overlaps = (a, b) => a.originI < b.originI + b.width && b.originI < a.originI + a.width
+        && a.originJ < b.originJ + b.height && b.originJ < a.originJ + a.height;
+    check("neighbouring bake rects are cells of one lattice",
+        rL.step === rR.step && rL.step === rN.step
+        && Number.isInteger(rL.originI) && Number.isInteger(rR.originJ));
+    check("an east neighbour's rect overlaps this one's pad", overlaps(rL, rR),
+        `${rL.originI}+${rL.width} vs ${rR.originI}+${rR.width}`);
+    check("a north neighbour's rect overlaps this one's pad", overlaps(rL, rN));
     check("CONTEXT_PAD is the U-Net window tiff-export uses",
         TdTile.CONTEXT_PAD === 64);
 }
@@ -574,6 +874,49 @@ function arc(p, q) {
     check("a rotated polar fold stitches the same way",
         pEdge && polarErr < 0.05,
         `edge ${pEdge}, err ${polarErr.toFixed(4)}`);
+    /*
+     * A smooth field says nothing about the interpolator — bilinear is exact
+     * on it. Terrain is not smooth, and the stitched side of a real fold came
+     * out visibly softer than the side it met. So resample a field with real
+     * energy near the sampling limit and measure how much of its roughness
+     * survives the turn: bicubic keeps 89% of this one, bilinear 77%.
+     */
+    {
+        const rough = (p) => {
+            let v = 0;
+            for (let k = 1; k <= 5; k++) {
+                const f = 600 * k;
+                v += Math.sin(f * p[0] + 1.7 * k) * Math.cos(f * p[1] - 0.9 * k)
+                    * Math.sin(f * p[2] + 2.3 * k) / k;
+            }
+            return v;
+        };
+        const rTile = {face: 0, level: 2, i: 3, j: 2};
+        const nTile = Cube.neighborTile(rTile, "east");
+        const RW = 256;
+        const halo = Seam.rasterizeHalo(rTile, "east", RW, RW, 24, rough);
+        const line = [];
+        const got = [];
+        for (let y = 0; y < RW; y++) {
+            const d = Cube.tileDirection(nTile, 0.5 / RW, (y + 0.5) / RW);
+            const ll = Cube.xyzToLonLat(d);
+            line.push(rough(d));
+            got.push(Seam.sampleSrc({
+                tile: rTile, width: RW, height: RW,
+                elev: Seam.rasterizeTile(rTile, RW, RW, rough),
+                halo: {east: halo},
+            }, ll.lon, ll.lat));
+        }
+        const bend = (a) => {
+            let s = 0;
+            for (let i = 1; i < a.length - 1; i++) s += Math.abs(a[i] * 2 - a[i - 1] - a[i + 1]);
+            return s / (a.length - 2);
+        };
+        const kept = bend(got) / bend(line);
+        check("the fold resample keeps a rough field's detail",
+            kept > 0.85, `kept ${(kept * 100).toFixed(0)}% of the along-seam roughness`);
+    }
+
     check("SEAM_HALO_CELLS is one coarse cell of overlap",
         TdTile.SEAM_HALO_CELLS === 1);
     const interiorHalo = TdTile.haloCellsFor({face: 0, level: 3, i: 3, j: 3});

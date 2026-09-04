@@ -17,6 +17,8 @@ const ShapeArtifact = require('./shape-artifact');
 const LayoutArtifact = require('./layout-artifact');
 const Look = require('./look');
 const TdOverlay = require('./td-overlay');
+const TdExport = require('./td-export');
+const TdShade = require('./td-shade');
 const TdTile = require('./td-tile');
 const Cubesphere = require('./cubesphere');
 const Measure = require('./measure');
@@ -761,6 +763,24 @@ function canvasEquirectFit(canvas) {
     return equirectFitScale(canvas.width, canvas.height);
 }
 
+/*
+ * The globe canvas fills the figure now, so clip space would stretch the
+ * sphere into an ellipse. Squeeze the long axis instead: the sphere keeps
+ * the short side's diameter, and a zoomed view spends the extra width on
+ * terrain rather than losing it to a square box.
+ */
+function globeFitScale(width, height) {
+    const aspect = width / Math.max(1, height);
+    if (aspect >= 1) return {x: 1 / aspect, y: 1};
+    return {x: 1, y: aspect};
+}
+
+function canvasGlobeFit() {
+    const canvas = document.getElementById('output');
+    if (!canvas) return {x: 1, y: 1};
+    return globeFitScale(canvas.width, canvas.height);
+}
+
 function clampEquirectPanY() {
     const canvas = document.getElementById('output');
     if (!canvas) return;
@@ -769,13 +789,15 @@ function clampEquirectPanY() {
     equirectPanY = Math.min(maxPan, Math.max(-maxPan, equirectPanY));
 }
 
-function syncEquirectCanvasSize() {
+function syncCanvasSize() {
     const canvas = document.getElementById('output');
-    if (!canvas || viewMode !== 'equirect' || viewPersistSuspended) return false;
+    if (!canvas || viewPersistSuspended) return false;
     const host = canvas.closest('.globe');
     if (!host) {
-        if (canvas.width !== EQUIRECT_W) canvas.width = EQUIRECT_W;
-        if (canvas.height !== EQUIRECT_H) canvas.height = EQUIRECT_H;
+        const w = viewMode === 'equirect' ? EQUIRECT_W : GLOBE_SIZE;
+        const h = viewMode === 'equirect' ? EQUIRECT_H : GLOBE_SIZE;
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
         return false;
     }
     const dpr = window.devicePixelRatio || 1;
@@ -790,13 +812,13 @@ function syncEquirectCanvasSize() {
 
 function syncViewModeDom() {
     const canvas = document.getElementById('output');
-    if (viewMode === 'equirect') {
-        document.body.classList.add('view-equirect');
-        syncEquirectCanvasSize();
-    } else {
+    document.body.classList.toggle('view-equirect', viewMode === 'equirect');
+    if (viewMode !== 'equirect' && viewPersistSuspended) {
+        /* Preview sheets composite the globe into square cells. */
         canvas.width = GLOBE_SIZE;
         canvas.height = GLOBE_SIZE;
-        document.body.classList.remove('view-equirect');
+    } else {
+        syncCanvasSize();
     }
     syncZoomButtons();
 }
@@ -1343,7 +1365,8 @@ let _draw_pending = false;
 let _draw_token = 0;
 function globeProjectionMatrix() {
     let u_projection = mat4.create();
-    mat4.scale(u_projection, u_projection, [zoom, zoom, 0.5]);
+    const fit = canvasGlobeFit();
+    mat4.scale(u_projection, u_projection, [zoom * fit.x, zoom * fit.y, 0.5]);
     mat4.multiply(u_projection, u_projection, dragRotation);
     applyGlobeOrientation(u_projection);
     return u_projection;
@@ -1418,44 +1441,13 @@ const TD_LAND_PEAK_M = Tectonics.LAND_PEAK_M;
 const TD_LAND_POWER = Tectonics.LAND_POWER;
 const TD_OCEAN_DEPTH_M = Tectonics.OCEAN_DEPTH_M;
 const TD_OCEAN_POWER = Tectonics.OCEAN_POWER;
-const TD_TEMP_SCALE = 40;
-const TD_TEMP_OFFSET = -15;
-const TD_PRECIP_MIN = 60;
-const TD_PRECIP_RANGE = 3400;
-const TD_PRECIP_POWER = 1.55;
 const TD_EARTH_KM = 40075.017;
 
-const {elevationToMeters} = Tectonics;
-
-function temperatureToC(t) {
-    return Math.max(-40, Math.min(40, TD_TEMP_SCALE * t + TD_TEMP_OFFSET));
-}
-
-function moistureToPrecipMm(m) {
-    return TD_PRECIP_MIN + TD_PRECIP_RANGE * Math.pow(clamp01(m), TD_PRECIP_POWER);
-}
-
-function temperatureStdC(moisture, elevationM, latRad) {
-    const mid = Math.sin(2 * Math.abs(latRad));
-    const inland = elevationM >= 0 ? (1 - clamp01(moisture)) : 0.12;
-    return 2.4 + 14 * mid * mid * (0.35 + 0.65 * inland);
-}
-
-function precipitationCvPct(moisture, latRad) {
-    const dry = 1 - clamp01(moisture);
-    const seasonal = 0.45 + 0.55 * Math.abs(Math.sin(2 * latRad));
-    return 16 + 58 * dry * seasonal;
-}
-
-function f32ToB64(arr) {
-    const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-    const chunk = 0x8000;
-    let s = '';
-    for (let i = 0; i < u8.length; i += chunk) {
-        s += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
-    }
-    return btoa(s);
-}
+/* Unit conversions and the layer encoder are src/td-export.js, shared with
+ * the headless bake so both submit the same body. */
+const {
+    fieldsToTdLayers, encodeTdLayers, f32ToB64,
+} = TdExport;
 
 function rasterizeEquirect(width, height, lon0) {
     return Planet.rasterizeEquirect(mesh, map, width, height, lon0);
@@ -1469,54 +1461,6 @@ function rasterizeCubeTile(tile, width, height, lon0, padCells) {
     return Planet.rasterizeCubeTile(mesh, map, tile, width, height, lon0, padCells);
 }
 
-function latOfRow(y, height) {
-    return (PI / 2) - (y + 0.5) / height * PI;
-}
-
-function fieldsToTdLayers(fields, width, height, latAtRow) {
-    const n = width * height;
-    const heightmap = new Float32Array(n);
-    const temperature = new Float32Array(n);
-    const temperatureStd = new Float32Array(n);
-    const precipitation = new Float32Array(n);
-    const precipitationCv = new Float32Array(n);
-    const rowLat = latAtRow || ((y) => latOfRow(y, height));
-    for (let y = 0; y < height; y++) {
-        const lat = rowLat(y);
-        for (let x = 0; x < width; x++) {
-            const i = y * width + x;
-            const eM = elevationToMeters(fields.elev[i]);
-            const tC = temperatureToC(fields.temp[i]);
-            const m = fields.moist[i];
-            heightmap[i] = eM;
-            temperature[i] = tC;
-            temperatureStd[i] = temperatureStdC(m, eM, lat);
-            precipitation[i] = moistureToPrecipMm(m);
-            precipitationCv[i] = precipitationCvPct(m, lat);
-        }
-    }
-    return {
-        heightmap,
-        temperature,
-        temperature_std: temperatureStd,
-        precipitation,
-        precipitation_cv: precipitationCv,
-        width,
-        height,
-    };
-}
-
-function encodeTdLayers(layers) {
-    return {
-        width: layers.width,
-        height: layers.height,
-        heightmap: f32ToB64(layers.heightmap),
-        temperature: f32ToB64(layers.temperature),
-        temperature_std: f32ToB64(layers.temperature_std),
-        precipitation: f32ToB64(layers.precipitation),
-        precipitation_cv: f32ToB64(layers.precipitation_cv),
-    };
-}
 
 function windowStats(layers, x0, y0, winW, winH) {
     const {width, height, heightmap, temperature, precipitation} = layers;
@@ -2171,46 +2115,23 @@ function drawNow() {
 }
 
 /*
- * One tile's conditioning. The raster is sampled in the tile's own face
- * space, so the cells sit where the bake will put them; the lon/lat box that
- * rides along is nominal, for the GeoTIFF's geotransform and for framing the
- * view. The tile identity is what actually places the result.
- *
- * The raster is the tile plus CONTEXT_PAD cells of real neighbour ground.
- * tiff-export would fill that window by repeating the rim, which is why
- * adjacent bakes met at a hard seam: each U-Net saw a wall, not the coast
- * continuing. Origin is the face-grid cell of that padded top-left, so two
- * tiles that share an edge share WorldPipeline coordinates and noise.
+ * One tile's conditioning job. The body itself is `TdExport.tileJobBody`, so
+ * a headless bake submits exactly what the studio does — see src/td-export.js
+ * for why the raster is the face's bake plane and not the tile square.
  */
 function exportTdTile(tile) {
-    const cells = tdTileCells();
-    const pad = TdTile.CONTEXT_PAD;
-    const raw = rasterizeCubeTile(tile, cells, cells, 0, pad);
-    const e = Cubesphere.paddedExtent(tile, pad, pad, cells, cells);
-    const layers = fieldsToTdLayers(raw, raw.width, raw.height, (row) => {
-        const b = e.b1 - (row + 0.5) / raw.height * (e.b1 - e.b0);
-        const mid = Cubesphere.xyzToLonLat(Cubesphere.faceDirection(tile.face, (e.a0 + e.a1) / 2, b));
-        return mid.lat * PI / 180;
-    });
-    const box = Cubesphere.tileBBox(tile);
-    const origin = TdTile.contextOrigin(tile, cells, pad);
     return {
-        name: Cubesphere.tileName(tile),
-        tile,
-        west: box.west,
-        south: box.south,
-        east: box.east,
-        north: box.north,
-        cropW: cells,
-        cropH: cells,
-        padCells: pad,
-        originI: origin.originI,
-        originJ: origin.originJ,
-        scaleKm: TdTile.SCALE_KM,
+        ...TdExport.tileJobBody(
+            {body: {radiusKm: tdRadiusKm()}},
+            tile,
+            {
+                cells: tdTileCells(),
+                rasterize: (t, rect) => Planet.rasterizeBakeRect(mesh, map, t, rect, 0),
+            },
+        ),
         seed: studio.seed,
         project: studio.project,
         variant: studio.variant && studio.variant.id || undefined,
-        layers: encodeTdLayers(layers),
     };
 }
 
@@ -2223,7 +2144,7 @@ function exportTdTile(tile) {
 function syncTdGridLevel() {
     TdOverlay.setGridLevel(Cubesphere.bestLevel(
         TdTile.TARGET_TILE_KM, tdRadiusKm(), TdTile.SCALE_KM,
-        TdTile.MIN_CELLS, TdTile.MAX_CELLS,
+        TdTile.MIN_CELLS, TdTile.MAX_CELLS, TdTile.SEAM_HALO_CELLS,
     ));
 }
 
@@ -2374,8 +2295,9 @@ function canvasToLonLat(x, y, width, height) {
 function rotateGlobePointToClip(lonLat, clipX, clipY) {
     const P = Cubesphere.lonLatToXyz(lonLat.lon, lonLat.lat);
     const V = vec3.transformMat4([], P, globeViewMatrix(mat4.create()));
-    let vx = clipX / zoom;
-    let vy = clipY / zoom;
+    const fit = canvasGlobeFit();
+    let vx = clipX / (zoom * fit.x);
+    let vy = clipY / (zoom * fit.y);
     const r2 = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
     const xy2 = vx * vx + vy * vy;
     const maxXy2 = r2 * 0.999999;
@@ -2749,7 +2671,7 @@ function setupDragRotation() {
             return;
         }
 
-        const size = Math.max(rect.width, rect.height);
+        const size = Math.min(rect.width, rect.height);
         const rx = dx / size * Math.PI * 2;
         const ry = dy / size * Math.PI * 2;
         const delta = mat4.create();
@@ -3028,30 +2950,23 @@ function paintTdSurface(crop) {
     /* Metres to the elevation units Look speaks, once per sample. */
     const e = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) e[i] = Tectonics.metersToElevation(crop.elevM[i]);
+    /* Lit in the local east/north frame, not the raster's own axes — see
+     * src/td-shade.js. Two tiles across a cube fold are lit the same way. */
+    const shading = TdShade.cropShade(e, w, h, crop);
 
     for (let y = 0; y < h; y++) {
-        const y0 = y === 0 ? y : y - 1;
-        const y1 = y === h - 1 ? y : y + 1;
         for (let x = 0; x < w; x++) {
             const i = y * w + x;
             const fx = (x + 0.5) / w;
             const fy = (y + 0.5) / h;
-            const gx = Math.min(climate.n - 1, Math.floor(fx * climate.n));
-            const gy = Math.min(climate.n - 1, Math.floor(fy * climate.n));
-            const gi = gy * climate.n + gx;
-            const moist = climate.moist[gi];
-            const temp = climate.temp[gi];
+            const moist = TdTile.samplePadded(climate.moist, climate.n, climate.n, fx, fy, climate.pad);
+            const temp = TdTile.samplePadded(climate.temp, climate.n, climate.n, fx, fy, climate.pad);
             const [r, g, b] = useReliefLook()
                 ? Look.reliefAlbedo(e[i])
                 : useClimateLook()
                     ? Look.climateAlbedo(e[i], moist)
                     : Look.surfaceAlbedo(e[i], moist, temp);
-            const x0 = x === 0 ? x : x - 1;
-            const x1 = x === w - 1 ? x : x + 1;
-            const shade = Look.hillshade(
-                (e[y * w + x1] - e[y * w + x0]) / (x1 - x0),
-                (e[y1 * w + x] - e[y0 * w + x]) / (y1 - y0),
-            );
+            const shade = shading[i];
             px[i * 4] = Math.round(r * shade * 255);
             px[i * 4 + 1] = Math.round(g * shade * 255);
             px[i * 4 + 2] = Math.round(b * shade * 255);
@@ -3062,28 +2977,26 @@ function paintTdSurface(crop) {
     return canvas;
 }
 
-/* This planet's moisture and temperature under a crop, coarse. */
+/*
+ * This planet's moisture and temperature under a crop, coarse.
+ *
+ * A cube tile takes one cell of pad. Reading the grid nearest-neighbour and
+ * unpadded put a hard colour step at every tile border — the two sides of a
+ * fold quantised the same continuous field into cells half a cell apart, so
+ * the join showed as a change of biome. The pad is what lets the bilinear
+ * below reach real neighbouring ground instead of clamping at the rim.
+ */
+const TD_CLIMATE_PAD = 1;
+
 function tdClimateUnder(crop) {
     const n = TD_CLIMATE_CELLS;
-    const raw = crop.tile
-        ? rasterizeCubeTile(crop.tile, n, n, 0)
-        : rasterizeLonLatBox(crop.west, crop.south, crop.east, crop.north, n, n, 0);
-    return {n, moist: raw.moist, temp: raw.temp};
-}
-
-function sampleTdField(field, n, fx, fy) {
-    const u = Math.max(0, Math.min(n - 1.001, fx * n - 0.5));
-    const v = Math.max(0, Math.min(n - 1.001, fy * n - 0.5));
-    const x0 = Math.floor(u);
-    const y0 = Math.floor(v);
-    const x1 = Math.min(n - 1, x0 + 1);
-    const y1 = Math.min(n - 1, y0 + 1);
-    const tx = u - x0;
-    const ty = v - y0;
-    return field[y0 * n + x0] * (1 - tx) * (1 - ty)
-        + field[y0 * n + x1] * tx * (1 - ty)
-        + field[y1 * n + x0] * (1 - tx) * ty
-        + field[y1 * n + x1] * tx * ty;
+    if (!crop.tile) {
+        const flat = rasterizeLonLatBox(crop.west, crop.south, crop.east, crop.north, n, n, 0);
+        return {n, pad: 0, moist: flat.moist, temp: flat.temp};
+    }
+    const pad = TD_CLIMATE_PAD;
+    const raw = rasterizeCubeTile(crop.tile, n, n, 0, pad);
+    return {n: n + 2 * pad, pad, moist: raw.moist, temp: raw.temp};
 }
 
 function setupTdOverlay() {
@@ -3400,7 +3313,7 @@ syncViewModeDom();
 {
     const globe = document.querySelector('.globe');
     const onViewport = () => {
-        if (syncEquirectCanvasSize()) draw();
+        if (syncCanvasSize()) draw();
     };
     if (globe && typeof ResizeObserver !== 'undefined') {
         new ResizeObserver(onViewport).observe(globe);

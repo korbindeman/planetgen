@@ -144,10 +144,18 @@ function paramValue(session, name) {
 }
 
 
+/*
+ * One variant id, every caller. Nulling it here while the working state was
+ * dirty did not hide stale crops — generateMap and refreshPipeline set the
+ * raw id straight back — it just made the overlay world flip between two
+ * identities. Every in-flight overlays.json then landed on a world that had
+ * already moved, epoch dropped it as stale, and a folder full of baked tiles
+ * read as "No baked crops yet." A crop carries its own variant, so belongsTo
+ * still keeps one snapshot's tiles off another.
+ */
 function syncContext(session) {
     const id = session.variant && session.variant.id;
-    const overlayId = id && !isWorkingDirty(session) ? id : null;
-    TdOverlay.setContext(session.project, session.seed, overlayId);
+    TdOverlay.setContext(session.project, session.seed, id || null);
     Boot.syncAddressBar(session.project, session.seed, id);
 }
 

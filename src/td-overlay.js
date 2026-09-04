@@ -279,6 +279,10 @@ function normalizeCrop(raw) {
         name,
         dir: raw.dir,
         project: raw.project || null,
+        /* belongsTo compares this. Dropping it here gave every crop a null
+         * variant, so a variant-scoped bake could never match a world that
+         * had one — the folder was full and the panel said it was empty. */
+        variant: raw.variant || null,
         tile,
         west: Number(raw.west),
         south: Number(raw.south),

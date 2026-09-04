@@ -60,6 +60,17 @@ into one stage doc.
 You should not have to read another stage file to know what you can do in
 this stage.
 
+## Reference
+
+Lookup for external tools, formats and this machine. Not stage context.
+
+| Doc | What it answers |
+| --- | --- |
+| [ref/terrain-diffusion.md](ref/terrain-diffusion.md) | What the model reads, how to run it, and **where the checkout is** — `../terrain-diffusion`, never `~/dev` |
+| [ref/wsl-bake-env.md](ref/wsl-bake-env.md) | The WSL2 distro the campaign bake runs in, why, and how it was built |
+| [ref/cubesphere.md](ref/cubesphere.md) | The tile grid, its distortion, and the conformal bake plane |
+| [ref/bake-compute.md](ref/bake-compute.md) | Sharding a planet-scale bake across boxes |
+
 ## How a stage doc is laid out
 
 Seven sections, same order, every file:

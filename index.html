@@ -1461,24 +1461,20 @@
         line-height: 1.45;
       }
       .search-range { opacity: 0.75; }
+      /* Both views own the whole figure. The 2:1 equirect is fitted
+         inside it and the sphere keeps the short side's diameter, so
+         neither is boxed in: at zoom the extra width shows terrain
+         instead of cropping it. Home recentres. */
       .globe {
-        position: relative;
-        max-width: 100cqw;
-        max-height: 100cqh;
-        line-height: 0;
-      }
-      /* Map view uses the whole figure. The 2:1 equirect is fitted
-         inside it; Home recentres that rectangle. Globe stays the
-         largest square that fits. */
-      body.view-equirect .globe {
         position: absolute;
         inset: 0;
         max-width: none;
         max-height: none;
         width: 100%;
         height: 100%;
+        line-height: 0;
       }
-      body.view-equirect .globe > canvas {
+      .globe > canvas {
         width: 100%;
         height: 100%;
         max-width: none;
