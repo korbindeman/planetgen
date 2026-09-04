@@ -3,6 +3,11 @@ build/
 preview/**
 !preview/.gitkeep
 bake/**/shard-*.json
+bake/handoff/
+bake/*.zip
+bake/*.planet
+*.planet
+*.log
 src/.td-overlays/
 .DS_Store
 __pycache__/

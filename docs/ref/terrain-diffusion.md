@@ -273,6 +273,32 @@ the terrain-diffusion tree avoids the download prompt for sketch tests.
 
 `--seed` is the diffusion seed, independent of the planetgen seed.
 
+## Which process bakes
+
+Studio bakes go through `scripts/td-server.mjs` on port 3748; it spawns the
+python above and then finishes the tile — `bakeBackOntoTile`, the fold
+stitch, the paint. `bun run bake:tiles` calls the same code in-process, so it
+is always the tree you are looking at. The server is not: `bun run dev`
+reuses whatever already answers on 3748, and `bun --hot` reloads the page
+only. A server started before your edits will happily keep baking.
+
+So the two shake hands. `/health` returns a `version` — a sha256 over the
+closure of the server's own sources, walked from `td-server.mjs`
+(`scripts/td-version.mjs`; `bun run check:td` holds it to covering the bake
+path and ignoring the page). `bun run dev` compares it against the tree:
+
+- same version — reuse it, as before
+- different, and the server is idle — stop it and start a current one
+- different, and a bake is running — refuse, name the jobs, and exit 1,
+  because those tiles are already being baked by that code
+
+A server predating the handshake reports no version at all, which counts as
+different. The tell after the fact is in `crop-<tile>/tile.json`: a bake
+through the current server always writes `bakeStep`, `tileCells` and
+`haloCells`. Without them the bake never came off the conformal plane —
+`bun scripts/repair-tile-raster.mjs <variant-dir> <tile>...` puts it back
+without re-baking.
+
 ## What planetgen writes
 
 ```bash

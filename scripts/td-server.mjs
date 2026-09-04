@@ -15,6 +15,7 @@ import {
   readShape, writeShape, deleteShape, readLayout, writeLayout,
 } from "./td-catalog.mjs";
 import { createUserProject, loadUserProjects } from "./td-projects.mjs";
+import { bakeApiVersion } from "./td-version.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
@@ -22,6 +23,12 @@ const Params = require(join(root, "src", "params.js"));
 const Projects = require(join(root, "src", "projects"));
 const rangesPath = join(root, "src", "params-ranges.json");
 const port = Number(process.env.TD_PORT) || 3748;
+/*
+ * Read once, at startup, on purpose: this has to describe the code this
+ * process is *running*, not the code now on disk. Re-reading per request
+ * would make every server look current and the handshake would say nothing.
+ */
+const {version} = bakeApiVersion();
 
 await loadUserProjects(root, Projects);
 
@@ -53,7 +60,17 @@ const server = Bun.serve({
     if (req.method === "OPTIONS") return cors(new Response(null, {status: 204}));
 
     if (url.pathname === "/health") {
-      return json({ok: true});
+      /* `pid` and `busy` are here so a caller that finds this server stale can
+       * decide what to do about it without guessing: replace it, or refuse
+       * and leave a running bake alone. */
+      const running = listJobs().filter((j) => j.status !== "done" && j.status !== "error");
+      return json({
+        ok: true,
+        version,
+        pid: process.pid,
+        busy: running.length,
+        jobs: running.map((j) => j.name),
+      });
     }
     if (url.pathname === "/params-ranges" && req.method === "GET") {
       try {

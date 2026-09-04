@@ -18,13 +18,18 @@ graph.
 
 ## Hands on
 
-A **sparse cube-sphere residual pyramid**, not a dense GeoTIFF. Schema v1:
+A **sparse cube-sphere pyramid**, not a dense GeoTIFF — addressed
+`(face, lod, x, y)`, zstd per node, and stopping wherever the parent is
+already good enough. Ocean, cratons and mare die at 1–2 km. Coasts, belts
+and crater rims keep 90 m.
 
-- parent predictor, per-node quantized `i16` residuals with a local scale
-- zstd per blob, content-addressed
-- addressed `(face, lod, x, y)`
-- When the parent is good enough, nodes stop. Ocean, cratons and mare
-  die at 1–2 km. Coasts, belts and crater rims keep 90 m.
+The precise contract is [§ The planet package](#the-planet-package), and the byte-level reference a consumer implements against is [ref/planet-package.md](../ref/planet-package.md). It is
+**not** the game's schema v1 (`crates/domain/terrain/src/package.rs` in
+`../thalos`). That schema was shaped for Mira — an airless moon, a
+`StaticSurfaceData` full of cubemaps this pipeline does not produce, and a
+`HEIGHT_PRUNE_ERROR_M` of 256 m chosen for 2.7 km/texel, which would prune
+away everything a 90 m bake is for. Thalos is being rebuilt on a custom
+engine, so the consumer is ours to write and the contract is ours to choose.
 
 Alongside it: climate at the coarse cell (~23 km, megabytes), rivers as a
 reach/lake graph (hundreds of MB for a planet), and analytic octaves as
@@ -53,6 +58,103 @@ got stored on plains.
 The current Mira `29.6 MiB` file is the crater MVP, not the production
 number. The game-side package contract lives in `~/dev/thalos`
 (`docs/world/mira_airless_mvp.md`, ADR-20260720T211046Z).
+
+## The planet package
+
+The contract between this repo and the engine. Decided Sep 2026, when Thalos
+moved to a custom engine and the consumer became ours to write.
+
+### One frame, end to end
+
+Nodes are addressed on **the same equal-angle cubesphere the bake runs on** —
+`(face, lod, x, y)`, `src/cubesphere.js`. No second projection, no re-frame at
+the boundary.
+
+This is the load-bearing decision. Every serious defect in the campaign was a
+frame mismatch and none of them looked like one: the face import transposed
+its windows and baked open ocean over tiles the sketch calls 100% land, while
+every tile still agreed with its neighbours; then the cubemap builder mixed
+this repo's z-up with the engine's y-up and would have shipped the planet on
+its side; then the *validator* written to catch that had the same bug and
+reported a confident 71.6%. A format that re-frames is a format that invites
+all three again.
+
+### Nodes
+
+- **Grid**: `2^lod` nodes per face edge. Leaf lod is `bake level + 3`, because
+  a bake tile is 8 nodes on a side.
+- **Resolution**: `tileCells * 256 / 8` texels square — 448 for a 14-cell
+  bake, 512 for a 16-cell one. The *node grid* is the power of two, not the
+  node itself, which is what lets a leaf be a straight copy out of a tile
+  raster: no resampling of the sphere, and reduction is exact 2:1 box
+  averaging of four children.
+- **Skirt**: one texel on every side, so a node carries `res + 2` square. The
+  consumer computes normals and interpolates at an edge without ever looking
+  up a neighbour, which is where cube-face code usually goes wrong. Costs
+  under 1%.
+- **Payload**: `i16`, zstd. Absolute metres at `lod <= dense_lod`; **residual
+  against the bilinear parent above it**, with the high bit of the index
+  record's lod byte saying which.
+
+  Absolute everywhere was tried first, on the argument that a node should
+  decode without walking its ancestors. The measurement killed it: a bilinear
+  parent misses this terrain by a median **122 m** at the leaves and 565 m at
+  p90, so no honest error budget prunes anything and every node is stored at
+  full price — 3.38 GB, against 2.14 GB for the same planet with residuals.
+  Sparsity cannot pay for itself when the predictor is that weak.
+
+  Keeping the base absolute bounds what a residual costs: a leaf reconstructs
+  through at most `leaf_lod - dense_lod` parents, two on the first planet.
+  Prediction is **closed-loop** — the residual is taken against the parent the
+  reader will have reconstructed, not the original — so nothing drifts as
+  levels stack, and reconstruction is exact. Verified: leaves rebuilt from the
+  file match the baked DEM to **0 m**.
+
+### Dense base, sparse refinement
+
+Every node exists from lod 0 to `dense_lod`. Above it, **a missing node means
+exactly one thing: the parent is within the error budget.**
+
+Absence must not also mean "no data". Schema v1 overloads the two and that is
+how a planet ends up with holes. Here the masked abyss simply stops refining
+early — the ground is still there at whatever lod last described it, and
+[the mask](terrain.md) is a statement about detail, not about existence.
+
+### Container
+
+One file: magic, version, JSON manifest, fixed-size index records, blob
+region. JSON so a person can read it; fixed records so the engine can mmap and
+binary-search. A content hash over the inputs sits in the header, so a rebake
+cannot quietly reuse a cache keyed to the previous planet.
+
+### Measured, on the first planet
+
+`quarter` / `glep`, 1593 km, level 3, 250 baked tiles, node 448 + skirt:
+
+| | |
+| --- | --- |
+| Nodes | 25 429, lod 0..6 |
+| File | **2.14 GB** (absolute-only was 3.38 GB) |
+| Leaves | 17 904 nodes, 1.35 GB — 63% of the file |
+| Reconstruction | **0 m** against the baked DEM |
+
+The absolute base is 341 MB over 2046 nodes, which is where the next
+compression lever is: `dense_lod` currently means both "every node exists" and
+"stored absolute", and those are two different questions. Splitting them —
+completeness at lod 4, absolute only at lod 0 and one keyframe level — would
+take most of that 341 MB, at the cost of a longer reconstruct chain.
+
+Scaled to Thalos, four times the area, this is ~8.5 GB against the 2-3 GB in
+the table above. Either the prune threshold is doing nothing (it is: see the
+predictor error) or the target assumed detail we are not throwing away. Settle
+that before the Thalos bake, not after.
+
+### For the next bake
+
+Bake **16 cells per tile, not 14**. A tile is then 4096 px, a node is 512, and
+the quadtree aligns with tile boundaries with no resample anywhere. 14 works —
+it just forces 448-texel nodes.
+
 
 ## Must not regress
 

@@ -100,18 +100,35 @@ async function readTileSidecar(dir) {
   };
 }
 
+/*
+ * The DEM the overlay drapes, preferring `preview.elev` when a tile has one.
+ *
+ * A campaign tile is 3584² float32 — 51 MB. The overlay keeps the DEM *and* a
+ * painted canvas per crop, so a 250-tile planet is 12.8 GB of each, and it
+ * colours 12.85 Mpx per tile on the main thread. The browser stops responding
+ * long before the planet appears.
+ *
+ * `preview.elev` is the same ground at 448², written by
+ * `bun run build:previews` straight out of the package's lod-3 nodes. That is
+ * 64x less to fetch, hold and paint, and it is the resolution a globe view can
+ * actually show. The full DEM stays on disk for Carve and for export; nothing
+ * is thrown away, and a tile without a preview still drapes at full size.
+ */
 async function readElevMeta(dir) {
-  let meta;
-  try {
-    meta = await Bun.file(join(dir, "output.elev.json")).json();
-  } catch {
-    return null;
+  for (const name of ["preview.elev", "output.elev"]) {
+    let meta;
+    try {
+      meta = await Bun.file(join(dir, `${name}.json`)).json();
+    } catch {
+      continue;
+    }
+    const width = meta && meta.width | 0;
+    const height = meta && meta.height | 0;
+    if (!(width > 0 && height > 0)) continue;
+    if (!(await exists(join(dir, name)))) continue;
+    return {width, height, file: name};
   }
-  const width = meta && meta.width | 0;
-  const height = meta && meta.height | 0;
-  if (!(width > 0 && height > 0)) return null;
-  if (!(await exists(join(dir, "output.elev")))) return null;
-  return {width, height};
+  return null;
 }
 
 async function readManifest(dir) {
@@ -184,7 +201,7 @@ async function readCrop(dir, folder, project, urlPrefix, listed, manifestSeed) {
     variant: sidecar && sidecar.variant || undefined,
     status: baked ? "done" : "conditioned",
     image: hasPng ? `${urlPrefix}${folder}/output.png` : null,
-    elev: elevMeta ? `${urlPrefix}${folder}/output.elev` : null,
+    elev: elevMeta ? `${urlPrefix}${folder}/${elevMeta.file}` : null,
     elevWidth: elevMeta ? elevMeta.width : 0,
     elevHeight: elevMeta ? elevMeta.height : 0,
     baked,

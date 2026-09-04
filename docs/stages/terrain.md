@@ -148,11 +148,26 @@ Isolated lon/lat crops still go through `tiff-export`. CLI:
   - **A fold's two sides are still separate diffusions.** Their elevations
     agree; their terrain does not. The halo fade hides it over ~8 km and it
     did not read on this corner. `SEAM_HALO_CELLS`, or generating both
-    sides of a fold in one pass, is the lever if it ever does.
-  - **Same-face joins are still unproven on a real bake.** They should be
-    seamless by construction — neighbours share the bake plane's lattice,
-    so the model gives them the same noise — but that has only been checked
-    as geometry, never baked and cropped.
+    sides of a fold in one pass, is the lever if it ever does. It *does*
+    read on the quarter-radius bake: f0l3x0y3 | f3l3x7y3 stitched 321k
+    edge pixels and the join is still visible as a change of terrain
+    character, smooth on one side and dissected on the other. Level, not
+    detail, is what the stitch fixes.
+  - **Same-face joins were not seamless, and the reason was the import.**
+    They are now, but not by construction. Baked and cropped for the first
+    time on f0l4x1y8 | f0l4x1y9: the shared edge disagreed by **269 m mean,
+    1351 m max**, against 9 m from one row to the next inside a tile, with
+    the two edge profiles correlated at r = 0.88 — the same landforms, read
+    off the same sketch, with independent detail on top.
+    The cause is one import per tile. `set_custom_conditioning_import`
+    calls `rebuild()`, which installs a fresh `MemoryTileStore`, so
+    neighbours never share a parent latent no matter how well their
+    lattices line up. Sharing the lattice is necessary and was never
+    sufficient. Importing **once per face** and taking each tile as a
+    window of it — [bake-campaign](../../scripts/bake-campaign.mjs), and
+    what the plan below always said — brings the same pair to **1.7 m mean,
+    37 m max**. `bun run bake:tiles` still imports per tile; it is a
+    preview tool and a preview tile has no neighbour to disagree with.
   - The unmerged terrain-diffusion PR #15 "Sphere export" does cube-face
     sampling. It is prior art to read, not code to trust.
 - **Poles.** The cubesphere removes equirect distortion. The ±60°
@@ -190,9 +205,25 @@ the 90 m DEM.
    model only. First look at the planet as a planet. A drainage graph
    on that pass would be a preview. Those rivers do not constrain the
    90 m pass.
-4. Scale out to the 90 m bake. Mask to land and shelf if a trial shows
-   the abyss does not need it. That trial is not run. Then hand off to
-   Carve.
+4. Scale out to the 90 m bake. **Masked to land and shelf** — `--mask`
+   keeps every tile with a cell above sea level, grows that set by one
+   tile in all eight directions, and fills single-tile holes. On the
+   quarter-radius planet that is 250 of 384 tiles: a third of the sphere
+   skipped, about an hour off a 3.3 h bake, and no tile carrying land
+   dropped (asserted, not assumed). The growth is what makes it safe to
+   look at — a tile that merely contains land still ends at a tile edge,
+   so without a ring the DEM would stop within 313 km of a shore.
+   `--mask-preview` draws the mask over the project's equirect, which is
+   how it should be judged: red must never touch a coast. Skipped tiles
+   have **no DEM at all**, so anything downstream needs the coarse sketch
+   as its fallback there — a gap, not a coarser level. Then hand off to
+   Carve. `bun run bake:campaign` walks a whole level face by face —
+   one conditioning import per face, a window per tile, resumable, and it
+   checks each tile's baked land fraction against the sketch's so a bake
+   that stops reading its conditioning stops the run instead of filling a
+   night. It wants the WSL2 worker ([wsl-bake-env](../ref/wsl-bake-env.md));
+   the first planet through it is the quarter-radius body, 384 tiles at
+   level 3, ~30 s a tile.
 
 A late sea-level cut on the carved DEM is a Finish step. It is not a
 re-bake unless the new shoreline leaves the baked band. See

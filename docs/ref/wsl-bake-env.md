@@ -90,3 +90,29 @@ but free the card anyway before a campaign run.
 Sharding still applies ([bake-compute](bake-compute.md)): WSL workers take a
 partition of the tile list, same seed + conditioning. The Windows studio keeps
 orchestrating; only `WorldPipeline` workers move.
+
+## The campaign worker
+
+`TD_WSL=1` sends a bake through WSL2 instead of the checkout's native venv,
+and keeps **one worker alive** rather than starting python per tile.
+`scripts/td-bake.py --serve` reads one JSON job per line and holds the loaded,
+compiled model across all of them. Measured on the quarter-radius planet
+(level 3, 14 cells a tile, 256 px a cell, 4070 Ti):
+
+| | |
+| --- | --- |
+| Worker start: load, `to(cuda)`, compile, warm up | ~150–190 s, once |
+| Steady state per tile | **23–32 s** |
+| 384 tiles | ~3.3 h, ~20 GB of float32 |
+
+Per tile that is the difference between paying the load once and paying it
+384 times — about four hours on this planet, more than the bake itself.
+
+Serving is safe because every `set_custom_conditioning_import` calls
+`rebuild()`, which installs a fresh `MemoryTileStore`: job 2 came back
+byte-identical to job 1 on the same worker. That same reset is why
+conditioning is imported **per face** and not per tile — see
+[terrain.md § Open](../stages/terrain.md#open).
+
+`--no-compile` and one process per tile is still what `bun run bake:tiles`
+does without `TD_WSL`, and what the studio does. That path is a preview.

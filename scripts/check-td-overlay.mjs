@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Check that a TD overlay reply cannot land on the wrong planet.
+ * Check that a TD reply cannot land from the wrong planet or the wrong code.
  *
  *   bun run check:td
  *
@@ -11,6 +11,12 @@
  * and every in-flight reply carries a world + planet identity, and is
  * dropped when that identity has moved on.
  *
+ * The same question one level down is which *code* baked a tile. `bun run
+ * dev` reuses a td-server that is already listening, so the answer used to
+ * be "whichever build started first". The handshake in `td-version.mjs`
+ * settles it, and the last section here holds that fingerprint to covering
+ * the bake path and nothing else.
+ *
  * Browser-free, so this runs alongside `check:projects` and `check:tiles`.
  */
 import { createRequire } from "node:module";
@@ -19,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { listTdOverlays } from "./td-overlays.mjs";
+import { bakeApiFiles, bakeApiVersion } from "./td-version.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
@@ -248,6 +255,38 @@ const cropA = {
 check("earth's token is a seed, not a wildcard",
     Epoch.belongsTo({project: "earth", seed: "Earth"}, earth)
     && !Epoch.belongsTo({project: "earth", seed: 1003}, earth));
+
+/* 9. The bake API's version. A fingerprint that quietly stopped reaching the
+ * bake path would still compare equal on both sides and still say "already
+ * on 3748" — a handshake that agrees about nothing. So pin what it covers.
+ * The walk is the source of truth; this is the floor under it. */
+{
+    const files = new Set(bakeApiFiles());
+    /* Missing any of these and a server can bake tiles that no longer match
+     * the tree. bakeBackOntoTile lives in td-jobs, the geometry it uses in
+     * cubesphere/td-seam/td-tile, the generation itself in td-bake.py. */
+    for (const must of [
+        "scripts/td-server.mjs", "scripts/td-jobs.mjs", "scripts/td-overlays.mjs",
+        "scripts/td-bake.py", "scripts/td-preview.py", "scripts/paint-td-terrain.mjs",
+        "src/cubesphere.js", "src/td-seam.js", "src/td-tile.js", "src/td-export.js",
+    ]) {
+        check(`the bake fingerprint covers ${must}`, files.has(must));
+    }
+    /* And the other half: editing the page must not report a running bake
+     * stale, or a long bake gets replaced for a change it never sees. */
+    for (const not of ["src/td-overlay.js", "src/studio/index.js", "index.html"]) {
+        check(`the bake fingerprint ignores ${not}`, !files.has(not));
+    }
+    /* The server rewrites this one itself — see WRITTEN_AT_RUNTIME. */
+    check("the bake fingerprint ignores what the server writes",
+        !files.has("src/params-ranges.json"));
+    const a = bakeApiVersion();
+    const b = bakeApiVersion();
+    check("the bake fingerprint is stable across calls", a.version === b.version,
+        `${a.version} then ${b.version}`);
+    check("the bake fingerprint is content, not paths",
+        a.version.length === 12 && /^[0-9a-f]+$/.test(a.version), a.version);
+}
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall passed");
 process.exit(failures.length ? 1 : 0);

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve as resolvePath } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -192,6 +192,9 @@ export async function submitJob(root, body) {
     bakeStep,
     tileCells,
     haloCells,
+    /* Pixels of DEM kept per conditioning cell. The studio's 128 is a preview
+     * at ~180 m; a campaign asks for 256 and keeps the model's own 90 m. */
+    pxPerCell: Math.max(0, body.pxPerCell | 0) || TdTile.TILE_PX_PER_CELL,
     scaleKm: Number(body.scaleKm) || 23,
     seed: body.seed ?? null,
     snr: body.snr || DEFAULT_SNR,
@@ -358,6 +361,159 @@ function tdPython() {
 function tdDevice() {
   if (process.env.TD_DEVICE) return process.env.TD_DEVICE;
   return process.platform === "darwin" ? "mps" : "cuda";
+}
+
+/* ------------------------------------------------------------------ WSL2
+ *
+ * `TD_WSL=1` (or `TD_WSL=<distro>`) runs the bake inside WSL2 instead of the
+ * checkout's native-Windows venv. Two reasons, both measured, both in
+ * docs/ref/wsl-bake-env.md: `torch.compile` refuses to run on Windows —
+ * WorldPipeline prints a warning and silently drops it — and the model load
+ * plus inductor warmup is ~150 s, which one process per tile pays every time.
+ *
+ * So the WSL path is also a *persistent* worker: `td-bake.py --serve` stays up
+ * and takes one JSON job per line. That is safe because every
+ * `set_custom_conditioning_import` calls `rebuild()`, which installs a fresh
+ * tile store — measured here as job 2 coming back byte-identical to job 1.
+ * It matters because face origins are per-face, so a cache that outlived a
+ * job would hand one face another face's terrain.
+ *
+ * The worker is keyed by model/snr/seed/device: those are constructor
+ * arguments to WorldPipeline, so a job that differs in any of them gets a new
+ * process rather than quietly baking against the wrong world.
+ */
+const WSL_DEFAULT_DISTRO = "Thalos-Ubuntu";
+const WSL_PYTHON = "$HOME/td-env/bin/python";
+let worker = null;
+
+export function tdWsl() {
+  const raw = process.env.TD_WSL;
+  if (!raw || raw === "0" || raw.toLowerCase() === "false") return null;
+  const distro = raw === "1" || raw.toLowerCase() === "true" ? WSL_DEFAULT_DISTRO : raw;
+  return {distro};
+}
+
+/* C:\a\b -> /mnt/c/a/b. The cross-mount is how the WSL env reads this repo
+ * and the model checkout; there is no second copy of either. */
+export function toWslPath(p) {
+  const abs = resolvePath(p);
+  const m = /^([A-Za-z]):[\\/]?(.*)$/.exec(abs);
+  if (!m) throw new Error(`not an absolute Windows path, cannot map into WSL: ${p}`);
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}`;
+}
+
+function workerKey({model, snr, seed, device}) {
+  return JSON.stringify([model, snr, seed == null ? null : Number(seed), device]);
+}
+
+function startWorker(root, spec) {
+  const {distro} = tdWsl();
+  /*
+   * Run from the checkout: `bind()` resolves data/global/synthetic_map_stats.json
+   * relative to cwd, and without it the pipeline prompts for a WorldClim
+   * download and hangs with no output at all.
+   */
+  const script = toWslPath(join(root, "scripts", "td-bake.py"));
+  const checkout = toWslPath(tdCheckout());
+  /*
+   * PYTHONPATH is the checkout spelled out, not `$PWD`. wsl.exe exports the
+   * launching process's directory as PWD and `cd` in the command string does
+   * not replace it for the environment the child sees, so `PYTHONPATH=$PWD`
+   * silently pointed at planetgen and `import terrain_diffusion` failed with
+   * the cwd looking correct. td-bake.py is run by path, so sys.path[0] is
+   * scripts/ and the package has to come from here.
+   */
+  const command = [
+    `cd ${JSON.stringify(checkout)}`,
+    [
+      `PYTHONPATH=${JSON.stringify(checkout)}`,
+      "HF_HUB_CACHE=$HOME/td-hub", "MPLBACKEND=Agg", "PYTHONUNBUFFERED=1",
+      WSL_PYTHON, "-u", JSON.stringify(script), JSON.stringify(spec.model),
+      "--serve", "--device", spec.device, "--snr", JSON.stringify(spec.snr),
+      ...(spec.seed == null ? [] : ["--seed", String(spec.seed)]),
+    ].join(" "),
+  ].join(" && ");
+
+  const child = spawn("wsl.exe", ["-d", distro, "--", "bash", "-lc", command], {cwd: root});
+  const state = {
+    child, key: workerKey(spec), pending: null, out: "", log: [], exited: null, job: null,
+  };
+
+  child.stdout.on("data", (buf) => {
+    state.out += buf.toString();
+    let cut;
+    while ((cut = state.out.indexOf("\n")) >= 0) {
+      const line = state.out.slice(0, cut).trim();
+      state.out = state.out.slice(cut + 1);
+      if (!line) continue;
+      let result;
+      try {
+        result = JSON.parse(line);
+      } catch {
+        logToJob(state.job, line);   // not a result; the worker said something
+        continue;
+      }
+      const pending = state.pending;
+      state.pending = null;
+      if (pending) pending.resolve(result);
+    }
+  });
+  /* Human output and tqdm are on stderr, which is what the job log wants. */
+  child.stderr.on("data", (buf) => logToJob(state.job, buf.toString()));
+  child.on("error", (err) => finishWorker(state, String(err.message || err)));
+  child.on("close", (code) => finishWorker(state, `wsl worker exited ${code}`));
+  return state;
+}
+
+function finishWorker(state, reason) {
+  state.exited = reason;
+  if (worker === state) worker = null;
+  const pending = state.pending;
+  state.pending = null;
+  if (pending) pending.resolve({ok: false, error: reason});
+}
+
+/* The queue is strictly sequential, so one job is in flight at a time. */
+export function runOnWorker(root, spec, job, payload) {
+  const key = workerKey(spec);
+  if (worker && worker.key !== key) {
+    worker.child.stdin.end();
+    worker = null;
+  }
+  if (!worker) worker = startWorker(root, spec);
+  const state = worker;
+  state.job = job;
+  return new Promise((resolve) => {
+    if (state.exited) return resolve({ok: false, error: state.exited});
+    state.pending = {resolve};
+    state.child.stdin.write(JSON.stringify(payload) + "\n");
+  });
+}
+
+/* Shut the worker down between campaigns, and on the way out of a CLI run:
+ * the model is holding VRAM that the next process wants. */
+export function stopTdWorker() {
+  if (!worker) return;
+  worker.child.stdin.end();
+  worker = null;
+}
+
+/* tqdm rewrites one line with carriage returns, so split on those too or a
+ * whole bake arrives as a single log entry with no visible progress until it
+ * ends. Shared by the native spawn and the WSL worker's stderr. */
+function logToJob(job, text) {
+  if (!job) return;
+  for (const line of String(text).split(/[\r\n]/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const pct = /(\d{1,3})%/.exec(trimmed);
+    if (pct) {
+      const value = Number(pct[1]);
+      if (value >= 0 && value <= 100) job.progress = value;
+    }
+    job.log.push(trimmed.slice(0, 240));
+    if (job.log.length > 400) job.log.splice(0, job.log.length - 400);
+  }
 }
 
 function copyF32(buf, n) {
@@ -600,9 +756,52 @@ async function bakeJob(root, job) {
 
   job.status = "baking";
   job.progress = 0;
+  /* tiff-export keeps the native path: it is the isolated-crop tool, not the
+   * campaign, and it has no persistent-worker entry to talk to. */
+  const wsl = pad > 0 ? tdWsl() : null;
   job.log.push(pad > 0
-    ? `td-bake ${job.cropW}×${job.cropH} +${pad} pad on ${tdDevice()}`
+    ? `td-bake ${job.cropW}×${job.cropH} +${pad} pad on ${tdDevice()}${wsl ? ` in wsl:${wsl.distro}` : ""}`
     : `tiff-export ${job.cropW}×${job.cropH} on ${tdDevice()}`);
+
+  /*
+   * How much of the bake to keep. 128 px per cell is the studio preview's
+   * long-standing halving of the model's 90 m; a campaign passes 256 and gets
+   * the native grain. Either way the cap is against the *bake raster*, which
+   * covers the tile and its halo, so the tile's own share stays put.
+   */
+  const dumpMaxDim = Math.max(job.cropW, job.cropH)
+    * (job.pxPerCell || TdTile.TILE_PX_PER_CELL);
+
+  if (wsl) {
+    const result = await runOnWorker(root, {
+      model: job.model,
+      snr: job.snr,
+      device: tdDevice(),
+      seed: job.seed != null && Number.isFinite(Number(job.seed)) ? Number(job.seed) | 0 : null,
+    }, job, {
+      name: job.name,
+      tiff_dir: toWslPath(job.dir),
+      output: toWslPath(outTif),
+      pad,
+      origin_i: job.originI | 0,
+      origin_j: job.originJ | 0,
+      crop_w: job.cropW,
+      crop_h: job.cropH,
+      halo,
+      /* The worker writes output.elev itself. Spawning python, importing
+       * rasterio and re-reading a 5376² GeoTIFF per tile is a minute a
+       * hundred tiles for a cast the worker already has in memory. */
+      dump_elev: true,
+      max_dim: job.bakeStep > 0 ? dumpMaxDim : 2048,
+    });
+    if (!result.ok) {
+      job.status = "error";
+      job.error = job.error || result.error || "wsl bake failed";
+      return;
+    }
+    job.log.push(`baked in wsl:${wsl.distro}`);
+    return await finishBake(job);
+  }
 
   const code = await spawnLogged(python, args, {
     cwd: tdRootDir,
@@ -642,9 +841,7 @@ async function bakeJob(root, job) {
    * own share shrinks — 21 cells capped at 2048 left the 14-cell tile 1195 px
    * where it had always had 1792.
    */
-  const dumpDim = job.bakeStep > 0
-    ? [`--max-dim=${Math.max(job.cropW, job.cropH) * TdTile.TILE_PX_PER_CELL}`]
-    : [];
+  const dumpDim = job.bakeStep > 0 ? [`--max-dim=${dumpMaxDim}`] : [];
   const preview = await spawnLogged(python, [
     join(root, "scripts", "td-preview.py"),
     outTif,
@@ -656,6 +853,16 @@ async function bakeJob(root, job) {
     job.error = job.error || `preview exited ${preview}`;
     return;
   }
+  return await finishBake(job);
+}
+
+/*
+ * Everything after the DEM exists, and it is the same work whichever process
+ * generated it: put the bake back on the tile raster, conform to a neighbour
+ * across a fold, colour it. Shared so the WSL worker and the native spawn
+ * cannot drift into finishing a tile two different ways.
+ */
+export async function finishBake(job) {
   try {
     await bakeBackOntoTile(job);
     await stitchFaceEdges(job);
@@ -673,23 +880,7 @@ async function bakeJob(root, job) {
 function spawnLogged(cmd, args, {cwd, env, job}) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {cwd, env: env || process.env});
-    const onData = (buf) => {
-      const text = buf.toString();
-      /* tiff-export prints a tqdm bar; carriage returns rewrite one line, so
-       * split on those too or the whole bake arrives as a single log entry
-       * with no visible progress until it ends. */
-      for (const line of text.split(/[\r\n]/)) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const pct = /(\d{1,3})%/.exec(trimmed);
-        if (pct) {
-          const value = Number(pct[1]);
-          if (value >= 0 && value <= 100) job.progress = value;
-        }
-        job.log.push(trimmed.slice(0, 240));
-        if (job.log.length > 400) job.log.splice(0, job.log.length - 400);
-      }
-    };
+    const onData = (buf) => logToJob(job, buf.toString());
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
     child.on("error", (err) => {

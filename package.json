@@ -1,7 +1,9 @@
 {
     "name": "@redblobgames/1843-planet-generation",
     "version": "1.0.0",
-    "workspaces": ["packages/*"],
+    "workspaces": [
+        "packages/*"
+    ],
     "dependencies": {
         "@fortawesome/free-solid-svg-icons": "^7.3.1",
         "@redblobgames/dual-mesh": "https://github.com/redblobgames/dual-mesh",
@@ -39,6 +41,10 @@
         "check:measure": "bun ./scripts/check-measure.mjs",
         "check:sculpt": "bun ./scripts/check-sculpt.mjs",
         "check:pipeline": "bun ./scripts/check-pipeline.mjs",
-        "check:docs": "bun ./scripts/check-docs.mjs"
+        "check:docs": "bun ./scripts/check-docs.mjs",
+        "bake:campaign": "bun ./scripts/bake-campaign.mjs",
+        "build:cubemap": "bun ./scripts/build-cubemap.mjs",
+        "build:package": "bun ./scripts/build-package.mjs",
+        "build:previews": "bun ./scripts/build-previews.mjs"
     }
 }
