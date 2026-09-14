@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import {assertHeightEncoding} from "./terrain-encoding.mjs";
 import { delimiter, join, resolve as resolvePath } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -492,10 +493,16 @@ export function runOnWorker(root, spec, job, payload) {
 
 /* Shut the worker down between campaigns, and on the way out of a CLI run:
  * the model is holding VRAM that the next process wants. */
-export function stopTdWorker() {
+export async function stopTdWorker() {
   if (!worker) return;
-  worker.child.stdin.end();
+  const state = worker;
   worker = null;
+  await new Promise((resolve) => {
+    if (state.exited) return resolve();
+    const timer = setTimeout(() => { state.child.kill(); resolve(); }, 30000);
+    state.child.once('close', () => { clearTimeout(timer); resolve(); });
+    state.child.stdin.end();
+  });
 }
 
 /* tqdm rewrites one line with carriage returns, so split on those too or a
@@ -546,12 +553,13 @@ async function loadSeamTile(dir, tile) {
       const hh = hm.height | 0;
       const hb = await readFile(join(dir, `halo-${edge}.elev`));
       if (!(hw > 0 && hh > 0) || hb.byteLength < hw * hh * 4) continue;
-      halo[edge] = {data: copyF32(hb, hw * hh), width: hw, height: hh};
+      halo[edge] = {data: copyF32(hb, hw * hh), width: hw, height: hh, heightEncoding: hm.heightEncoding};
     } catch {
       /* neighbour baked before halo, or this edge is not a fold */
     }
   }
-  return {tile, width: w, height: h, elev: copyF32(raw, w * h), halo};
+  for(const h of Object.values(halo))assertHeightEncoding(h,meta.heightEncoding,'Terrain halo');
+  return {tile, width: w, height: h, elev: copyF32(raw, w * h), halo, heightEncoding: meta.heightEncoding};
 }
 
 /*
@@ -590,7 +598,7 @@ async function bakeBackOntoTile(job) {
   );
   await writeFile(
     join(job.dir, "output.elev.json"),
-    JSON.stringify({width: side, height: side}),
+    JSON.stringify({width: side, height: side, heightEncoding: meta.heightEncoding}),
   );
 
   /*
@@ -615,7 +623,7 @@ async function bakeBackOntoTile(job) {
       await writeFile(join(job.dir, `halo-${edge}.elev`), buf);
       await writeFile(
         join(job.dir, `halo-${edge}.elev.json`),
-        JSON.stringify({width: h.width, height: h.height}),
+        JSON.stringify({width: h.width, height: h.height, heightEncoding: meta.heightEncoding}),
       );
       edges.push(edge);
     }
@@ -642,6 +650,7 @@ async function stitchFaceEdges(job) {
     if (!nb) continue;
     const src = await loadSeamTile(join(job.dir, "..", `crop-${Cubesphere.tileName(nb)}`), nb);
     if (!src) continue;
+    assertHeightEncoding(src,dest.heightEncoding,'Neighbor terrain');
     const n = Seam.blendFromNeighbor(dest, src);
     if (!n) continue;
     moved += n;
@@ -865,7 +874,7 @@ async function bakeJob(root, job) {
 export async function finishBake(job) {
   try {
     await bakeBackOntoTile(job);
-    await stitchFaceEdges(job);
+    if (!job.skipStitch) await stitchFaceEdges(job);
     await paintCropTerrain(job.dir);
   } catch (err) {
     job.status = "error";

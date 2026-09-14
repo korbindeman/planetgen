@@ -56,7 +56,8 @@ is not a product.
 got stored on plains.
 
 The current Mira `29.6 MiB` file is the crater MVP, not the production
-number. The game-side package contract lives in `~/dev/thalos`
+number. The game-side package contract lives in the sibling checkout `../thalos`
+(not `~/dev`)
 (`docs/world/mira_airless_mvp.md`, ADR-20260720T211046Z).
 
 ## The planet package
@@ -92,9 +93,16 @@ all three again.
   consumer computes normals and interpolates at an edge without ever looking
   up a neighbour, which is where cube-face code usually goes wrong. Costs
   under 1%.
-- **Payload**: `i16`, zstd. Absolute metres at `lod <= dense_lod`; **residual
-  against the bilinear parent above it**, with the high bit of the index
-  record's lod byte saying which.
+  Each level reads its skirt from neighboring interiors at the same level,
+  including folded face edges and three-face corners. The interior remains
+  the exact rounded 2:1 reduction. A fold can sample between the outermost
+  pixel centre and the face boundary; this half-pixel extends the neighboring
+  slope. It must not clamp that slope or copy the node's last row.
+- **Payload**: `i16`, zstd. Absolute metres at `lod <= absolute_lod`;
+  **residual against the bilinear parent above it**, with the high bit of the
+  index record's lod byte saying which. `absolute_lod` defaults to
+  `dense_lod`; lowering it (with the dense base kept complete) is the next
+  compression lever — see § Measured.
 
   Absolute everywhere was tried first, on the argument that a node should
   decode without walking its ancestors. The measurement killed it: a bilinear
@@ -107,8 +115,65 @@ all three again.
   through at most `leaf_lod - dense_lod` parents, two on the first planet.
   Prediction is **closed-loop** — the residual is taken against the parent the
   reader will have reconstructed, not the original — so nothing drifts as
-  levels stack, and reconstruction is exact. Verified: leaves rebuilt from the
-  file match the baked DEM to **0 m**.
+  levels stack, and reconstruction is exact against the integer target.
+  Leaves rebuilt from the file match the **rounded** baked DEM to **0 m**.
+  Source floats are rounded before the hierarchy is built; this test does not
+  certify the original near-sea signs or horizontal shoreline displacement.
+  Corrected [Terrain](terrain.md) sources preserve Float32 precision, but v1
+  still quantizes them to metres.
+
+### Publication and content identity
+
+Symmetric campaigns must be finalized before export. The exporter checks the
+saved sketch fingerprint, lattice, required tile dimensions and byte counts,
+and every required `seam-complete.json` against the campaign and mask. Missing
+or unfinished required terrain is an error. Tiles intentionally omitted by
+the fine mask use its shared spherical seabed field, the same field that the
+baked coastline fades into. Legacy campaigns without that mask use the saved
+sketch rasterized in cube-tile coordinates.
+
+The manifest records `sketch_fingerprint` and optional `terrain` provenance:
+the seam mode, blend distance, mask key and skirt method. These fields do not
+change the payload or require a different consumer reconstruction algorithm.
+
+The exporter writes unique temporary files beside the destination, copies blobs
+in bounded chunks, flushes the candidate and runs the independent reference
+reader over every payload before an atomic rename replaces the destination.
+An aborted build or rejected candidate preserves the last good package. A forced
+process termination can leave temporary `.blobs` / `.pending` files; it cannot
+publish them. This is process-interruption safety, not a power-loss guarantee.
+
+New packages carry SHA-256 digests of the actual blob bytes and fixed-size index.
+Their content key hashes those digests together with the manifest, so changing
+a bake without changing its seed still invalidates downstream caches. Run
+`bun read-planet.mjs file.planet --selftest` to check structure, all decoded
+payload sizes and the digests. Legacy packages remain readable but report that
+they have no content digests; successful decoding alone does not establish
+their source fidelity. `bun run check:package` exercises pruning, interrupted
+publication, cross-package cache isolation and corrupted containers.
+
+### Certified pruning
+
+An omitted node removes all of its descendants. Its immediate predictor error
+cannot certify that removal: a small feature can disappear in a coarse average
+while remaining large at the finest source grain. The exporter compares the
+retained ancestor directly with every descendant's bilinear surface. It tests
+the union of both interpolation grids' cell corners, where the absolute error
+attains its maximum. This includes errors between texel centres.
+
+Mixed dry/wet source subtrees are retained even below the vertical error
+budget. Height error alone does not bound shoreline displacement or preserve a
+small island. This is deliberately conservative until the package carries
+explicit coastal constraints and horizontal error certificates.
+
+`pruning.method = "bilinear-subtree-v1"` identifies this guarantee in new
+manifests. Older packages lack the certificate and must be rebuilt from source;
+checking their surviving nodes cannot prove fidelity of discarded descendants.
+The certificate covers stored node interpolants, not terrain-generation
+plausibility, cross-face source agreement, or a consumer's later reprojection.
+`predictor_error_m` retains its separate meaning for residual reconstruction.
+Run `bun run check:package` for ridge, island, cumulative-error and continuous
+interpolation regressions.
 
 ### Dense base, sparse refinement
 
@@ -129,6 +194,9 @@ cannot quietly reuse a cache keyed to the previous planet.
 
 ### Measured, on the first planet
 
+How that planet was baked, and what went wrong on the way, is
+[planet-bake-2026-09.md](../history/planet-bake-2026-09.md).
+
 `quarter` / `glep`, 1593 km, level 3, 250 baked tiles, node 448 + skirt:
 
 | | |
@@ -136,18 +204,26 @@ cannot quietly reuse a cache keyed to the previous planet.
 | Nodes | 25 429, lod 0..6 |
 | File | **2.14 GB** (absolute-only was 3.38 GB) |
 | Leaves | 17 904 nodes, 1.35 GB — 63% of the file |
-| Reconstruction | **0 m** against the baked DEM |
+| Reconstruction | **0 m** against the rounded baked DEM |
 
 The absolute base is 341 MB over 2046 nodes, which is where the next
-compression lever is: `dense_lod` currently means both "every node exists" and
-"stored absolute", and those are two different questions. Splitting them —
-completeness at lod 4, absolute only at lod 0 and one keyframe level — would
-take most of that 341 MB, at the cost of a longer reconstruct chain.
+compression lever is: `dense_lod` used to mean both "every node exists" and
+"stored absolute", and those are two different questions. They are now split
+— completeness at `dense_lod`, absolute only at `absolute_lod`
+(`--absolute-lod`, defaults to `dense_lod`). Lower it toward lod 0 plus one
+keyframe level to take most of that 341 MB, at the cost of a longer
+reconstruct chain. The validator and `read-planet --selftest` check the
+residual flag against `absolute_lod`.
 
 Scaled to Thalos, four times the area, this is ~8.5 GB against the 2-3 GB in
 the table above. Either the prune threshold is doing nothing (it is: see the
 predictor error) or the target assumed detail we are not throwing away. Settle
-that before the Thalos bake, not after.
+that before the Thalos bake, not after. The decision, made: **the target
+moves last.** First pull the levers that do not touch quality — the
+`absolute_lod` split, then per-class prune budgets measured against real
+terrain — and only if Thalos still lands far above 3 GB revisit whether the
+2–3 GB row was wrong. Raising `--error` until the number fits is the Mira
+mistake under another name.
 
 ### For the next bake
 

@@ -108,10 +108,10 @@ async function readTileSidecar(dir) {
  * colours 12.85 Mpx per tile on the main thread. The browser stops responding
  * long before the planet appears.
  *
- * `preview.elev` is the same ground at 448², written by
- * `bun run build:previews` straight out of the package's lod-3 nodes. That is
- * 64x less to fetch, hold and paint, and it is the resolution a globe view can
- * actually show. The full DEM stays on disk for Carve and for export; nothing
+ * `preview.elev` is a filtered reduction written by `bun run build:previews`.
+ * Optional padPixels retain neighbouring ground for seamless filtering and
+ * shading; the overlay maps the interior onto the tile. The full DEM stays
+ * on disk for Carve and for export; nothing
  * is thrown away, and a tile without a preview still drapes at full size.
  */
 async function readElevMeta(dir) {
@@ -125,8 +125,10 @@ async function readElevMeta(dir) {
     const width = meta && meta.width | 0;
     const height = meta && meta.height | 0;
     if (!(width > 0 && height > 0)) continue;
+    const padPixels = meta.padPixels == null ? 0 : meta.padPixels;
+    if (!Number.isInteger(padPixels) || padPixels < 0 || 2 * padPixels >= Math.min(width, height)) continue;
     if (!(await exists(join(dir, name)))) continue;
-    return {width, height, file: name};
+    return {width, height, padPixels, file: name};
   }
   return null;
 }
@@ -204,6 +206,7 @@ async function readCrop(dir, folder, project, urlPrefix, listed, manifestSeed) {
     elev: elevMeta ? `${urlPrefix}${folder}/${elevMeta.file}` : null,
     elevWidth: elevMeta ? elevMeta.width : 0,
     elevHeight: elevMeta ? elevMeta.height : 0,
+    elevPad: elevMeta ? elevMeta.padPixels : 0,
     baked,
     conditioned: hasHeightmap,
   };

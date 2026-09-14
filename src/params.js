@@ -31,6 +31,7 @@ const Climate = require('./climate');
 const Detail = require('./detail');
 const World = require('./world');
 const EarthFixture = require('./earth-fixture');
+const FinishClimate = require('./seasonal-climate');
 
 
 /* Units. Anything ending in /step or /cell is a rate written against the
@@ -53,6 +54,7 @@ const UNITS = [
     'bool',
     '/step', 'km/step', 'm/step',
     '/cell',
+    'd', 'yr', 'C', 'C/km', 'mm', 'W/m2', 'W/m2/K',
 ];
 
 /* p(unit, range, label) — range null means uncalibrated, so unshufflable.
@@ -430,6 +432,35 @@ const MODULES = {
     fixture:   {groups: FIXTURE,   defaults: EarthFixture.DEFAULTS},
 };
 
+/* Finish run controls are registered, but are not Discover genes. Keeping
+ * them out of all()/freeable() preserves existing project and preview bags. */
+const FINISH_CLIMATE = {
+    climateCells: p('count', [128, 40000]),
+    climateMaxYears: p('yr', [2, 100]),
+    climateMinYears: p('yr', [2, 100]),
+    climateStepDays: p('d', [0.125, 5]),
+    climateToleranceC: p('C', [0.01, 0.25]),
+    climateSolarFlux: p('W/m2', [600, 1800]),
+    climateHeatTransport: p('W/m2/K', [0.1, 2]),
+    climateOceanDepthM: p('m', [5, 100]),
+    climateSoilCapacityMm: p('mm', [10, 500]),
+    climateLapseRate: p('C/km', [3, 9.8]),
+    climateMonsoonStrength: p('1', [0, 2]),
+    climateLatentCoupling: p('frac', [0, 0.3]),
+};
+function checkFinishClimate(values) {
+    const problems=[];
+    for(const [name,value] of Object.entries(values)) {
+        const meta=FINISH_CLIMATE[name];
+        if(!meta)problems.push(`${name}: unregistered Finish climate parameter`);
+        else if(!Number.isFinite(value)||value<meta.range[0]||value>meta.range[1])problems.push(`${name}: outside ${meta.range.join('..')}`);
+        else if(['count','yr'].includes(meta.unit)&&!Number.isInteger(value))problems.push(`${name}: must be an integer`);
+    }
+    if(values.climateMinYears>values.climateMaxYears)problems.push('climateMinYears exceeds climateMaxYears');
+    if(values.climateStepDays&&30/values.climateStepDays%1!==0)problems.push('climateStepDays must divide a 30-day month');
+    return problems;
+}
+
 
 /* Every parameter of a module as {name: {...meta, group, module, default}}. */
 function flatten(moduleName) {
@@ -574,6 +605,9 @@ function needsNormalisation() {
 /* Invariant 1: the table and the code agree on what parameters exist. */
 function checkKeys() {
     const problems = [];
+    for(const name of new Set([...Object.keys(FINISH_CLIMATE),...Object.keys(FinishClimate.DEFAULTS)])) {
+        if(!(name in FINISH_CLIMATE)||!(name in FinishClimate.DEFAULTS))problems.push(`Finish climate ${name} is not registered consistently`);
+    }
     for (const [moduleName, module] of Object.entries(MODULES)) {
         const registered = new Set(Object.keys(flatten(moduleName)));
         const actual = new Set(Object.keys(module.defaults));
@@ -744,6 +778,8 @@ if (problems.length) {
 
 module.exports = {
     UNITS,
+    FINISH_CLIMATE,
+    checkFinishClimate,
     MODULES,
     flatten,
     all,

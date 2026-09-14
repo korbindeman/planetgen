@@ -165,7 +165,18 @@ const CROP_MESH_STEPS = 12;
 
 function cropMesh(crop) {
     if (!crop) return null;
-    if (crop.tile) return Cube.tileMesh(crop.tile, CROP_MESH_STEPS);
+    if (crop.tile) {
+        const mesh = Cube.tileMesh(crop.tile, CROP_MESH_STEPS);
+        const pad = crop.imagePad || 0;
+        if (pad && crop.imageEl) {
+            const w = crop.imageEl.width, h = crop.imageEl.height;
+            for (let i = 0; i < mesh.uv.length; i += 2) {
+                mesh.uv[i] = (pad + mesh.uv[i] * (w - 2 * pad)) / w;
+                mesh.uv[i + 1] = (pad + mesh.uv[i + 1] * (h - 2 * pad)) / h;
+            }
+        }
+        return mesh;
+    }
     if (![crop.west, crop.south, crop.east, crop.north].every(Number.isFinite)) return null;
     return Cube.lonLatMesh(crop.west, crop.south, crop.east, crop.north, CROP_MESH_STEPS);
 }
@@ -292,12 +303,14 @@ function normalizeCrop(raw) {
         elev: resolveImage(raw.elev),
         elevWidth: raw.elevWidth | 0,
         elevHeight: raw.elevHeight | 0,
+        elevPad: raw.elevPad | 0,
         elevM: null,
         planetId: null,
         loadError: null,
         status: raw.status || (raw.image && String(raw.image).includes('output.png') ? 'done' : null),
         seed: raw.seed,
         imageEl: null,
+        imagePad: 0,
     };
 }
 
@@ -337,13 +350,14 @@ function loadCropElev(crop, asked) {
     const elev = crop.elev;
     const width = crop.elevWidth;
     const height = crop.elevHeight;
+    const elevPad = crop.elevPad || 0;
     const image = crop.image;
     return fetch(elev)
         .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(String(res.status)))))
         .then((buf) => {
             if (!epoch.stillSameWorld(asked)) return;
             const live = liveCrop(name);
-            if (!live || !Epoch.sameElev(live, {elev, elevWidth: width, elevHeight: height})) return;
+            if (!live || !Epoch.sameElev(live, {elev, elevWidth: width, elevHeight: height, elevPad})) return;
             if (buf.byteLength < want) throw new Error(`elev dump is ${buf.byteLength} of ${want} bytes`);
             live.elevM = new Float32Array(buf, 0, width * height);
             live.loadError = null;
@@ -351,7 +365,7 @@ function loadCropElev(crop, asked) {
         .catch((err) => {
             if (!epoch.stillSameWorld(asked)) return;
             const live = liveCrop(name);
-            if (!live || !Epoch.sameElev(live, {elev, elevWidth: width, elevHeight: height})) return;
+            if (!live || !Epoch.sameElev(live, {elev, elevWidth: width, elevHeight: height, elevPad})) return;
             live.loadError = String(err.message || err);
             /* A tile whose elevation will not load still has a picture. */
             return image ? loadCropImage(live, asked) : undefined;
@@ -369,6 +383,7 @@ function loadCropImage(crop, asked) {
                 const live = liveCrop(name);
                 if (live && live.image === src) {
                     live.imageEl = downsample(img, MAX_IMAGE);
+                    live.imagePad = 0;
                     live.loadError = null;
                 }
             }
@@ -416,6 +431,7 @@ function surfaceFor(crop) {
     if (!crop.elevM || !surfacePainter) return crop.imageEl || null;
     try {
         crop.imageEl = surfacePainter(crop);
+        crop.imagePad = crop.imageEl && crop.tile ? crop.elevPad || 0 : 0;
         crop.planetId = epoch.planetId();
     } catch (err) {
         crop.loadError = String(err.message || err);

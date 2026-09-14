@@ -113,11 +113,13 @@ function tileTexelAngle(tile, width, height) {
     return (Math.PI / 2) / (n * Math.sqrt(Math.max(1, width) * Math.max(1, height)));
 }
 
-function tileMatrices(tile, width, height) {
+function tileMatrices(tile, width, height, pad = 0) {
+    const innerWidth = width - 2 * pad, innerHeight = height - 2 * pad;
     return matricesFrom(
         width, height, FRAME_STEPS,
-        tileTexelAngle(tile, width, height),
-        (s, t) => Cube.tileDirection(tile, s, t),
+        tileTexelAngle(tile, innerWidth, innerHeight),
+        (s, t) => Cube.tileDirection(tile,
+            (s * width - pad) / innerWidth, (t * height - pad) / innerHeight),
         Cube.FACES[tile.face].u,
     );
 }
@@ -202,7 +204,7 @@ const RASTER_AXES = {steps: 1, data: new Float32Array([
  * crop on the planet. `crop` carries either a cube tile or a lon/lat box.
  */
 function cropShade(e, width, height, crop) {
-    const mat = (crop && crop.tile ? tileMatrices(crop.tile, width, height) : null)
+    const mat = (crop && crop.tile ? tileMatrices(crop.tile, width, height, crop.elevPad || 0) : null)
         || boxMatrices(crop, width, height)
         || RASTER_AXES;
     return shadeField(e, width, height, mat);

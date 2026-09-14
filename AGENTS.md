@@ -73,6 +73,8 @@ Judge the **batch**, not one seed: a failure mode that hits every seed reads as 
 
 `bun run stats` and `bun run climate` are optional hints when a picture looks collapsed. Do not lead with them and do not treat a green number as done.
 
+A whole-planet bake is `bun run bake:campaign` (masked, resumable, WSL2 worker), then `bun run build:package` to write the `.planet` a consumer reads and `bun run build:previews` for the DEM the studio drapes. What that first campaign cost and the six defects it exposed — each of which produced internally consistent output — is [docs/history/planet-bake-2026-09.md](docs/history/planet-bake-2026-09.md).
+
 `bun run check:earth` locks the Earth fixture's `stats` report to `scripts/earth-baseline.txt` so a model change cannot drift Earth unnoticed. It is a tripwire, not a taste test: if it fails, look at the Earth captures, decide whether the picture moved the right way, then `--update`. Also: `check:projects`, `check:search`, `check:tiles`, `check:pipeline`, `check:td`, and `check:docs` — links resolve, contract tables match the code, every stage doc has its seven sections.
 
 **Do not open the interactive app in any built-in agent browser** (Simple Browser, MCP browser, Cursor browser). Tell the user they can run `bun run dev` and open `http://localhost:3000` themselves.

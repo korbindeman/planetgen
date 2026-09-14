@@ -38,11 +38,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { projectBakeDir } from "./td-overlays.mjs";
 import { resolveRun } from "./project-run.mjs";
+import { campaignHalo } from "./preview-halo.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Cube = require(join(root, "src", "cubesphere.js"));
 const Projects = require(join(root, "src", "projects"));
+const PreviewDem = require(join(root, "src", "preview-dem"));
 
 const DEFAULT_RES = 896;
 
@@ -53,64 +55,13 @@ function parseArgs(argv) {
     else if (arg.startsWith("--variant=")) out.variant = arg.slice(10);
     else if (arg.startsWith("--variant-name=")) out.variantName = arg.slice(15);
     else if (arg.startsWith("--res=")) out.res = Number(arg.slice(6)) | 0;
+    else if (arg.startsWith("--tiles=")) out.tiles = arg.slice(8).split(",").map((name) => {
+      if (!Cube.parseTileName(name)) throw new Error(`invalid tile: ${name}`);
+      return `crop-${name}`;
+    });
     else throw new Error(`unknown arg: ${arg}`);
   }
   if (!(out.res > 0)) throw new Error("--res must be positive");
-  return out;
-}
-
-/* Gaussian taps for one output sample, centred on the source position it maps
- * to. sigma is half the decimation ratio: wide enough to kill what the
- * destination grid cannot represent, narrow enough to keep the relief. */
-function kernelFor(ratio) {
-  const sigma = Math.max(0.5, ratio / 2);
-  const radius = Math.max(1, Math.ceil(sigma * 3));
-  const taps = [];
-  let sum = 0;
-  for (let d = -radius; d <= radius; d++) {
-    const w = Math.exp(-(d * d) / (2 * sigma * sigma));
-    taps.push(w);
-    sum += w;
-  }
-  return {taps, radius, norm: 1 / sum};
-}
-
-/*
- * Separable, and evaluated only where the output needs it: horizontally into
- * `dst x` columns for every source row, then vertically into `dst y`. A full
- * blur of the source and a decimate afterwards is the same picture for about
- * sixteen times the work.
- */
-function downsample(src, srcW, srcH, dstW, dstH) {
-  const ratioX = srcW / dstW, ratioY = srcH / dstH;
-  const kx = kernelFor(ratioX), ky = kernelFor(ratioY);
-  const mid = new Float32Array(dstW * srcH);
-  for (let y = 0; y < srcH; y++) {
-    const row = y * srcW;
-    for (let x = 0; x < dstW; x++) {
-      const cx = (x + 0.5) * ratioX - 0.5;
-      const c = Math.round(cx);
-      let acc = 0;
-      for (let d = -kx.radius; d <= kx.radius; d++) {
-        const sx = Math.min(srcW - 1, Math.max(0, c + d));
-        acc += src[row + sx] * kx.taps[d + kx.radius];
-      }
-      mid[y * dstW + x] = acc * kx.norm;
-    }
-  }
-  const out = new Float32Array(dstW * dstH);
-  for (let y = 0; y < dstH; y++) {
-    const cy = (y + 0.5) * ratioY - 0.5;
-    const c = Math.round(cy);
-    for (let x = 0; x < dstW; x++) {
-      let acc = 0;
-      for (let d = -ky.radius; d <= ky.radius; d++) {
-        const sy = Math.min(srcH - 1, Math.max(0, c + d));
-        acc += mid[sy * dstW + x] * ky.taps[d + ky.radius];
-      }
-      out[y * dstW + x] = acc * ky.norm;
-    }
-  }
   return out;
 }
 
@@ -129,14 +80,16 @@ if (args.variantName) {
 
 const bakeDir = projectBakeDir(root, run.project, variantId);
 const R = args.res;
+const padded = await campaignHalo(bakeDir);
 console.log(`writing ${R}x${R} previews into ${bakeDir}`);
 
 const { readdir } = await import("node:fs/promises");
 const folders = (await readdir(bakeDir, {withFileTypes: true}))
   .filter((e) => e.isDirectory() && e.name.startsWith("crop-"))
-  .map((e) => e.name);
+  .map((e) => e.name)
+  .filter((name) => !args.tiles || args.tiles.includes(name));
 
-let written = 0, skipped = 0, srcSide = 0;
+let written = 0, skipped = 0, srcSide = 0, bytes = 0;
 for (const folder of folders) {
   const dir = join(bakeDir, folder);
   let meta, src;
@@ -150,15 +103,24 @@ for (const folder of folders) {
   }
   srcSide = meta.width;
   if (meta.width <= R) { skipped++; continue; }   // already small enough
-  const out = downsample(src, meta.width, meta.height, R, R);
+  const tile = Cube.parseTileName(folder.slice(5));
+  // Keep two filtered neighbour pixels for both the painter's derivative and
+  // bilinear texture sampling at the nominal tile edge.
+  const outPad = padded && tile ? 2 : 0;
+  const pad = outPad ? PreviewDem.haloSize(meta.width, meta.height, R, R, outPad) : 0;
+  const input = pad ? await padded(tile, src, meta.width, meta.height, pad) : src;
+  const out = PreviewDem.downsample(input, meta.width, meta.height, R, R, pad, outPad);
   await writeFile(join(dir, "preview.elev"),
     Buffer.from(out.buffer, out.byteOffset, out.byteLength));
-  await writeFile(join(dir, "preview.elev.json"), JSON.stringify({width: R, height: R}));
+  await writeFile(join(dir, "preview.elev.json"), JSON.stringify({
+    width: R + 2 * outPad, height: R + 2 * outPad, padPixels: outPad,
+  }));
+  bytes += out.byteLength;
   written++;
   if (written % 25 === 0) process.stdout.write(`\r  ${written}/${folders.length}   `);
 }
 
-const mb = written * R * R * 4 / 1e6;
+const mb = bytes / 1e6;
 console.log(`\rwrote ${written} previews${skipped ? `, skipped ${skipped}` : ""}`);
 console.log(`${mb.toFixed(0)} MB of DEM (from ${(written * srcSide * srcSide * 4 / 1e9).toFixed(1)} GB)`);
 /* The overlay caches a painted canvas per crop as well, so the browser holds

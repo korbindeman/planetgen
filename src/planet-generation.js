@@ -1143,9 +1143,10 @@ function gpuForCrop(crop) {
             return null;
         }
     }
-    const meshKey = crop.tile
+    const locationKey = crop.tile
         ? `t:${crop.tile.face}:${crop.tile.level}:${crop.tile.i}:${crop.tile.j}`
         : `b:${crop.west}:${crop.south}:${crop.east}:${crop.north}`;
+    const meshKey = `${locationKey}:${crop.imagePad || 0}:${img.width}:${img.height}`;
     if (gpu.meshKey !== meshKey) {
         const mesh = TdOverlay.cropMesh(crop);
         gpu.mesh = mesh;
@@ -2937,6 +2938,7 @@ const TD_CLIMATE_CELLS = 32;
 function paintTdSurface(crop) {
     const w = crop.elevWidth;
     const h = crop.elevHeight;
+    const pad = crop.tile ? crop.elevPad || 0 : 0;
     if (!(w > 0 && h > 0) || !crop.elevM) return null;
 
     const climate = tdClimateUnder(crop);
@@ -2957,8 +2959,8 @@ function paintTdSurface(crop) {
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
             const i = y * w + x;
-            const fx = (x + 0.5) / w;
-            const fy = (y + 0.5) / h;
+            const fx = (x + 0.5 - pad) / (w - 2 * pad);
+            const fy = (y + 0.5 - pad) / (h - 2 * pad);
             const moist = TdTile.samplePadded(climate.moist, climate.n, climate.n, fx, fy, climate.pad);
             const temp = TdTile.samplePadded(climate.temp, climate.n, climate.n, fx, fy, climate.pad);
             const [r, g, b] = useReliefLook()

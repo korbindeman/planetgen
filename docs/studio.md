@@ -49,7 +49,7 @@ Thalos and Earth stay shipped modules. A name that slugs to `thalos` or
 | --- | --- | --- | --- |
 | **Layout** | Discover | This variant's plates and continents are kept. | [layout.md](stages/layout.md) |
 | **Shape** | Discover | Detail + later sculpting frozen as the sketch. | [shape.md](stages/shape.md) |
-| **Climate** | Finish | Bake-time climate on that height (ExoPlaSim). Skip if the sketch keeps `climate.js`. | [climate.md](stages/climate.md) |
+| **Climate** | Finish | Seasonal CPU climate on the saved height for new campaigns. Discover and existing campaigns retain preview climate; ExoPlaSim is a future reference. | [climate.md](stages/climate.md) |
 | **Terrain** | Finish | Whole-planet diffusion (cheap pass then 90 m). Cube faces and seams are internal. | [terrain.md](stages/terrain.md) |
 | **Carve** | Finish | Rivers, fjords, and stamps on that DEM. Hydrology is the drainage work inside it. | [hydrology](stages/carve-hydrology.md), [landforms](stages/carve-landforms.md) |
 | **Export** | Finish | Residual pyramid for the game. | [export.md](stages/export.md) |

@@ -21,7 +21,7 @@ module.exports = {
     },
 
     /* Adopted body: the default for new working planets. Variants store
-     * their own copy. From `~/dev/thalos` lore — a starting point, not
+     * their own copy. From `../thalos` lore — a starting point, not
      * a chosen planet. */
     body: {
         /* Half Earth's radius, so a quarter of the surface area:
@@ -29,7 +29,7 @@ module.exports = {
         radiusKm: 3186,
         gravityG: 0.91,
 
-        /* From `~/dev/thalos/assets/solar_system.ron`. The 21.3 hour
+        /* From `../thalos/assets/solar_system.ron`. The 21.3 hour
          * day narrows the Hadley cells, so the dry belt and storm
          * track sit at ~94% of Earth's latitudes. */
         rotationHours: 21.3,

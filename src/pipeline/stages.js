@@ -5,6 +5,7 @@
 'use strict';
 
 const Tectonics = require('../tectonics');
+const LayoutHistory = require('../layout-history');
 const EarthFixture = require('../earth-fixture');
 const Climate = require('../climate');
 const Detail = require('../detail');
@@ -33,25 +34,15 @@ function tectonics(planet, cache) {
             polarStraits: tectOpts.polarStraits,
         }, tectOpts, config.options.fixture));
         map.plate_is_ocean = Planet.oceanicPlates(mesh, map);
+    } else if (config.simulateTectonics) {
+        LayoutHistory.generate(mesh, map, seed, tectOpts);
+        map.plate_is_ocean = Planet.oceanicPlates(mesh, map);
     } else {
         const plateOpts = Object.assign({plates: tectOpts.plates}, tectOpts);
-        if (config.simulateTectonics) {
-            /* the still first, so the plates are fitted to it */
-            plateOpts.birthCrust = Tectonics.planCrust(mesh, map.r_xyz, seed, tectOpts);
-        }
         Object.assign(map, Tectonics.generatePlates(mesh, seed, plateOpts));
-        if (config.simulateTectonics) {
-            Tectonics.simulateTectonics(mesh, map, seed, Object.assign({
-                steps: tectOpts.steps,
-                deferCrests: useDetail,
-                polarStraits: tectOpts.polarStraits,
-            }, tectOpts));
-            map.plate_is_ocean = Planet.oceanicPlates(mesh, map);
-        } else {
-            Planet.runBlend1843(mesh, map, seed, tectOpts, log, {
-                mergeOcean: config.mergeOceanPlates,
-            });
-        }
+        Planet.runBlend1843(mesh, map, seed, tectOpts, log, {
+            mergeOcean: config.mergeOceanPlates,
+        });
     }
 
     map.plate_centroid = Planet.plateCentroids(mesh, map.r_xyz, map.plates, map.r_plate);

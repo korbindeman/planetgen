@@ -120,6 +120,7 @@ function fromMap(map, meta) {
         nextPlateId: map.nextPlateId | 0,
         elapsedMyr: Number(map.elapsedMyr) || 0,
         targetPlateCount: map.targetPlateCount | 0,
+        layoutHistory: map.layoutHistory ? JSON.parse(JSON.stringify(map.layoutHistory)) : undefined,
     }, Codec.encodeNamed(map, NAMES));
 }
 
@@ -142,6 +143,7 @@ function toFields(payload) {
         nextPlateId: payload.nextPlateId | 0,
         elapsedMyr: Number(payload.elapsedMyr) || 0,
         targetPlateCount: payload.targetPlateCount | 0,
+        layoutHistory: payload.layoutHistory ? JSON.parse(JSON.stringify(payload.layoutHistory)) : undefined,
     }, Codec.decodeNamed(payload, NAMES, cells));
     if (!fields.r_elevation) return null;
     return fields;

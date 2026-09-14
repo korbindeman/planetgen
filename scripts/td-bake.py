@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import OrderedDict
 from pathlib import Path
 
 import click
@@ -38,7 +39,8 @@ import numpy as np
 import rasterio
 import torch
 from rasterio.transform import Affine
-from tqdm import tqdm
+from td_height import HEIGHT_ENCODING, dump_elev as _dump_elev, generate_window
+from td_mask import generate_masked
 
 from terrain_diffusion.common.cli_helpers import parse_cache_size
 from terrain_diffusion.inference.tiff_export import CHANNEL_FILES, PIXELS_PER_CELL
@@ -57,15 +59,6 @@ def _load(path: Path, internal_scale: float, default_value: float | None) -> np.
         arr = arr * internal_scale
     return arr
 
-
-def _dump_elev(path: Path, elev: np.ndarray) -> None:
-    """The float32 raw dump the studio actually drapes. Same bytes and same
-    sidecar as td-preview.py writes -- see the note on `dump_elev` below."""
-    h, w = elev.shape
-    path.write_bytes(elev.astype("<f4").tobytes())
-    path.with_name(path.name + ".json").write_text(
-        json.dumps({"width": int(w), "height": int(h)})
-    )
 
 
 def import_channels(world, tiff_dir, origin_i, origin_j, expect=None, log=print):
@@ -107,27 +100,6 @@ def import_channels(world, tiff_dir, origin_i, origin_j, expect=None, log=print)
         raise click.UsageError("No conditioning TIFFs found in the directory.")
     return ref_transform, ref_crs
 
-
-def generate_window(world, start_i, start_j, gen_w, gen_h, chunk_cells, log=print):
-    """Paint `gen_w` x `gen_h` cells of the bound world, as int16 metres."""
-    ppc = PIXELS_PER_CELL
-    full = np.zeros((gen_h * ppc, gen_w * ppc), dtype=np.int16)
-    row_chunks = (gen_h + chunk_cells - 1) // chunk_cells
-    col_chunks = (gen_w + chunk_cells - 1) // chunk_cells
-    with tqdm(total=row_chunks * col_chunks, desc="Generating") as pbar:
-        for ci in range(0, gen_h, chunk_cells):
-            for cj in range(0, gen_w, chunk_cells):
-                ci2 = min(ci + chunk_cells, gen_h)
-                cj2 = min(cj + chunk_cells, gen_w)
-                result = world.get(
-                    (start_i + ci) * ppc, (start_j + cj) * ppc,
-                    (start_i + ci2) * ppc, (start_j + cj2) * ppc,
-                    with_climate=False,
-                )
-                elev = np.clip(result["elev"].numpy(), -32768, 32767).astype(np.int16)
-                full[ci * ppc:ci2 * ppc, cj * ppc:cj2 * ppc] = elev
-                pbar.update(1)
-    return full
 
 
 def bake_tile(
@@ -205,13 +177,14 @@ def bake_tile(
         with rasterio.open(
             path, "w",
             driver="GTiff", height=h, width=w,
-            count=1, dtype="int16",
+            count=1, dtype="float32",
             crs=ref_crs, transform=out_transform,
             compress="lzw",
             tiled=tiled,
             **({"blockxsize": 256, "blockysize": 256} if tiled else {}),
         ) as dst:
             dst.write(arr, 1)
+            dst.update_tags(height_encoding=HEIGHT_ENCODING)
 
     full = generate_window(world, start_i, start_j, gen_w, gen_h, chunk_cells, log)
 
@@ -254,6 +227,8 @@ def serve_jobs(world, chunk_size):
     def log(*args):
         print(*args, file=sys.stderr, flush=True)
 
+    mask_field = None
+    mask_cache = OrderedDict()
     log("READY")
     for line in sys.stdin:
         line = line.strip()
@@ -270,14 +245,21 @@ def serve_jobs(world, chunk_size):
                 import_channels(
                     world, job["tiff_dir"], int(job["origin_i"]), int(job["origin_j"]), log=log,
                 )
+                mask_field = json.loads(Path(job["mask_file"]).read_text()) if job.get("mask_file") else None
+                mask_cache.clear()
                 print(json.dumps({"ok": True, "name": name, "op": "import"}), flush=True)
                 continue
             if op == "generate":
-                full = generate_window(
+                if 'windows' in job:
+                    if mask_field is None:
+                        raise ValueError('Masked generation requires an imported face mask')
+                    full = generate_masked(world, job, mask_field, log, cache=mask_cache)
+                else:
+                    full = generate_window(
                     world, int(job["start_i"]), int(job["start_j"]),
                     int(job["w"]), int(job["h"]),
                     int(job.get("chunk_size") or chunk_size) // PIXELS_PER_CELL, log,
-                )
+                    )
                 out = Path(job["output_elev"])
                 out.parent.mkdir(parents=True, exist_ok=True)
                 step = 1

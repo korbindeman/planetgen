@@ -9,6 +9,7 @@ bake/*.planet
 *.planet
 *.log
 src/.td-overlays/
+work/
 .DS_Store
 __pycache__/
 *.py[cod]

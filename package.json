@@ -28,7 +28,14 @@
         "seam": "bun ./scripts/seam-corner.mjs",
         "stats": "bun ./scripts/tectonics-stats.mjs",
         "sheet": "bun ./scripts/seed-sheet.mjs",
+        "sheet:layout": "bun ./scripts/layout-sheet.mjs",
+        "check:layout": "bun ./scripts/check-layout-history.mjs",
         "climate": "bun ./scripts/climate-stats.mjs",
+        "finish:climate": "bun ./scripts/finish-climate.mjs",
+        "preview:climate": "bun ./scripts/preview-climate.mjs",
+        "sheet:climate": "bun ./scripts/climate-sheet.mjs",
+        "benchmark:climate": "bun ./scripts/benchmark-earth-climate.mjs",
+        "check:climate": "bun ./scripts/check-climate.mjs && bun ./scripts/check-climate-physics.mjs && bun ./scripts/check-climate-mechanisms.mjs && bun ./scripts/check-climate-integration.mjs && bun ./scripts/check-climate-campaign.mjs && bun ./scripts/check-climate-benchmark-cli.mjs",
         "export:td": "bun ./scripts/export-td.mjs",
         "bake": "bun ./scripts/bake.mjs",
         "bake:tiles": "bun ./scripts/bake-tiles.mjs",
@@ -45,6 +52,7 @@
         "bake:campaign": "bun ./scripts/bake-campaign.mjs",
         "build:cubemap": "bun ./scripts/build-cubemap.mjs",
         "build:package": "bun ./scripts/build-package.mjs",
+        "check:package": "bun ./scripts/check-package-pruning.mjs && bun ./scripts/check-package-output.mjs && bun ./scripts/check-package-reader.mjs && bun ./scripts/check-package-terrain.mjs",
         "build:previews": "bun ./scripts/build-previews.mjs"
     }
 }

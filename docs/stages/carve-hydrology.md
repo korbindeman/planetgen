@@ -16,10 +16,12 @@ already look right. What it does not have is **non-local coherence**: a
 catchment, a mouth, a hanging valley that actually joins the next one.
 That gap is why this stage exists.
 
-`@planetgen/hydrology` is a named slot. Nothing there runs yet. The
-grain-independent drain lives in `src/route.js`. Shape uses a light
-cut of that for valley texture and a drain tree. This stage would call
-the same core on the 90 m cubesphere. It has not started.
+`@planetgen/hydrology` remains a named slot for production. An experimental
+[native catchment pilot](../../work/rill-carve/README.md) now runs on the
+saved Rill bake and writes sparse height edits plus a reach/lake graph.
+It is separate from the studio pipeline and the installed `.planet`.
+The grain-independent Shape drain still lives in `src/route.js`; the
+pilot uses a sparse native-raster CPU implementation.
 
 ## Reads
 
@@ -30,10 +32,15 @@ the same core on the 90 m cubesphere. It has not started.
 | `r_boundary`, `r_orogeny` at 23 km | [Layout](layout.md#hands-on) via the sketch | bedrock vs alluvial character |
 | face adjacency | [ref/cubesphere.md](../ref/cubesphere.md) | flow must cross face edges |
 
-**Wishes** — unknown until a trial runs. Expect this list to be the most
-active in the repo once the stage starts. Likely candidates: a lithology
-or erodibility hint from Layout, and honest seasonality from Climate so
-discharge is not a function of annual mean alone.
+**Wishes** — the native trial exposed these gaps:
+
+- Terrain that preserves selected long drainage corridors through its local
+  detail. A Shape drain tree alone does not constrain the baked valley floors.
+- A lake / endorheic-basin intent and a lithology or erodibility hint, so a
+  broad basin and a false divide do not differ only by an arbitrary cut cap.
+- Seasonal runoff and bankfull-flow estimates from Climate. The current pilot
+  reads saved campaign precipitation and temperature and derives an annual
+  proxy; that does not calibrate channel width or lake seasonality.
 
 ## Hands on
 
@@ -50,8 +57,9 @@ raster. See [export.md](export.md).
 
 ## Must not regress
 
-Nothing to regress yet. These constraints are settled. The method is
-not.
+The native pilot checks face adjacency, runoff conservation, real ocean
+terminals, bounded edits and source-bound graph profiles. These constraints
+are settled. The production method is not.
 
 - **Do not rerun Shape's stream-power recipe on the bake.** That recipe
   is for a 23 km blob so the model sees valleys. A second
@@ -68,8 +76,37 @@ not.
 
 ## How it works today
 
-Nothing. What follows is the working stance and the candidate
-operations. Structure only. Strength is open.
+The native pilot loads a complete coarse-selected catchment at the bake's
+actual resolution, with a surrounding margin. It distinguishes real ocean
+from domain escape, crosses cube-face edges, routes climate-derived runoff,
+breaches bounded shallow barriers, and retains larger basins as explicit water
+surfaces. It exports source-bound sparse edits and a directed reach/lake graph;
+an independent readback checks topology and actual source heights.
+
+Its first western Rill trial is technically connected but too lake-heavy for
+the desired large-river result: a 1,492 km watercourse contains only 72 km of
+river. The other 1,420 km crosses lakes. Small pit repairs cannot fix that
+macro-scale geometry. Do not interpret a long flood route as a long river.
+
+The eastern comparison improves this to 464 km of river reaches along a
+2,695 km watercourse, but 83% still crosses lakes. Both trials are kept as
+experimental outputs; neither has been adopted into the saved terrain package.
+The [comparison](../../work/rill-carve/RESULT.md) records the captures,
+source-bound validation and remaining method gap.
+
+A subsequent [master-river experiment](../../work/rill-carve/trunk/RESULT.md)
+now produces a 2,351 km continuous course with native channel edits and an
+explicit river water mesh. A valley-cost search replaces the arbitrary lake
+transit path; a cut-only downstream grade permits deliberate deeper gorges.
+Shallow open reaches can receive an authored alluvial planform. Native source
+readback, wet channel continuity, shoreline validity, and mesh continuity
+across the cube fold pass. The result is still separate from production:
+tributaries and lakes have not been reconciled to the lowered trunk, some
+reaches remain visually too regular, and no consumer package was rebuilt.
+
+The [pilot notes](../../work/rill-carve/README.md) give commands, limits, bundle
+layout and evidence. The following working stance remains the production
+candidate; incision strength and lake regimes are still open.
 
 **Working stance:**
 

@@ -86,7 +86,10 @@ Filenames are fixed:
 | `precipitation_cv.tif` | 4 | % | Coefficient of variation. Dry climates ~60–80. |
 
 GeoTIFF geotransform and CRS (planetgen writes WGS84) are copied onto the
-output. The output DEM is **int16 metres**, LZW tiled 256×256.
+output. The sibling `tiff-export` command writes **int16 metres**, LZW
+tiled 256×256. Our owned `td-bake.py` worker now writes **Float32 metres**
+through raw and native TIFF paths, preserving sub-metre signs. Its precision
+identity and legacy-campaign rules are in [Terrain](../stages/terrain.md#campaign-overlap-and-fine-mask-trial).
 
 `tiff-export` currently writes **elevation only** (`with_climate=False`).
 The climate channels are conditioning going in; nothing comes back out.
@@ -98,7 +101,8 @@ it — see [carve-hydrology.md](../stages/carve-hydrology.md#after-the-cut).
 
 ## Unit mapping
 
-planetgen fields are not metres or °C. `exportTerrainDiffusion` converts:
+**Preview climate** uses normalized fields. `exportTerrainDiffusion` converts
+them for regional Shape previews and legacy campaigns:
 
 | planetgen | TIFF |
 | --- | --- |
@@ -111,8 +115,16 @@ planetgen fields are not metres or °C. `exportTerrainDiffusion` converts:
 
 Sea stays at 0. Peaks sit around 5.5 km, abyss around −4.2 km —
 Earth-like enough for a model trained on ETOPO/WorldClim. The last two
-rows are heuristics standing in for a seasonal cycle nothing upstream
-simulates; see [climate.md § Open](../stages/climate.md#open).
+rows remain heuristics for that preview tier.
+
+**New campaigns** use seasonal climate by default. Its temperatures are
+already °C and rain is already mm/month. Annual mean temperature, sample
+temperature SD, total precipitation, and `100 * SD(P) / (mean(P) + 1 mm)`
+are computed from twelve months. `seasonal-td.js` rasterizes those four
+physical fields directly on the same conformal face lattice; do not apply
+the preview conversions. Temperature SD stays in °C in the TIFF: the sibling
+importer multiplies by 100 internally. Elevation follows the existing sketch
+mapping in both tiers. See [Climate](../stages/climate.md).
 
 ## Padding
 

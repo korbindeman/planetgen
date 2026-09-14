@@ -51,11 +51,11 @@ into one stage doc.
 | --- | --- | --- | --- |
 | Layout | ~10k cells (~113 km on Thalos) | Live | [stages/layout.md](stages/layout.md) |
 | Shape | 23 km/px sketch | Live | [stages/shape.md](stages/shape.md) |
-| Climate | 23 km fields | Live heuristic. Bake-time GCM not tried | [stages/climate.md](stages/climate.md) |
-| Terrain | 90 m/px | Regional tiles work. Planet-scale bake not built | [stages/terrain.md](stages/terrain.md) |
-| Carve — hydrology | 90 m/px | Not started. Method open | [stages/carve-hydrology.md](stages/carve-hydrology.md) |
+| Climate | 23 km fields | Fast Discover preview; seasonal CPU climate for new campaigns. Measured-Earth GCM benchmark exposes regional rain/polar biases | [stages/climate.md](stages/climate.md) |
+| Terrain | 90 m/px | Campaign built. First planet (quarter/glep) baked Sep 2026; see [history](history/planet-bake-2026-09.md) | [stages/terrain.md](stages/terrain.md) |
+| Carve — hydrology | 90 m/px | Native catchment and river-surface pilots; production not built | [stages/carve-hydrology.md](stages/carve-hydrology.md) |
 | Carve — landforms | 90 m/px | Not started | [stages/carve-landforms.md](stages/carve-landforms.md) |
-| Export | sparse pyramid | Schema decided. Bake not written | [stages/export.md](stages/export.md) |
+| Export | sparse pyramid | Schema decided. First package built on quarter/glep; Thalos bake pending | [stages/export.md](stages/export.md) |
 
 You should not have to read another stage file to know what you can do in
 this stage.
@@ -67,9 +67,16 @@ Lookup for external tools, formats and this machine. Not stage context.
 | Doc | What it answers |
 | --- | --- |
 | [ref/terrain-diffusion.md](ref/terrain-diffusion.md) | What the model reads, how to run it, and **where the checkout is** — `../terrain-diffusion`, never `~/dev` |
+| [ref/climate-benchmark.md](ref/climate-benchmark.md) | Import measured Earth, compare seasonal climate with GFDL/WorldClim, and evaluate tuning without touching a bake |
 | [ref/wsl-bake-env.md](ref/wsl-bake-env.md) | The WSL2 distro the campaign bake runs in, why, and how it was built |
 | [ref/cubesphere.md](ref/cubesphere.md) | The tile grid, its distortion, and the conformal bake plane |
 | [ref/bake-compute.md](ref/bake-compute.md) | Sharding a planet-scale bake across boxes |
+| [ref/planet-package.md](ref/planet-package.md) | The `.planet` file a consumer reads — byte layout, addressing, reconstruction |
+
+The first whole-planet campaign, what it cost and the six defects it exposed,
+is [history/planet-bake-2026-09.md](history/planet-bake-2026-09.md). Read it
+before changing the bake or the package: every one of those defects produced
+output that looked internally consistent.
 
 ## How a stage doc is laid out
 

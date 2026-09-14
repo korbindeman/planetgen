@@ -69,6 +69,7 @@ function sameElev(a, b) {
     if ((a.elevWidth | 0) !== (b.elevWidth | 0) || (a.elevHeight | 0) !== (b.elevHeight | 0)) {
         return false;
     }
+    if ((a.elevPad | 0) !== (b.elevPad | 0)) return false;
     return elevPath(a.elev) === elevPath(b.elev);
 }
 
@@ -102,6 +103,7 @@ function adoptCaches(incoming, previous, world, planetId) {
         crop.elevM = old.elevM;
         if (canReuseColor(old, crop, world, planetId)) {
             crop.imageEl = old.imageEl;
+            crop.imagePad = old.imagePad || 0;
             crop.planetId = old.planetId;
         }
     }

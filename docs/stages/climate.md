@@ -2,176 +2,206 @@
 
 ## What it does
 
-Climate puts temperature and moisture on the sphere. Those fields decide
-biomes, where ice belongs, and four of the five channels
-terrain-diffusion reads.
+Climate supplies temperature, rain and seasonality on the sphere. There are
+three tiers:
 
-Two tiers. They sit at different points in the pipeline:
+- **Preview** (`src/climate.js`): the fast Discover model, retained during
+  Layout and Shape. Two seasonal wind solves and normalized moisture.
+- **Seasonal** (`src/seasonal-climate.js`): the default for a **new campaign**.
+  A seasonal energy and water balance on the finished Shape, then conservative
+  downscaling to its 23 km cells. It runs on CPU before the terrain worker starts.
+- **ExoPlaSim**: an optional future GCM reference. Not integrated or required.
 
-- **`climate.js`** — the in-loop model. Runs during [Layout](layout.md)
-  on the ~10k mesh. [Shape](shape.md) resamples it onto the sketch. Fast,
-  no browser, iterated on constantly. This is what ships today.
-- **Bake-time climate** — a GCM on the finished height, run once in
-  Finish. **Recommended, not built.** If the sketch keeps `climate.js`,
-  this tier is skipped.
-
-The stage table calls Climate a Finish stage because that is where the
-second tier would run. The first tier is already inside Discover.
+Seasonal is intended for plausible terrain conditioning in development bakes.
+It is not a quantified “80% accurate” climate or a replacement for a validated
+GCM. The CLI campaign uses it; Discover and regional Shape preview tiles keep
+preview climate. Existing campaigns retain their saved recipe on resume.
 
 ## Reads
 
 | Input | From | Used for |
 | --- | --- | --- |
-| `meters` / `r_meters` | Layout, then Shape | land vs sea, orographic lift, lapse rate |
-| body — tilt, day length, radius | the variant | season swing, wind band spacing |
-| climate genes | the variant's ranges | rain-out rate, recycling, season shift |
+| `r_meters`, saved mesh | Layout and Shape artifacts | coast, land fraction, mountain lift, lapse correction |
+| body radius, gravity, day length, tilt | saved variant | cell grain, water column, circulation, seasonal sunlight |
+| Finish options | `params.js` / `seasonal-climate.js` | sunlight, heat transport, storage, timestep, convergence |
+| preview climate genes | Discover only | fast moisture and temperature previews |
 
-**Wishes** — nothing outstanding from upstream stages. Star and orbit
-would come from a **system**, not from Layout. See
-[systems.md](../systems.md). This stage needs better physics. See
-[§ Open](#open).
+Seasonal reads the **saved** sculpted Shape, never a regeneration of its seed.
+**Wishes** — star spectrum, eccentricity and atmosphere composition remain unmodeled; the
+implicit forcing is an Earth-like atmosphere and circular orbit with a solar
+constant of 1361 W/m². Systems will own those inputs later: [systems](../systems.md).
 
 ## Hands on
 
 | Field | Type | Units | Consumed by |
 | --- | --- | --- | --- |
-| `r_temperature` | f32 | model units, mapped to °C on export | Shape (ice), biomes, Terrain channel 1 |
-| `r_moisture` | f32 | model units, mapped to mm/yr on export | biomes, Terrain channel 3 |
+| `r_temperature` | f32 | normalized preview units | Discover, Shape, preview tiles |
+| `r_moisture` | f32 | normalized preview units | Discover, preview tiles |
+| monthly `temperature` | f32, month-major | °C | seasonal summary, downscaling |
+| monthly `precipitation` | f32, month-major | mm/month | seasonal summary, downscaling |
+| monthly `winds` | f32, XYZ tangent vectors | m/s | fine relief exposure |
+| monthly `evaporation`, `runoff` | f32 | mm/month | coarse diagnostics |
+| monthly `snowCover`, `seaIce` | f32 | fraction | diagnostic seasonal fields |
+| annual `temperature` | f32 | °C | Terrain channel 1 |
+| annual `temperature_std` | f32 | °C | Terrain channel 2 |
+| annual `precipitation` | f32 | mm/year | Terrain channel 3 |
+| annual `precipitation_cv` | f32 | % | Terrain channel 4 |
 
-Terrain needs five channels. Climate supplies four. The two it does not
-store — `temperature_std` and `precipitation_cv` — are **derived at
-export time** from latitude, inland dryness and seasonality. Those two
-are heuristics standing in for a seasonal cycle that nothing here
-simulates. A GCM would drop all four out of a 12-month climatology
-instead. Mapping in
-[ref/terrain-diffusion.md](../ref/terrain-diffusion.md#unit-mapping).
+Annual temperature is the mean of twelve monthly means. Annual precipitation
+is the sum of twelve totals. Seasonality uses **sample** standard deviation
+(divisor 11); precipitation CV is `100 * SD(P) / (mean(P) + 1 mm)`, matching
+[WorldClim's linked dismo implementation](https://raw.githubusercontent.com/rspatial/dismo/master/R/biovars.R).
+The terrain importer converts temperature SD from °C to its internal °C×100.
+Do not scale that TIFF twice. [Unit mapping](../ref/terrain-diffusion.md#unit-mapping).
 
-Climate ships to the game at the **coarse cell (~23 km)**, never as a
-90 m raster.
+`climate/seasonal-<key>.json` is an independent schema-1 artifact inside a
+variant's output directory. It stores the coarse monthly fields, land/height,
+body, options, source fingerprint and diagnostics. The key covers saved inputs,
+body, settings and climate implementation files. Loading checks identity,
+array sizes, physical field bounds and numerical readiness. The fine fields
+are derived again from that artifact and the saved Shape. Layout and Shape
+schemas are unchanged. Climate remains a coarse field, not a 90 m raster.
+The current `.planet` package contains elevation; packaging climate for runtime
+is still open.
 
 ## Must not regress
 
-**Moisture is advected, never painted on by latitude.** Air picks up
-water over the sea. It travels downwind. It rains some out at every
-step. It arrives inland already depleted. Latitude only sets how readily
-air rains out — the Hadley circulation — not how much water is there.
+**Moisture is advected downwind, never supplied by a latitude paint.** Latitude
+sets circulation and condensation propensity. Evaporation is the water source;
+land recycling draws from finite soil storage. A dry planet must lose its
+initial water instead of receiving artificial humidity from land.
 
-This is the mechanism that keeps Earth's climate map from a set of
-stripes. The subtropical dry belt is not a girdle. The Sahara and the
-Namib are dry. Florida and south-east China, at the same latitude, are
-wet. In the trade-wind belt the wind is easterly. A continent's east
-coast gets fresh maritime air. Its west coast gets air that has already
-crossed the land. Under the westerlies it reverses. Rain shadows fall
-out of the same mechanism.
+Every shared edge conserves transported water and exchanged heat. Rain enters ocean, soil or
+snow; runoff and permanent ice accumulation are explicit sinks. Each month's
+downscaling preserves the coarse precipitation volume. Temperature receives
+only the residual elevation correction: do not apply the coarse lapse twice.
 
-Do not:
+A bake requires a repeating annual cycle and passing numerical budgets.
+Unconverged results must fail before launching terrain generation. Existing
+campaigns without a climate stamp mean **preview**; never silently upgrade
+one, including with `--force`. Changed climate or Shape requires a new variant.
+All face imports and tile conditioning copies must use the same climate key.
 
-- Replace advection with a distance-to-ocean falloff, or add one on top.
-- Drop `recycling`. Land returns about half its rain to the passing air.
-  Half the Amazon's rainfall is water the forest itself evaporated.
-  Without recycling, every continental interior becomes desert no matter
-  what else is tuned.
-- Drop the two-season solve. A single fixed wind field leaves big
-  landmasses uniformly arid. Averaging the two solstices is what a
-  monsoon is.
-- Shift the wind bands as far as the rain belt. `windSeasonShift` is
-  smaller than `seasonShift` on purpose. Earth's ITCZ swings much
-  further than the trades do. If the wind bands move the full amount, a
-  subtropical cell is averaged over both trade and westerly regimes.
-  That average cancels the wet-coast / dry-coast asymmetry.
-
-`colormap.js` is part of this. Its middle row is savanna and tropical
-grassland. Those entries must stay clearly greener than the desert row
-above them. If they do not, any land of middling moisture reads as sand.
+Keep `climate.js`, normalized preview mappings, and existing saved fields intact.
+Judge a batch of maps and globes. Never add named geography to make Earth match.
 
 ## How it works today
 
-`climate.js` holds the whole model. It has no WebGL and no DOM. Advected
-moisture against latitude-banded winds, solved at two solstices and
-averaged, with land recycling. Temperature is latitude plus elevation.
+The circulation grid has approximately `10000 * (radius / 6371 km)^2` cells,
+with a 1000-cell minimum, plus its closing pole. Earth uses about 10k cells;
+a quarter-radius body uses about 1k. The 23 km Shape remains the bake grain.
 
-It is a heuristic. That is the right choice for something that reruns on
-every shuffle. It is not where final realism should come from.
+1. Aggregate land fraction and land height by spherical area.
+2. Integrate a 360-day year in two-day steps, with twelve monthly mean solar
+   declinations. Daily-mean sunlight handles polar day and night. An implicit
+   energy balance mixes heat horizontally. Its effective diffusivity grows
+   with moisture capacity in warm air and weakens in cold air; a single frozen
+   coefficient on each shared edge conserves heat. Land and mixed-layer ocean
+   have different heat capacities. Snow, dry ground and sea ice affect albedo.
+3. Parameterize trades, westerlies and meridional flow from latitude and day
+   length. Broad land/sea temperature anomalies add thermal winds, accounting
+   for radiation and evaporative cooling at the existing latent coupling.
+   The wind driver excludes condensation heating aloft, which otherwise
+   attracts still more rain without a solved momentum equation. This is a
+   mean circulation prescription, not a solved momentum equation.
+4. Evaporate from ocean and finite soil water; transport vapor and cloud water
+   conservatively with mean wind and unresolved eddy mixing. Condensation
+   responds to humidity, circulation and mountain lift. Smooth humidity
+   dependence represents moist eddies within a monthly mean cell. Rain,
+   snow, melt, runoff and sea ice advance with the energy balance.
+5. Require two successive stable years after at least six: monthly temperature
+   RMS change below 0.12 °C and annual rain change below 1.5% (or 0.1 mm on a
+   nearly dry planet). Stop after 30 years and reject nonconvergence. Numerical
+   gates bound the water budget, iterative transport correction and thermal
+   solver residual.
+6. Interpolate monthly temperatures and correct residual height at 6 °C/km.
+   Smooth fine residual slopes, then redistribute each source cell's rain by
+   bounded wind exposure. Recompute all four terrain channels from the months.
 
-This generator does not produce hot deserts. On seed 88, land
-precipitation's 10th percentile was ~150 mm/yr. Dry interiors were
-~16–18 °C. You get rain-shadow and steppe, not Sahara. If a later pass
-needs arid plateaus, overwrite the conditioning channel on that crop.
-That is a conditioning edit, not a climate rewrite.
+The broad approach belongs to the energy/moisture balance family; see
+[GREB hydrology](https://gmd.copernicus.org/articles/12/425/2019/).
+This implementation does not import GREB's prescribed Earth winds, geography
+or reanalysis corrections. Its orographic pass is a bounded approximation,
+not a full cloud-resolving or Smith–Barstad solver. Only a fraction of column
+latent heating couples to its effective surface layer; free-tropospheric
+convection is unresolved.
+
+The heat coefficient follows the temperature derivative of `cp*T + Lv*q`
+at an assumed 80% relative humidity, normalized near 15 °C to retain the
+existing transport scale. This is an effective diffusivity inspired by
+[moist energy balance models](https://gmd.copernicus.org/articles/16/5515/2023/),
+not a full moist-static-energy or atmospheric momentum solve. It adds no
+water source and introduces no geography-specific correction or extra knob.
 
 ## Open
 
-**Bake-time climate: ExoPlaSim — recommended, needs one trial.**
+**Regional climate accuracy.** The [real Earth benchmark](../ref/climate-benchmark.md)
+imports measured surface elevation and compares a CPU solve with published
+GFDL-ESM4 historical output and WorldClim. Moisture-dependent heat transport
+and evaporative cooling improve GFDL land annual temperature MAE from 4.76
+to 4.03 °C and rain pattern correlation from 0.52 to 0.67. Non-glaciated land
+temperature MAE improves from 3.17 to 2.75 °C. The tradeoffs remain explicit:
+land rain increases too much in some regions, and GFDL temperature-seasonality
+MAE rises from 1.70 to 1.81 °C. WorldClim temperature, rainfall pattern and
+seasonality improve, but rain MAE rises slightly (492 to 497 mm/year).
+Excessive ocean rain bands, weak East Asian rain, insufficient desert drying
+and warm poles remain. No accuracy percentage or agreement with
+[ExoPlaSim](https://arxiv.org/abs/2107.07685) has been measured. Snow and sea ice
+are simple stores, not an ice-sheet or ocean model. One Earth comparison does
+not validate other bodies or fine terrain conditioning.
 
-Run a GCM on the finished heightmap. Derive the conditioning channels
-from physics instead of from latitude heuristics.
+**Scope of validation.** Default forcing, Earth-sized and quarter-radius
+bodies, saved variants and a seed batch are exercised. Very slow/fast rotation,
+extreme tilt or gravity, and unusual stellar flux require further validation;
+registered option ranges are input bounds, not scientific calibration.
 
-- ExoPlaSim is PlaSim (Univ. Hamburg intermediate-complexity GCM) wrapped
-  for arbitrary planets. `pip install exoplasim`, custom topography and
-  land/sea mask as `.sra`, `Model.configure(topomap=…, landmap=…)`,
-  `runtobalance()` to energy equilibrium, monthly `tas`/`pr` out as
-  netCDF. T42 = 64×128 Gaussian (~310 km), ~15 min per model year on 16
-  cores. A whole run is an overnight CPU job, well under $50 on a cloud
-  node. GPL-2, maintenance mode (v3.4.2, Jan 2025), needs gfortran.
-  Apple Silicon untested. Run it on Linux.
-- **All four channels** would drop out of the 12-month climatology: mean
-  temp, temp std, annual precip, precip CV. That would replace the two
-  derived heuristics.
-- Downscale T42 → 23 km with a CHELSA-V2-style pass. Nothing
-  off-the-shelf handles a planet with no weather stations. Interpolate
-  monthly fields. Correct temperature by lapse rate, ideally diagnosed
-  per-cell/month from the GCM's own vertical levels. Then
-  redistribute precipitation by a windward/leeward orographic index from
-  the GCM winds against the fine heightmap. `koppenpasta`
-  (github.com/hersfeldtn/koppenpasta) already does the lapse-rate-only
-  variant on ExoPlaSim output. That is the reference.
-
-A GCM can give real circulation: Hadley cells, monsoons, rain shadows,
-wet-west / dry-east asymmetry. It can also fill terrain-diffusion's
-structural gap. **The model's training data was clipped to ±60°
-latitude.** Its worlds are statistically mid-latitude everywhere.
-Physics-derived channels pinned at high SNR are what would make the
-output read as a planet with tropics and poles, rather than endless
-temperate terrain.
-
-**The trial:** one T21 run (minutes per year) on a planetgen heightmap.
-Compare precip and temp against `climate.js` by eye. If ExoPlaSim's
-fields are not clearly more believable, drop the stage and keep
-exporting from `climate.js`. This trial does not couple to the
-cubesphere bake. It is worth doing first. It does not wait for a
-**system**. Thalos at 1 AU around a G2V is already the implicit Sun in
-`world.js`. See [systems.md](../systems.md).
-
-When it graduates, `export:td` grows a mode that takes bake-time rasters
-instead of deriving channels.
-
-**Sea-surface temperature and ice history — open.** Reefs need SST.
-A late sea-level cut needs an ice-history number. Neither ships today.
-Water is a **body** fact. Sea sits at 0 m from Layout onward. Air
-temperature is the stand-in Carve uses for reefs. See
-[carve-landforms.md § Open](carve-landforms.md#open). A later Terrain
-would flood after the 90 m residual. That file is
-[custom-model.md](../custom-model.md).
-
-**Also open:** after Carve incises, elevation changes. Temperature
-should be recomputed with a lapse rate if climate must stay consistent.
-Biomes may need a pass. See [carve-hydrology.md](carve-hydrology.md).
+**Later stages.** Fine snow/ice fractions are interpolated coarse diagnostics.
+Carve may require lapse updates after incision, and a runtime climate payload
+still needs integration with Export. Discover's display intentionally remains
+the cheap preview; use the seasonal captures to inspect the climate a campaign
+will actually use.
 
 ## How to judge it
 
 ```sh
-bun run preview climate   # the moisture field on its own
+# Isolated validation; never starts terrain generation.
+bun run preview:climate --project=quarter --variant=<id> --out=work/climate/review
+bun run preview:climate --project=earth --out=work/climate/earth
+bun run sheet:climate --project=quarter --out=work/climate/sheet
+bun run check:climate
+
+# Actual measured Earth, separate from the authored --project=earth fixture.
+# Requires the benchmark Python dependencies and downloaded reference.
+bun run benchmark:climate
+
+# Prepare a saved variant's climate; still no terrain generation.
+bun run finish:climate --project=quarter --variant=<id>
+
+# Read-only campaign selection / resume check.
+bun run bake:campaign --project=quarter --variant=<id> --level=3 --seam=symmetric --fine-mask --dry-run
 ```
 
-This is the same shaded globe as Surface, not the Plates diagram. Crop
-in on a continent that should show a wet coast and a dry coast. That
-asymmetry is what this stage is for. You should be able to see it.
+Inspect `climate-map-compare.png`, `climate-globe-compare.png`, the annual
+physical fields and seasonal maps. Large Earth captures use a 64k-cell drawing
+mesh; computation and downscaling still use the full Shape. Crop mountain
+slopes to look for speckling and rain shadows; inspect wet coasts, inland drying,
+seasonal land/ocean contrast, poles and the longitude seam across the batch.
+The measured-Earth benchmark adds GCM/observational errors and sensitivity
+experiments; [setup, sources and comparison rules](../ref/climate-benchmark.md).
 
-**Do not judge from the finished biome map.** The biome table needs
-moisture well above 0.5 before land stops looking arid. A real
-improvement in moisture can leave the finished map looking unchanged.
-If you render the biome colours and reason backwards about the moisture,
-you tune the wrong subsystem.
+On this machine the revised solver took about **8 seconds on Rill** and
+**76 seconds on measured Earth**, while other CPU validation ran; generation,
+downscaling and drawing add time. These are
+measured default climate solves, not a guaranteed total bake time.
 
-If a picture is ambiguous, `bun run climate` can confirm the sign. It is
-not the verdict.
+Mechanism checks cover polar sunlight, water and heat conservation, dry-planet depletion,
+seasonal storage, mountain response, timestep sensitivity, body-driven winds,
+conservative downscaling, physical terrain units and cache/resume identity.
+`validate-climate-td.mjs` prepares an isolated five-TIFF import;
+`check-climate-td.py` validates the actual sibling importer and generates only
+one 256×256 native terrain cell on CPU. It never attaches to a campaign worker.
+The Rill trial checks all five importer units and produces a finite,
+varied terrain patch. This establishes that the
+conditioning path works; a single patch does not validate global landform quality.
+The active campaign's saved inputs and worker sources can be audited separately
+with `check-climate-integration.mjs --audit-active=<baseline-json>`.

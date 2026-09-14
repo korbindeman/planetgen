@@ -31,13 +31,18 @@
  * Resumable: a tile with output.elev and a matching tile.json is skipped, so
  * an interrupted overnight run picks up where it stopped.
  */
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import {createHash} from 'node:crypto';
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeTdFolder, hillshadePng } from "./td-geotiff.mjs";
 import { projectBakeDir } from "./td-overlays.mjs";
 import { resolveRun } from "./project-run.mjs";
+import { loadSavedPlanet } from "./saved-planet.mjs";
+import {prepareClimate} from './finish-climate.mjs';
+import {climateMode,climateStamp,assertClimateStamp} from './campaign-climate.mjs';
+import {HEIGHT_ENCODING,requireCurrentEncoding,assertHeightEncoding} from './terrain-encoding.mjs';
 import { finishBake, runOnWorker, stopTdWorker, tdWsl, toWslPath } from "./td-jobs.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,8 +51,11 @@ const Cube = require(join(root, "src", "cubesphere.js"));
 const Planet = require(join(root, "src", "planet.js"));
 const Projects = require(join(root, "src", "projects"));
 const TdExport = require(join(root, "src", "td-export.js"));
+const SeasonalTd = require(join(root,'src','seasonal-td.js'));
 const TdTile = require(join(root, "src", "td-tile.js"));
 const Tectonics = require(join(root, "src", "tectonics.js"));
+const FineMask = require(join(root,'src','campaign-mask.js'));
+const Seam = require(join(root,'src','td-seam.js'));
 const {decodePng, encodePng} = require(join(root, "src", "png.js"));
 
 const MODEL = "xandergos/terrain-diffusion-90m";
@@ -58,19 +66,27 @@ const PX_PER_CELL = 256;
 
 function parseArgs(argv) {
   const out = {shards: 1, shard: 0, dryRun: false, level: null, force: false, limit: 0,
-    mask: false, shelfM: 0, rings: 1};
+    mask: false, shelfM: 0, rings: 1, seamMode: 'halo', blendKm: 64,
+    fineMask:false, maskCells:2, maskBufferKm:46, maskFadeKm:46};
   for (const arg of argv) {
     if (arg === "--dry-run") out.dryRun = true;
     else if (arg === "--force") out.force = true;
     else if (arg.startsWith("--project=")) out.project = arg.slice(10);
     else if (arg.startsWith("--variant=")) out.variant = arg.slice(10);
+    else if (arg.startsWith('--climate=')) out.climate = arg.slice(10);
     else if (arg.startsWith("--variant-name=")) out.variantName = arg.slice(15);
     else if (arg.startsWith("--level=")) out.level = Number(arg.slice(8)) | 0;
     else if (arg.startsWith("--shards=")) out.shards = Math.max(1, Number(arg.slice(9)) | 0);
     else if (arg.startsWith("--shard=")) out.shard = Math.max(0, Number(arg.slice(8)) | 0);
     else if (arg.startsWith("--limit=")) out.limit = Math.max(0, Number(arg.slice(8)) | 0);
     else if (arg.startsWith("--px-per-cell=")) out.pxPerCell = Number(arg.slice(14)) | 0;
+    else if (arg.startsWith('--seam=')) out.seamMode = arg.slice(7);
+    else if (arg.startsWith('--blend-km=')) out.blendKm = Number(arg.slice(11));
     else if (arg === "--mask") out.mask = true;
+    else if (arg === '--fine-mask') { out.mask=true; out.fineMask=true; }
+    else if (arg.startsWith('--mask-cells=')) out.maskCells=Number(arg.slice(13));
+    else if (arg.startsWith('--mask-buffer-km=')) out.maskBufferKm=Number(arg.slice(17));
+    else if (arg.startsWith('--mask-fade-km=')) out.maskFadeKm=Number(arg.slice(15));
     else if (arg.startsWith("--shelf-m=")) { out.mask = true; out.shelfM = Number(arg.slice(10)); }
     else if (arg.startsWith("--mask-rings=")) { out.mask = true; out.rings = Number(arg.slice(13)) | 0; }
     else if (arg.startsWith("--mask-preview=")) { out.mask = true; out.maskPreview = arg.slice(15); }
@@ -83,6 +99,11 @@ function parseArgs(argv) {
     else throw new Error(`unknown arg: ${arg}`);
   }
   if (out.shard >= out.shards) throw new Error(`shard ${out.shard} of ${out.shards}`);
+  if (!['halo','symmetric'].includes(out.seamMode)) throw new Error('Unknown seam mode');
+  if (!(out.blendKm > 0 && out.blendKm <= 150)) throw new Error('Blend width must be in (0,150] km');
+  if(![1,2,4,8].includes(out.maskCells)) throw new Error('Mask cells must be 1, 2, 4, or 8');
+  if(!(out.maskBufferKm>=0&&out.maskFadeKm>0)) throw new Error('Mask needs a nonnegative buffer and positive fade');
+  if(out.fineMask&&out.seamMode!=='symmetric') throw new Error('Fine masking requires --seam=symmetric finalization');
   return out;
 }
 
@@ -123,6 +144,11 @@ function listTiles(level) {
  */
 function latticeOrigin(rect) {
   return {origin_i: -(rect.originJ + rect.height), origin_j: rect.originI};
+}
+function selectedCells(windows,rect) {
+  const {origin_i:i,origin_j:j}=latticeOrigin(rect);
+  return windows.reduce((n,w)=>n+Math.max(0,Math.min(i+rect.height,w.i+w.h)-Math.max(i,w.i))
+    *Math.max(0,Math.min(j+rect.width,w.j+w.w)-Math.max(j,w.j)),0);
 }
 
 /*
@@ -198,16 +224,19 @@ function neighbourhood(tile) {
  * ground is left alone. What you are looking for is red never touching a
  * coastline — the whole question is whether the mask hugs it.
  */
-async function writeMaskPreview(outPath, keep, level) {
-  const src = join(root, Projects.dir(run.project), "equirect.png");
-  const img = decodePng(await readFile(src));
+async function writeMaskPreview(outPath, keep, level, fine = null) {
+  const img = decodePng(require(join(root,'src','software-render')).captureEquirect(planet));
   const {width, height} = img;
   const rgba = Buffer.from(img.rgba);
   for (let y = 0; y < height; y++) {
     const lat = 90 - (y + 0.5) / height * 180;
     for (let x = 0; x < width; x++) {
       const lon = (x + 0.5) / width * 360 - 180;
-      if (keep.has(Cube.tileName(Cube.tileAt(lon, lat, level)))) continue;
+      const t=Cube.tileAt(lon,lat,level);
+      if(fine) {
+        const d=Cube.lonLatToXyz(lon,lat);
+        if(FineMask.sample(fine[t.face],d)>0) continue;
+      } else if (keep.has(Cube.tileName(t))) continue;
       const k = (y * width + x) * 4;
       rgba[k] = Math.min(255, rgba[k] * 0.45 + 130);
       rgba[k + 1] = rgba[k + 1] * 0.35;
@@ -251,11 +280,37 @@ function fraction(values, predicate) {
   return values.length ? n / values.length : 0;
 }
 
-async function alreadyBaked(dir, pxPerCell) {
+async function alreadyBaked(dir, pxPerCell, fingerprint, maskKey = null, climateKey = null) {
   try {
     const meta = JSON.parse(await readFile(join(dir, "tile.json"), "utf8"));
+    assertHeightEncoding(meta, HEIGHT_ENCODING, 'Tile metadata');
     if (meta.pxPerCell !== pxPerCell) return false;
-    return await Bun.file(join(dir, "output.elev")).exists();
+    if(meta.sketchFingerprint!==fingerprint) return false;
+    if((meta.climate?.key||null)!==climateKey) return false;
+    if(meta.maskKey && meta.maskKey !== maskKey) return false;
+    const complete = JSON.parse(await readFile(join(dir, 'campaign-complete.json'), 'utf8'));
+    assertHeightEncoding(complete, HEIGHT_ENCODING, 'Completed terrain');
+    if (complete.sketchFingerprint !== fingerprint) return false;
+    if((complete.climate?.key||null)!==climateKey) return false;
+    if(meta.seamMode==='symmetric') {
+      const raw=JSON.parse(await readFile(join(dir,'raw.elev.json'),'utf8'));
+      assertHeightEncoding(raw, HEIGHT_ENCODING, 'Raw terrain');
+      return raw.width===meta.cells*pxPerCell && raw.height===meta.bakeHeight*pxPerCell
+        && (await stat(join(dir,'raw.elev'))).size===raw.width*raw.height*4;
+    }
+    // Existence is not integrity: a torn write leaves a file that resume
+    // would skip. Check byte size against width*height*4 (float32), using
+    // the elev sidecar finishBake writes (fold tiles are not square).
+    const st = await stat(join(dir, "output.elev")).catch(() => null);
+    if (!st) return false;
+    try {
+      const em = JSON.parse(await readFile(join(dir, "output.elev.json"), "utf8"));
+      assertHeightEncoding(em, HEIGHT_ENCODING, 'Final terrain');
+      if (!(em.width > 0 && em.height > 0) || st.size !== em.width * em.height * 4) return false;
+    } catch {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -289,18 +344,36 @@ if (args.variantName) {
 }
 if (!variantId) throw new Error("a campaign bakes a saved variant — pass --variant-name or --variant");
 
-const planet = Planet.generatePlanet({
-  seed, project: run.project, values,
-  simulateTectonics: true, polarStraits: true, detailPass: true, quiet: true,
-});
+const {planet, fingerprint: sketchFingerprint} = await loadSavedPlanet(root, run.project, variantId);
 const radiusKm = planet.body.radiusKm;
-const level = args.level || Cube.bestLevel(
+const level = args.level ?? Cube.bestLevel(
   TdTile.TARGET_TILE_KM, radiusKm, TdTile.SCALE_KM,
   TdTile.MIN_CELLS, TdTile.MAX_CELLS, TdTile.SEAM_HALO_CELLS,
 );
 const cells = Cube.tileCells(level, radiusKm, TdTile.SCALE_KM);
+const haloCells = args.seamMode === 'symmetric'
+  ? Math.ceil(args.blendKm / (Cube.tileEdgeKm(level, radiusKm) / cells) * 1.6) + 1
+  : TdTile.SEAM_HALO_CELLS;
+const haloFor = (tile) => TdTile.haloCellsFor(tile, haloCells);
+const rawPad = args.seamMode === 'symmetric' ? 1 : 0;
+const facePad=TdTile.CONTEXT_PAD+haloCells*2+rawPad+8;
 const bakeDir = projectBakeDir(root, run.project, variantId);
-const all = args.tiles || listTiles(level);
+const settingsPath=join(bakeDir,'campaign-settings.json');
+const previousText=await readFile(settingsPath,'utf8').catch(err=>{if(err.code==='ENOENT')return null;throw err;});
+const previousSettings=previousText?JSON.parse(previousText):null;
+const legacyCampaign=!previousSettings&&Boolean(await stat(join(bakeDir,'campaign.jsonl')).catch(err=>{if(err.code==='ENOENT')return null;throw err;}));
+requireCurrentEncoding(previousSettings,legacyCampaign);
+const mode=climateMode(previousSettings,args.climate,legacyCampaign);
+const settingsBase={sketchFingerprint,model:MODEL,snr:SNR,seed,radiusKm,level,cells,pxPerCell,
+  seamMode:args.seamMode,blendKm:args.blendKm,haloCells,facePad,queryMode:'canonical-square-v1',heightEncoding:HEIGHT_ENCODING};
+if(previousSettings) {
+  const {climate,...previousBase}=previousSettings;
+  if(JSON.stringify(previousBase)!==JSON.stringify(settingsBase))
+    throw new Error('Campaign settings or saved sketch changed. Save a new variant before baking different inputs.');
+}
+let prepared=null,stamp={};
+console.log(`climate ${mode}${previousSettings||legacyCampaign?' (saved campaign recipe)':' (new campaign)'}`);
+const all = listTiles(level);
 const mine = args.tiles || shardOf(all, args.shards, args.shard);
 if (args.tiles && args.tiles.some((t) => t.level !== level)) {
   throw new Error(`--tiles are level ${args.tiles[0].level}, campaign level is ${level}`);
@@ -309,14 +382,14 @@ if (args.tiles && args.tiles.some((t) => t.level !== level)) {
 console.log(`project ${run.project}  variant ${variantId}  seed ${seed}`);
 console.log(`radius ${radiusKm} km  level ${level}  ${cells} cells/tile`
   + `  ${Cube.tileEdgeKm(level, radiusKm).toFixed(0)} km/tile  ${pxPerCell} px/cell`);
-console.log(`${all.length} tiles, shard ${args.shard}/${args.shards} takes ${mine.length}`);
+console.log(`${all.length} tiles, ${args.tiles?'named selection':`shard ${args.shard}/${args.shards}`} takes ${mine.length}`);
 console.log(`bake dir ${bakeDir}`);
 
 /* What it costs, from the rects themselves rather than a rule of thumb. */
 let px = 0;
 for (const tile of mine) {
-  const halo = TdTile.haloCellsFor(tile);
-  const r = Cube.tileBakeRect(tile, cells, 0, Object.values(halo).some(Boolean) ? halo : null);
+  const halo = haloFor(tile);
+  const r = Cube.tileBakeRect(tile, cells, rawPad, Object.values(halo).some(Boolean) ? halo : null);
   px += r.width * r.height * pxPerCell * pxPerCell;
 }
 const RATE = 0.53e6;
@@ -325,15 +398,43 @@ console.log(`${(px / 1e9).toFixed(1)} Gpx to generate — about `
 console.log(`~${(mine.length * cells * cells * pxPerCell * pxPerCell * 4 / 1e9).toFixed(0)} GB of float32 output`);
 
 let masked = null;
+let fineFaces=null, finePlan=null, maskKey=null;
+if(args.fineMask) {
+  const options={shelfM:args.shelfM,windowCells:args.maskCells,bufferKm:args.maskBufferKm,fadeKm:args.maskFadeKm,contextPad:facePad};
+  maskKey=createHash('sha256').update(JSON.stringify({version:2,sketchFingerprint,level,cells,...options})).digest('hex');
+  fineFaces=Array.from({length:6},(_,face)=>FineMask.createFace(planet,face,level,cells,options));
+  finePlan=new Map();
+  let generated=0,total=0;const uniqueQueries=new Map();
+  for(const tile of listTiles(level)) {
+    const rect=Cube.tileBakeRect(tile,cells,rawPad,haloFor(tile));
+    const windows=FineMask.windows(fineFaces[tile.face],rect);
+    finePlan.set(Cube.tileName(tile),windows);
+    generated+=selectedCells(windows,rect);total+=rect.width*rect.height;
+    for(const w of windows)uniqueQueries.set(`${tile.face}/${w.i}/${w.j}/${w.w}`,w.w*w.h);
+  }
+  console.log(`fine mask: ${generated}/${total} output cells (${(100*generated/total).toFixed(1)}%); ${(100*(1-generated/total)).toFixed(1)}% skipped before model context overhead`);
+  console.log(`  ${[...uniqueQueries.values()].reduce((a,b)=>a+b,0)} unique cells in canonical square queries; overlapping queries are cached per face`);
+  console.log(`  ${args.maskCells} cells/window (~${(args.maskCells*Cube.tileEdgeKm(level,radiusKm)/cells).toFixed(0)} km), ${args.maskBufferKm} km buffer + ${args.maskFadeKm} km offshore fade`);
+}
 if (args.mask) {
   const info = new Map();
   for (const tile of all) info.set(Cube.tileName(tile), tileRelief(planet, tile, cells));
   const infoOf = (name) => info.get(name);
   masked = coastMask([...info.keys()], infoOf, {shelfM: args.shelfM, rings: args.rings});
+  if(finePlan) {
+    let wholeCells=0,fineCells=0;
+    for(const tile of all) {
+      const name=Cube.tileName(tile),rect=Cube.tileBakeRect(tile,cells,rawPad,haloFor(tile));
+      if(masked.has(name)) wholeCells+=rect.width*rect.height;
+      fineCells+=selectedCells(finePlan.get(name),rect);
+    }
+    console.log(`  compared with the old ${masked.size}-tile mask: ${wholeCells} -> ${fineCells} output cells (${(100*(1-fineCells/wholeCells)).toFixed(1)}% less requested area)`);
+    masked=new Set([...finePlan].filter(([,v])=>v.length).map(([n])=>n));
+  }
   const withLand = [...info.values()].filter((v) => v.land > 0).length;
   const droppedLand = [...info.entries()].filter(([n, v]) => v.land > 0 && !masked.has(n));
   console.log(`mask: keep ${masked.size}/${all.length} tiles`
-    + ` (above ${args.shelfM} m, grown ${args.rings} ring${args.rings === 1 ? "" : "s"})`
+    + (finePlan?' (fine output windows)':` (above ${args.shelfM} m, grown ${args.rings} ring${args.rings === 1 ? "" : "s"})`)
     + `  — ${all.length - masked.size} abyss tiles skipped`);
   console.log(`  ${withLand} tiles carry land; ${droppedLand.length} of those would be dropped`);
   /* The one thing the mask must never do. Cheap to assert, and a wrong
@@ -344,19 +445,26 @@ if (args.mask) {
       + droppedLand.slice(0, 5).map(([n]) => n).join(", "));
   }
   if (args.maskPreview) {
-    await writeMaskPreview(args.maskPreview, masked, level);
+    await writeMaskPreview(args.maskPreview, masked, level, fineFaces);
     console.log(`  mask preview: ${args.maskPreview}`);
     process.exit(0);
   }
 }
 
+// No worker or campaign write occurs until the complete seasonal field passes
+// convergence and conservation checks. Dry runs never prepare or write climate.
+if(mode==='seasonal'&&!args.dryRun) {
+  prepared=await prepareClimate(planet,sketchFingerprint,join(bakeDir,'climate'));
+  stamp=climateStamp(mode,prepared);assertClimateStamp(previousSettings,stamp);
+}
+const climateKey=mode==='preview'?null:(prepared?.key||previousSettings?.climate?.key||'unprepared');
 const todo = [];
 let skippedByMask = 0, alreadyDone = 0;
 for (const tile of mine) {
   const name = Cube.tileName(tile);
   if (masked && !masked.has(name)) { skippedByMask++; continue; }
   const dir = join(bakeDir, `crop-${name}`);
-  if (!args.force && await alreadyBaked(dir, pxPerCell)) { alreadyDone++; continue; }
+  if (!args.force && await alreadyBaked(dir, pxPerCell, sketchFingerprint, maskKey, climateKey)) { alreadyDone++; continue; }
   todo.push({tile, name, dir});
 }
 console.log(`${alreadyDone} already baked`
@@ -372,26 +480,38 @@ if (args.dryRun) {
 const spec = {model: MODEL, snr: SNR, seed: Number(seed) | 0, device: "cuda"};
 const progressPath = join(bakeDir, "campaign.jsonl");
 await mkdir(bakeDir, {recursive: true});
+const settings = {...settingsBase,...stamp};
+if(!fineFaces&&await stat(join(bakeDir,'fine-mask.json')).catch(err=>{if(err.code==='ENOENT')return null;throw err;}))
+  throw new Error('This variant uses fine masking; resume with --fine-mask and its saved parameters.');
+await writeFile(settingsPath,JSON.stringify(settings,null,2));
+if(fineFaces) {
+  const path=join(bakeDir,'fine-mask.json');
+  const previous=await readFile(path,'utf8').catch(err=>{if(err.code==='ENOENT')return null;throw err;});
+  if(previous&&JSON.parse(previous).maskKey!==maskKey) throw new Error('Fine mask changed; save a new variant to change a masked campaign.');
+  for(const f of fineFaces) await writeFile(join(bakeDir,`face-${f.face}-mask.json`),JSON.stringify({...f,base:Array.from(f.base),weight:Array.from(f.weight)}));
+  await writeFile(path,JSON.stringify({maskKey,sketchFingerprint,level,tiles:[...masked],windowCells:args.maskCells,bufferKm:args.maskBufferKm,fadeKm:args.maskFadeKm,shelfM:args.shelfM},null,2));
+}
 
 /* One import per face, held for every window of it. */
+function climateLayers(tile,rect) {
+  if(prepared)return SeasonalTd.layersForBakeRect(planet,prepared.fine,tile,rect);
+  const raw=Planet.rasterizeBakeRect(planet.mesh,planet.map,tile,rect,0);
+  return TdExport.fieldsToTdLayers(raw,rect.width,rect.height,row=>
+    Cube.xyzToLonLat(Cube.bakeDirection(tile,rect,rect.width/2,row+0.5)).lat*Math.PI/180);
+}
 let importedFace = -1;
 async function importFace(face, job) {
   const faceTile = {face, level: 0, i: 0, j: 0};
   const faceCells = (1 << level) * cells;
-  const faceRect = Cube.tileBakeRect(faceTile, faceCells, TdTile.CONTEXT_PAD, null);
-  const raw = Planet.rasterizeBakeRect(planet.mesh, planet.map, faceTile, faceRect, 0);
-  const layers = TdExport.fieldsToTdLayers(raw, faceRect.width, faceRect.height, (row) => {
-    const mid = Cube.xyzToLonLat(
-      Cube.bakeDirection(faceTile, faceRect, faceRect.width / 2, row + 0.5),
-    );
-    return mid.lat * Math.PI / 180;
-  });
+  const faceRect = Cube.tileBakeRect(faceTile, faceCells, facePad, null);
+  const layers = climateLayers(faceTile,faceRect);
   const faceDir = join(bakeDir, `face-${face}`);
   await writeTdFolder(faceDir, layers, Cube.tileBBox(faceTile));
   const res = await runOnWorker(root, spec, job, {
     op: "import", name: `face-${face}`,
     tiff_dir: toWslPath(faceDir),
     ...latticeOrigin(faceRect),
+    ...(fineFaces?{mask_file:toWslPath(join(bakeDir,`face-${face}-mask.json`))}:{}),
   });
   if (!res.ok) throw new Error(`face ${face} import failed: ${res.error}`);
   importedFace = face;
@@ -407,22 +527,22 @@ for (const {tile, name, dir} of todo) {
     dir, tile, name, log: [], status: "baking", progress: 0,
     project: run.project, variant: variantId, seed,
   };
+  const heartbeat=setInterval(()=>console.log(`  ${name}: ${Math.round((Date.now()-t0)/1000)}s — ${job.log.at(-1)||'loading worker'}`),60000);
+  heartbeat.unref();
   try {
+    await unlink(join(dir,'campaign-complete.json')).catch(err=>{if(err.code!=='ENOENT')throw err;});
+    await unlink(join(dir,'seam-complete.json')).catch(err=>{if(err.code!=='ENOENT')throw err;});
     if (importedFace !== tile.face) await importFace(tile.face, job);
 
-    const halo = TdTile.haloCellsFor(tile);
+    const halo = haloFor(tile);
     const anyHalo = Object.values(halo).some(Boolean);
-    const rect = Cube.tileBakeRect(tile, cells, 0, anyHalo ? halo : null);
+    const rect = Cube.tileBakeRect(tile, cells, rawPad, anyHalo ? halo : null);
     const bounds = Cube.tileBBox(tile);
 
     /* The painter reads this tile's own climate channels, so the crop still
      * gets conditioning GeoTIFFs — pad 0, because the bake took its context
      * from the face and this copy is only for colour. */
-    const raw = Planet.rasterizeBakeRect(planet.mesh, planet.map, tile, rect, 0);
-    const layers = TdExport.fieldsToTdLayers(raw, rect.width, rect.height, (row) => {
-      const mid = Cube.xyzToLonLat(Cube.bakeDirection(tile, rect, rect.width / 2, row + 0.5));
-      return mid.lat * Math.PI / 180;
-    });
+    const layers = climateLayers(tile,rect);
     await writeTdFolder(dir, layers, bounds);
     await writeFile(join(dir, "coarse.png"),
       hillshadePng(layers.heightmap, rect.width, rect.height));
@@ -430,43 +550,56 @@ for (const {tile, name, dir} of todo) {
     Object.assign(job, {
       cropW: rect.width, cropH: rect.height, padCells: 0,
       originI: rect.originI, originJ: rect.originJ, bakeStep: rect.step,
-      tileCells: cells, haloCells: TdTile.SEAM_HALO_CELLS, pxPerCell,
+      tileCells: cells, haloCells, pxPerCell, skipStitch: args.seamMode === 'symmetric',
       scaleKm: TdTile.SCALE_KM, ...bounds,
     });
     await writeFile(join(dir, "tile.json"), JSON.stringify({
       ...tile, name, project: run.project, seed, variant: variantId,
       scaleKm: TdTile.SCALE_KM, cells: rect.width, tileCells: cells,
       padCells: 0, originI: rect.originI, originJ: rect.originJ,
-      bakeStep: rect.step, haloCells: TdTile.SEAM_HALO_CELLS, halo,
+      bakeStep: rect.step, haloCells, halo, bakeHeight: rect.height,
+      seamMode: args.seamMode, sketchFingerprint, ...stamp, heightEncoding: HEIGHT_ENCODING,
+      maskKey,
       pxPerCell, campaign: true, nominalBounds: bounds,
     }, null, 2));
 
+    const rawPath=join(dir,args.seamMode==='symmetric'?'raw.elev':'output.elev');
     let res = await runOnWorker(root, spec, job, {
       op: "generate", name,
       /* The tile's own rect in the face's frame — see latticeOrigin. */
       start_i: latticeOrigin(rect).origin_i, start_j: latticeOrigin(rect).origin_j,
       w: rect.width, h: rect.height,
-      output_elev: toWslPath(join(dir, "output.elev")),
+      output_elev: toWslPath(rawPath),
       max_dim: Math.max(rect.width, rect.height) * pxPerCell,
+      ...(finePlan?{windows:finePlan.get(name)}:{}),
     });
     if (!res.ok) {
       /* A worker that died takes its face import with it. Bring both back
        * once before giving up on the tile. */
-      console.log(`  ${name}: ${res.error} — re-importing face and retrying`);
+      console.log(`  ${name}: ${res.error} — restarting worker and retrying`);
+      await stopTdWorker();
       importedFace = -1;
       await importFace(tile.face, job);
       res = await runOnWorker(root, spec, job, {
         op: "generate", name,
         start_i: latticeOrigin(rect).origin_i, start_j: latticeOrigin(rect).origin_j,
         w: rect.width, h: rect.height,
-        output_elev: toWslPath(join(dir, "output.elev")),
+        output_elev: toWslPath(rawPath),
         max_dim: Math.max(rect.width, rect.height) * pxPerCell,
+        ...(finePlan?{windows:finePlan.get(name)}:{}),
       });
     }
-    if (!res.ok) throw new Error(res.error || "generate failed");
-
-    await finishBake(job);
-    if (job.status === "error") throw new Error(job.error);
+    if (!res.ok) {
+      const error = new Error(res.error || "generate failed after worker restart");
+      error.abortCampaign = true;
+      throw error;
+    }
+    const produced=JSON.parse(await readFile(rawPath+'.json','utf8'));
+    assertHeightEncoding(produced,HEIGHT_ENCODING,'Worker terrain');
+    if(args.seamMode!=='symmetric') {
+      await finishBake(job);
+      if (job.status === "error") throw new Error(job.error);
+    }
 
     /*
      * Does the DEM agree with the sketch it was conditioned on? Land fraction
@@ -476,24 +609,38 @@ for (const {tile, name, dir} of todo) {
      * ocean over tiles the sketch calls 100% land; every tile still agreed
      * with its neighbours, so only the sketch could tell us.
      */
-    const baked = await readElev(join(dir, "output.elev"));
+    let baked = await readElev(rawPath);
+    if (!baked.length || baked.some(v=>!Number.isFinite(v))) throw new Error('Invalid elevations in baked tile');
+    if(args.seamMode==='symmetric') {
+      const rawSize=JSON.parse(await readFile(rawPath+'.json','utf8'));
+      baked=Seam.bakeToTile(tile,rect,baked,rawSize.width,rawSize.height,64,64);
+    }
     const bakedLand = fraction(baked, (v) => v > 0);
-    const sketchLand = fraction(layers.heightmap, (v) => v > 0);
+    const sketchLand = fraction(Planet.rasterizeCubeTile(planet.mesh,planet.map,tile,64,64,0,0).elev, (v) => v > 0);
     if (Math.abs(bakedLand - sketchLand) > LAND_TOLERANCE) {
       mismatched++;
       console.log(`  ${name}: land ${(bakedLand * 100).toFixed(0)}% but the sketch says`
         + ` ${(sketchLand * 100).toFixed(0)}% — the bake is not reading its own conditioning`);
       if (mismatched >= 3) {
-        throw new Error("three tiles disagree with the sketch; stopping rather than baking all night");
+        const error = new Error("three tiles disagree with the sketch; stopping rather than baking all night");
+        error.abortCampaign = true;
+        throw error;
       }
+      throw new Error('Tile land fraction differs from its saved sketch; left incomplete for inspection');
     }
+    await writeFile(join(dir, 'campaign-complete.json'), JSON.stringify({sketchFingerprint,...stamp,heightEncoding:HEIGHT_ENCODING,
+      phase:args.seamMode==='symmetric'?'raw':'finished',bakedLand,sketchLand,at: Date.now()}));
     done++;
   } catch (err) {
     failed++;
     console.log(`  ${name}: FAILED ${err.message || err}`);
+    await writeFile(join(bakeDir,`worker-${name}-failure.log`),job.log.join('\n'));
     await appendFile(progressPath,
       JSON.stringify({name, ok: false, error: String(err.message || err), at: Date.now()}) + "\n");
+    if (err.abortCampaign) break;
     continue;
+  } finally {
+    clearInterval(heartbeat);
   }
   const secs = (Date.now() - t0) / 1000;
   const left = todo.length - done - failed;
@@ -507,7 +654,7 @@ for (const {tile, name, dir} of todo) {
     JSON.stringify({name, ok: true, seconds: secs, at: Date.now()}) + "\n");
 }
 
-stopTdWorker();
+await stopTdWorker();
 const hours = (Date.now() - started) / 3600000;
 console.log(`\n${done} baked, ${failed} failed, ${hours.toFixed(2)} h`);
 console.log(`look at it:  bun run seam ${join("preview", run.project, "v", variantId)} <tile>... --relief`);

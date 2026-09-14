@@ -348,7 +348,7 @@ function Advanced({session}) {
             <label class="check">
                 <input type="checkbox" checked=${process.simulateTectonics}
                     onChange=${(e) => host.setProcess('simulateTectonics', e.currentTarget.checked)} />
-                <span>Live tectonics</span>
+                <span>Procedural tectonic history</span>
             </label>
             <label class="check">
                 <input type="checkbox" checked=${process.mergeOceanPlates}

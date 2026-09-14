@@ -12,7 +12,7 @@ validates: `bun run build:package --project=<p> --variant-name=<v> --validate`.
 
 - A **sparse quadtree of height nodes** over a cubesphere, `(face, lod, x, y)`.
 - Heights are **int16 metres, sea level 0**. No scale, no bias, no unorm.
-- Nodes at `lod <= dense_lod` are **absolute**; above that they are
+- Nodes at `lod <= absolute_lod` are **absolute**; above that they are
   **residuals against the parent**. Reconstruction is exact.
 - Every node exists up to `dense_lod`. Above it, **a missing node means the
   parent is already good enough** — never "no data". There are no holes.
@@ -57,7 +57,8 @@ Starts at byte 32, runs for `manifest length`. Fields a reader needs:
 | `node_skirt` | skirt texels per side (1) |
 | `node_stride` | stored texels per side, `node_resolution + 2 * node_skirt` |
 | `leaf_lod` | finest lod present |
-| `dense_lod` | last complete lod, and the last stored absolute |
+| `dense_lod` | last complete lod: every node exists at or below it |
+| `absolute_lod` | last stored-absolute lod; residuals above it (≤ `dense_lod` on old files, which predate the split) |
 | `radius_m` | body radius in metres |
 | `bake_level` | the cubesphere level the DEM was baked at |
 | `content_key` | 16 hex chars; namespace your caches by this |
@@ -140,6 +141,11 @@ b = bHigh + (bLow - bHigh) * t
 
 Skirt texels are the same formula with `px` or `py` at `-1` or `R`; they land
 just outside the node and duplicate the neighbour's ground.
+New exporters sample that ground from neighboring interiors at the same mip,
+including across cube folds. The optional manifest field
+`terrain.skirt_mode = "same-mip-spherical-neighbours-v1"` distinguishes this
+from old packages whose outer face rows were clamped. Node interiors and the
+reconstruction algorithm below are unchanged.
 
 Note `b` runs *down* from `bHigh`, which is what makes row 0 north.
 
@@ -166,7 +172,7 @@ reconstruct(face, lod, x, y):
     return predicted + raw                    # element-wise
 ```
 
-The chain is bounded: a leaf walks at most `leaf_lod - dense_lod` parents.
+The chain is bounded: a leaf walks at most `leaf_lod - absolute_lod` parents.
 
 ### The predictor — must match exactly
 
@@ -243,6 +249,36 @@ Cheap, and each one has caught a real defect here:
    predictor rounds differently this is where it shows, and nowhere else.
 5. **Check the poles and a face fold**, not just a face centre. Frame and
    orientation bugs look perfectly fine in the middle of a face.
+
+## Content integrity
+
+Optional `content_identity: "sha256-manifest-index-blobs-v1"` identifies packages
+whose `blobs_sha256` hashes every byte from `blob_base` to EOF and whose
+`index_sha256` hashes the fixed-size index bytes. `content_key` is SHA-256 of the
+UTF-8 prefix `planet-package-v1` followed by a zero byte and `JSON.stringify`
+of the manifest with `content_key` removed, preserving the writer's property
+order. This is an integrity and cache identity contract, not authentication.
+An unknown content identity is an error when validating. Old packages lacking
+these fields can be decoded but cannot pass a content-integrity certificate.
+
+The reference reader validates address ordering, uniqueness, ancestry, dense
+coverage, nonoverlapping file-bounded blobs and the supported node layout before
+exposing an index. Decoded arrays are cached per open package. The supported
+node payload limit is 64 MiB; supported leaf levels are 0 through 25.
+`--selftest` additionally decodes all nodes and checks content digests when
+present. It does not certify the source's fidelity or the source's seam rules.
+
+## Pruning certification
+
+New exports identify `pruning.method` as `bilinear-subtree-v1`. Their omission
+test compares the retained ancestor against every descendant's continuous
+bilinear node surface and retains mixed dry/wet subtrees. `max_error_m` bounds
+that omission, independently of the rounded one-level `predictor_error_m`.
+Packages without this field predate full-subtree certification; the surviving
+file cannot establish the error of source data removed during export.
+
+This certificate does not assert cross-face source agreement or bound a
+consumer's reprojection and interpolation changes. Those need separate tests.
 
 ## Known limitations
 

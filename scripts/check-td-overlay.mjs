@@ -31,6 +31,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
 const Epoch = require(join(root, "src", "td-epoch.js"));
 const Cube = require(join(root, "src", "cubesphere.js"));
+const Overlay = require(join(root, "src", "td-overlay.js"));
 
 const failures = [];
 const check = (name, ok, detail = "") => {
@@ -139,6 +140,9 @@ const cropA = {
     const incomingNewBake = Object.assign({}, incomingA, {elevWidth: 128, elevHeight: 128});
     check("a new bake size does not keep the last DEM",
         !Epoch.canReuseElev(cropA, incomingNewBake, worldA));
+    check("a changed preview border invalidates the cached DEM and paint",
+        !Epoch.canReuseElev(cropA, {...incomingA, elevPad: 2}, worldA)
+        && !Epoch.canReuseColor(cropA, {...incomingA, elevPad: 2}, worldA, 1));
 }
 
 /* 5. adoptCaches is the only way a catalog reload keeps a DEM. */
@@ -203,6 +207,12 @@ const cropA = {
         const all = await listTdOverlays(tmp, {project: "thalos"});
         check("a listing without a seed still sees every folder",
             all.crops.length === 2);
+        await writeFile(join(folder, "preview.elev"), new Uint8Array(6 * 6 * 4));
+        await writeFile(join(folder, "preview.elev.json"), JSON.stringify({width: 6, height: 6, padPixels: 2}));
+        const padded = await listTdOverlays(tmp, {project: "thalos", seed: 42});
+        check("the catalog keeps a preview's neighbouring pixel border",
+            padded.crops[0].elevPad === 2 && padded.crops[0].elevWidth === 6
+            && padded.crops[0].elev.endsWith("preview.elev"));
     } finally {
         await rm(tmp, {recursive: true, force: true});
     }
@@ -250,6 +260,17 @@ const cropA = {
     const boxed = Cube.lonLatToXyz((box.west + box.east) / 2, (box.south + box.north) / 2);
     const gap = Math.hypot(mid[0] - boxed[0], mid[1] - boxed[1], mid[2] - boxed[2]);
     check("a cube crop is not placed from its bbox", gap > 1e-4, `gap ${gap.toFixed(6)}`);
+
+    const plain = Overlay.cropMesh({tile});
+    const padded = Overlay.cropMesh({tile, imageEl: {width: 900, height: 900}, imagePad: 2});
+    check("a padded preview keeps the same spherical geometry",
+        plain.xyz.every((v, k) => v === padded.xyz[k]));
+    check("the nominal tile edge samples the preview's interior border",
+        Math.abs(padded.uv[0] - 2 / 900) < 1e-7
+        && Math.abs(padded.uv[padded.uv.length - 1] - 898 / 900) < 1e-7);
+    const fallback = Overlay.cropMesh({tile, elevPad: 2, imageEl: {width: 4096, height: 4096}, imagePad: 0});
+    check("an unpadded PNG fallback keeps its full image extent",
+        fallback.uv.every((v, k) => v === plain.uv[k]));
 }
 
 check("earth's token is a seed, not a wildcard",

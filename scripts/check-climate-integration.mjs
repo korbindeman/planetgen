@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import {readFile,writeFile,mkdtemp} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {prepareClimate} from './finish-climate.mjs';
+import {climateMode,climateStamp,assertClimateStamp} from './campaign-climate.mjs';
+const existing={sketchFingerprint:'legacy-fixture',seed:211};
+assert.equal(climateMode(existing),'preview');assert.equal(climateMode(null),'seasonal');
+assert.equal(climateMode(null,undefined,true),'preview');assert.throws(()=>climateMode(null,'seasonal',true),/new variant/);
+assert.throws(()=>climateMode(existing,'seasonal'),/new variant/);
+assert.deepEqual(climateStamp('preview'),{});assertClimateStamp(existing,{});
+const prepared={key:'test',coarse:{version:'seasonal-1',diagnostics:{converged:true}}},stamp=climateStamp('seasonal',prepared);
+assert.equal(climateMode(stamp),'seasonal');assertClimateStamp(stamp,stamp);
+assert.throws(()=>assertClimateStamp(stamp,{climate:{...stamp.climate,key:'changed'}}),/new variant/);
+assert.throws(()=>climateStamp('seasonal',{key:'test',coarse:{diagnostics:{converged:false}}}),/not ready/);
+console.log('Climate selection: fresh campaigns use seasonal; existing and resumed campaigns keep their recipe');
+const require=createRequire(import.meta.url),G=require('../src/climate-grid'),T=require('../src/tectonics');
+const grid=G.makeGrid(1600,6371),planet={body:{radiusKm:6371,rotationHours:24,gravityG:1,axialTiltDeg:0},mesh:grid.mesh,map:{r_xyz:grid.xyz,r_meters:Float32Array.from({length:grid.n},(_,r)=>grid.xyz[3*r]>0?123.456:-1000)}};
+planet.map.r_elevation=Float32Array.from(planet.map.r_meters,T.metersToElevation);
+const directory=await mkdtemp(join(tmpdir(),'planetgen-climate-check-')),options={climateCells:200},quiet=()=>{};
+const first=await prepareClimate(planet,'source-a',directory,options,quiet),cached=await prepareClimate(planet,'source-a',directory,options,quiet);
+assert.equal(first.key,cached.key);assert.deepEqual(first.fine.annual,cached.fine.annual);
+const changed=await prepareClimate(planet,'source-b',directory,options,quiet);assert.notEqual(changed.key,first.key);
+const optionsChanged=await prepareClimate(planet,'source-a',directory,{...options,climateOceanDepthM:25},quiet);assert.notEqual(optionsChanged.key,first.key);
+const payload=JSON.parse(await readFile(first.path,'utf8'));payload.key='mismatched';await writeFile(first.path,JSON.stringify(payload));
+await assert.rejects(prepareClimate(planet,'source-a',directory,options,quiet),/identity mismatch/);
+await assert.rejects(prepareClimate(planet,'unconverged',directory,{...options,climateMinYears:2,climateMaxYears:2},quiet),/did not converge/);
+await assert.rejects(prepareClimate(planet,'invalid',directory,{climateStepDays:4},quiet),/divide/);
+console.log('Cache hit reproduces fields; source/options changes invalidate; mismatched, unconverged and invalid inputs fail');
+const auditArg=process.argv.find(a=>a.startsWith('--audit-active='));
+if(auditArg) {
+    const expected=JSON.parse(await readFile(auditArg.slice(15),'utf8')),hashes={};
+    for(const f of Object.keys(expected))hashes[f]=createHash('sha256').update(await readFile(f)).digest('hex');
+    assert.deepEqual(hashes,expected,'Active bake inputs or worker changed');console.log('Active bake inputs and worker hashes unchanged');
+}

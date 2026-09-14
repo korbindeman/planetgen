@@ -29,30 +29,33 @@ GeoTIFFs per tile.
 | Channel | From | Mapping |
 | --- | --- | --- |
 | `heightmap.tif` | `r_meters` | metres, sea level = 0 |
-| `temperature.tif` | `r_temperature` | °C |
-| `temperature_std.tif` | derived | °C, from latitude + inland dryness |
-| `precipitation.tif` | `r_moisture` | mm/yr |
-| `precipitation_cv.tif` | derived | %, from dryness + seasonality |
+| `temperature.tif` | seasonal monthly temperature | annual mean, °C |
+| `temperature_std.tif` | seasonal monthly temperature | sample SD, °C |
+| `precipitation.tif` | seasonal monthly precipitation | annual sum, mm/yr |
+| `precipitation_cv.tif` | seasonal monthly precipitation | WorldClim CV, % |
 
 Exact conversions in
 [ref/terrain-diffusion.md § Unit mapping](../ref/terrain-diffusion.md#unit-mapping).
 
 **Wishes** — what Terrain would use if upstream emitted it:
 
-- **Two channels are guessed, not simulated.** `temperature_std` and
-  `precipitation_cv` are derived from latitude and dryness because
-  nothing upstream models a seasonal cycle. A GCM would supply all four
-  from physics. See [climate.md § Open](climate.md#open). This is the
-  outstanding upstream ask in the pipeline.
+- **Independent climate validation.** The seasonal model now supplies all
+  four channels from monthly fields. A GCM comparison remains open;
+  see [climate.md § Open](climate.md#open). Regional Shape preview tiles
+  and old campaigns retain normalized preview climate and its seasonality
+  heuristics.
 - **Polar conditioning that the model believes.** The model saw no
   training data past ±60°. Pinning climate channels cold at high SNR is
   the current mitigation. It is not an answer.
 
 ## Hands on
 
-`output.elev` — the DEM in **raw float metres**, plus int16 GeoTIFF for
-downstream tools. LZW tiled 256×256, with the sketch's geotransform and
-CRS copied on.
+`output.elev` — the DEM in **raw Float32 metres**, plus a Float32 GeoTIFF
+for downstream tools. LZW tiled 256×256, with the sketch's geotransform and
+CRS copied on. The worker preserves the model's sub-metre signs without
+integer truncation or height clamping. Invalid/non-finite samples fail the
+bake. The masked cache also stores Float32; its convex fade preserves a
+fully selected model sample exactly, even beside a deep fallback.
 
 Consumed by [Carve](carve-hydrology.md), then [Export](export.md).
 
@@ -62,6 +65,106 @@ that GeoTIFF, never the planetgen canvas.
 **Not `output.png`.** That file was coloured once at bake time. It could
 never follow the map. What lands on the globe is `output.elev`, coloured
 in the browser with the globe's own surface look.
+
+### Campaign overlap and fine-mask trial
+
+Campaigns load the saved Layout and Shape artifacts, including sculpted
+fields and the separate Shape seed. They do not regenerate the recipe
+against current simulation code. `campaign-settings.json` stamps their
+sketch fingerprint and model/lattice settings. A resumable tile needs a
+completion marker and intact DEM dimensions/bytes; a failed tile is not
+completed merely because an output file exists.
+
+New campaigns stamp `heightEncoding: "float32-metres-v1"` in settings, tile
+metadata, raw/final raster sidecars and completion markers. Their finalizer
+and exporter require matching stamps. Earlier campaigns truncated the model
+to integer metres before writing Float32 files; casting those files again
+cannot restore lost low-land and shallow-water signs. They remain readable
+as legacy sources, but the corrected worker refuses to resume them, including
+with `--force`. Save a new variant to generate corrected source. The raw
+window/cache memory is twice its previous integer storage (four bytes per
+sample); the cache retains the same sixteen-window bound.
+
+This corrects the authored DEM, not package v1: its exporter still quantizes
+heights to integer metres. A package reconstruction check against those
+rounded values does not certify coastline fidelity to the Float32 source.
+Run `python scripts/check-terrain-precision.py`,
+`bun scripts/check-terrain-campaign.mjs` and
+`bun scripts/check-terrain-finalizer.mjs` for the producer and artifact contract.
+In the terrain-diffusion Python environment,
+`python scripts/check-terrain-worker.py` checks the real native worker, four
+halos and the TIFF-to-raw preview round trip using an analytic world. It does
+not load or run a learned model.
+
+Fresh campaigns default to `--climate=seasonal`. The CPU solve and its
+convergence checks finish before a terrain worker starts. `climate/` holds
+the independent monthly artifact, and campaign settings, tile metadata and
+completion markers carry its key. Both the face import and tile colour
+conditioning use those physical fields. `--climate=preview` is an explicit
+choice for a fresh campaign. On resume, a missing climate stamp means the
+original preview recipe; changing mode or climate identity requires a new
+variant. `--force` does not override that protection. `--dry-run` reports the
+selected mode without preparing climate or writing campaign files.
+
+`--seam=symmetric --blend-km=64` preserves immutable `raw.elev` face
+planes with enough overlap on both sides of every fold. Generation's
+`campaign-complete.json` marks this raw phase; it does not produce the
+final square DEM or run legacy stitching. Then run
+`bun scripts/blend-campaign.mjs --project=<project> --variant=<id>`.
+The finalizer samples one normalized spherical blend, including all three
+faces at a corner. Both sides read the same field, independently of bake
+order. Its completion is `seam-complete.json`. This is a wider terrain
+transition than the legacy first-baked-edge stitch; native DEM crops must
+judge its landform character as well as the absence of a height step.
+Named subsets can be finalized while generation continues, once all their
+contributing raw sources are complete. Build studio previews afterwards.
+For symmetric campaigns, the preview Gaussian reads a small spherical
+halo from finalized neighboring tiles and the shared masked-ocean field.
+It filters at true pixel centres, without flattening each tile's border.
+The reduced raster retains two filtered neighboring pixels on each side
+(`padPixels` in its sidecar). Shading uses that border; the overlay maps
+only the interior onto the tile, so bilinear sampling can cross its edge.
+`build:previews --tiles=<tile>,<tile>` rebuilds a selected subset for review.
+
+`--fine-mask` (with `--seam=symmetric`) selects output windows **inside**
+the existing bake tiles. `--mask-cells=2` uses two conditioning cells per
+side, about 45 km on Quarter at level 3, without changing the native grain.
+Selected windows form one global square partition per face, coalescing to
+2×2, 4×4, or 8×8 cells where the mask permits. A query crossing a tile's
+bounds stays square; only its copied output is clipped. Sixteen recent
+query results are cached per face so adjacent tiles can reuse them. The
+full 64-cell input context extends beyond the outermost query and fold
+halo. Only requested fine output is sparse; decoder and parent-latent
+context still costs compute.
+
+Square queries also fix a measured window dependence in the sibling
+model's postprocessing: `laplacian_denoise` passes the low-resolution width
+as a scalar resize target, which resizes the shorter edge on a rectangle.
+The same overlap in two rectangular requests differed by 2.56 m on average
+and 217 m at worst in the coastal trial. Shared square queries reduced
+that overlap difference to exactly zero. This is an orchestration fix;
+the sibling model is neither copied nor modified here.
+
+The mask protects sampled land and all positive saved-mesh vertices.
+`--mask-buffer-km=46 --mask-fade-km=46` retain a coastal buffer and smoothly
+fade the generated seabed into a shared coarse field farther offshore.
+Conservative sampling and face-scale guards add margin. `--shelf-m=-200`
+also retains shallow shelf. The output mask and fallback are saved in
+`fine-mask.json` and `face-<face>-mask.json`; changing them requires a new
+variant. Intentionally skipped tiles must use the same spherical fallback
+via `scripts/campaign-fields.mjs`, rather than a separately warped sketch.
+Expected but incomplete tiles must remain errors in downstream consumers.
+
+Inspect a mask without starting a worker:
+
+```sh
+bun run bake:campaign --project=quarter --variant=<id> --level=3 --seam=symmetric --fine-mask --mask-preview=preview/mask.png
+```
+
+On Rill's current preflight recipe this requests 80,567 output cells versus
+110,597 for the previous whole-tile mask: **27.2% less requested area**.
+That is a planning comparison, not a measured wall-time speedup. Coastal
+DEM and fold/corner capture checks precede the full campaign.
 
 ## Must not regress
 
@@ -205,7 +308,10 @@ the 90 m DEM.
    model only. First look at the planet as a planet. A drainage graph
    on that pass would be a preview. Those rivers do not constrain the
    90 m pass.
-4. Scale out to the 90 m bake. **Masked to land and shelf** — `--mask`
+4. Scale out to the 90 m bake. What the first whole-planet campaign cost
+   and the six defects it exposed are
+   [planet-bake-2026-09.md](../history/planet-bake-2026-09.md).
+   **Masked to land and shelf** — `--mask`
    keeps every tile with a cell above sea level, grows that set by one
    tile in all eight directions, and fills single-tile holes. On the
    quarter-radius planet that is 250 of 384 tiles: a third of the sphere
@@ -220,10 +326,21 @@ the 90 m DEM.
    Carve. `bun run bake:campaign` walks a whole level face by face —
    one conditioning import per face, a window per tile, resumable, and it
    checks each tile's baked land fraction against the sketch's so a bake
-   that stops reading its conditioning stops the run instead of filling a
-   night. It wants the WSL2 worker ([wsl-bake-env](../ref/wsl-bake-env.md));
-   the first planet through it is the quarter-radius body, 384 tiles at
-   level 3, ~30 s a tile.
+    that stops reading its conditioning stops the run instead of filling a
+    night. It wants the WSL2 worker ([wsl-bake-env](../ref/wsl-bake-env.md));
+    the first planet through it is the quarter-radius body, 384 tiles at
+    level 3, ~30 s a tile.
+5. Preflight before the next night. `--tiles=` bakes a named set through the
+   same face-import path as the campaign, so prove a region before
+   committing the night: a **2×2 block over land** (same-face joins) and a
+   **pair across a fold** (character join), each cropped with `bun run seam`
+   and looked at. Both took three minutes on the first planet and both found
+   something. Do not start a full campaign without them.
+6. Trial: **16 cells per tile, not 14.** A tile is then 4096 px, a package
+   node is 512, and the node grid aligns with tile boundaries with no
+   resample anywhere. `SCALE_KM` is the model's grain and does not move, so
+   this means choosing the campaign level whose `tileCells` lands on 16 for
+   the target body — one trial bake decides it, not arithmetic.
 
 A late sea-level cut on the carved DEM is a Finish step. It is not a
 re-bake unless the new shoreline leaves the baked band. See

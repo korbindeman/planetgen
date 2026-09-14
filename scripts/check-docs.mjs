@@ -32,7 +32,9 @@ const check = (name, ok, detail = "") => {
 
 function walk(dir, out = []) {
     for (const e of readdirSync(dir)) {
-        if (e === "node_modules" || e === ".git" || e === "build" || e === "preview") continue;
+        // Generated captures, benchmark caches and local Python dependencies
+        // are not authored repository docs (and may contain inaccessible bins).
+        if (e === "node_modules" || e === ".git" || e === "build" || e === "preview" || e === "work") continue;
         const p = join(dir, e);
         if (statSync(p).isDirectory()) walk(p, out);
         else if (e.endsWith(".md") || e.endsWith(".mdc")) out.push(p);
