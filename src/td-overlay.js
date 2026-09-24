@@ -31,7 +31,9 @@ const Epoch = require('./td-epoch');
 
 const MAX_IMAGE = 4096;
 const COLORS = (Look.CROP_COLORS_HEX || []).concat(['#c084fc', '#4ade80']);
-const TD_API = 'http://127.0.0.1:3748';
+const TD_API = typeof location !== 'undefined' && /^https?:$/.test(location.protocol)
+    ? '/api'
+    : 'http://127.0.0.1:3748';
 
 /* Grid chrome. The hover ghost has to read as "this is what you would get"
  * without competing with the baked tiles underneath it. */

@@ -15,6 +15,10 @@
  * Two details cost a day if you get them wrong, so they are called out where
  * they happen: the frame is z-up, and the predictor's rounding must break ties
  * toward +infinity, which is not what `round()` does in most languages.
+ *
+ * Format 2 adds a centimetre channel near sea level. `reconstruct` returns
+ * the int16 metre channel that residuals predict from; `nodeHeights` returns
+ * what the node means, `(100 * metres + centimetres) / 100`.
  */
 import { readFileSync, openSync, readSync, closeSync, fstatSync } from "node:fs";
 import { zstdDecompressSync } from "node:zlib";
@@ -22,6 +26,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { createHash } from "node:crypto";
 
 const QUARTER = Math.PI / 4;
+const HEIGHT_FRACTION = "int8-centimetres-v1";
 
 /* Face basis: normal, then the two tangents. Same table as the writer. */
 const FACES = [
@@ -84,7 +89,7 @@ export function openPlanet(path) {
     const head = Buffer.alloc(32); readExact(fd, head, 0);
     if (head.toString("ascii", 0, 8) !== "PLANETPK") throw new Error("not a .planet file");
     const version = head.readUInt32LE(8);
-    if (version !== 1) throw new Error(`unsupported package version ${version}`);
+    if (version !== 1 && version !== 2) throw new Error(`unsupported package version ${version}`);
     const manifestLen = head.readUInt32LE(12), nodeCount = head.readUInt32LE(16);
     const recordLen = head.readUInt32LE(20), blobBase = Number(head.readBigUInt64LE(24));
     const frontLen = manifestLen + nodeCount * recordLen;
@@ -94,9 +99,15 @@ export function openPlanet(path) {
     }
     const front = Buffer.alloc(frontLen); readExact(fd, front, 32);
     const manifest = JSON.parse(front.toString("utf8", 0, manifestLen));
-    const {node_resolution:R,node_stride:S,node_skirt,leaf_lod,dense_lod,radius_m,max_error_m=0} = manifest;
-    if (!Number.isInteger(R) || R <= 0 || R % 2 || node_skirt !== 1 || S !== R + 2 || S * S * 2 > 64 * 1024 * 1024) {
+    const {node_resolution:R,node_stride:S,node_skirt,leaf_lod,dense_lod,radius_m,max_error_m=0,height_fraction} = manifest;
+    if (!Number.isInteger(R) || R <= 0 || R % 2 || node_skirt !== 1 || S !== R + 2 || S * S * 3 > 64 * 1024 * 1024) {
       throw new Error("invalid package node layout");
+    }
+    // Format 2 declares its centimetre channel; format 1 has none.
+    if (version === 2 ? height_fraction?.encoding !== HEIGHT_FRACTION
+        || !(height_fraction.band_m > 0) || height_fraction.sea_level_m !== 0
+      : height_fraction !== undefined) {
+      throw new Error("invalid package height fraction");
     }
     if (!Number.isInteger(leaf_lod) || leaf_lod < 0 || leaf_lod > 25 || !Number.isInteger(dense_lod) || dense_lod < 0 || dense_lod > leaf_lod
       || !Number.isFinite(radius_m) || radius_m <= 0 || !Number.isFinite(max_error_m) || max_error_m < 0) {
@@ -136,15 +147,23 @@ export function openPlanet(path) {
   } catch (error) { closeSync(fd); throw error; }
 }
 
+/* A node's stored arrays: int16 values (heights or residuals) and, in format
+ * 2, the optional int8 centimetres that follow them in the same frame. */
 function rawNode(planet, entry) {
   const buf = Buffer.alloc(entry.length);
   readExact(planet.fd, buf, entry.offset);
-  const stride = planet.manifest.node_stride;
-  const out = zstdDecompressSync(buf, {maxOutputLength: stride * stride * 2 + 1});
-  if (out.length !== stride * stride * 2) {
-    throw new Error(`node payload is ${out.length} bytes, expected ${stride * stride * 2}`);
+  const n = planet.manifest.node_stride ** 2;
+  const out = zstdDecompressSync(buf, {maxOutputLength: n * 3 + 1});
+  const fractional = planet.version === 2 && out.length === n * 3;
+  if (out.length !== n * 2 && !fractional) {
+    throw new Error(`node payload is ${out.length} bytes, expected ${n * 2}`
+      + (planet.version === 2 ? ` or ${n * 3}` : ""));
   }
-  return new Int16Array(out.buffer, out.byteOffset, stride * stride);
+  const values = new Int16Array(out.buffer.slice(out.byteOffset, out.byteOffset + n * 2));
+  if (!fractional) return {values, centimetres: null};
+  const centimetres = new Int8Array(out.buffer.slice(out.byteOffset + n * 2, out.byteOffset + n * 3));
+  for (const c of centimetres) if (c < -99 || c > 99) throw new Error(`node centimetres ${c} outside -99..99`);
+  return {values, centimetres};
 }
 
 /* Bilinear upsample of the parent's quadrant, over the stored array including
@@ -171,25 +190,47 @@ function predict(planet, parent, qx, qy) {
   return out;
 }
 
-export function reconstruct(planet, face, lod, x, y) {
+function node(planet, face, lod, x, y) {
   const cache = caches.get(planet);
   if (!cache) throw new Error("package is closed");
   const key = `${face}/${lod}/${x}/${y}`;
   if (cache.has(key)) return cache.get(key);
   const entry = planet.index.get(key);
   if (!entry) return null;
-  let data = rawNode(planet, entry);
+  let {values: metres, centimetres} = rawNode(planet, entry);
   if (entry.residual) {
     const parent = reconstruct(planet, face, lod - 1, x >> 1, y >> 1);
     if (!parent) throw new Error(`node ${key} is a residual with no parent`);
     const predicted = predict(planet, parent, x & 1, y & 1);
-    const out = new Int16Array(data.length);
-    for (let k = 0; k < out.length; k++) out[k] = predicted[k] + data[k];
-    data = out;
+    const out = new Int16Array(metres.length);
+    for (let k = 0; k < out.length; k++) out[k] = predicted[k] + metres[k];
+    metres = out;
   }
   if (cache.size > 512) cache.clear();
-  cache.set(key, data);
-  return data;
+  const decoded = {metres, centimetres};
+  cache.set(key, decoded);
+  return decoded;
+}
+
+/* The node's int16 metre channel, reconstructed through its residual chain:
+ * what a child's residual is predicted from. */
+export function reconstruct(planet, face, lod, x, y) {
+  return node(planet, face, lod, x, y)?.metres ?? null;
+}
+
+/* The node's own int8 centimetres, or null where it stores none. Centimetres
+ * are never predicted: a residual node carries its own. */
+export function centimetres(planet, face, lod, x, y) {
+  return node(planet, face, lod, x, y)?.centimetres ?? null;
+}
+
+/* The node's heights in metres: its metre channel plus its centimetres. */
+export function nodeHeights(planet, face, lod, x, y) {
+  const decoded = node(planet, face, lod, x, y);
+  if (!decoded) return null;
+  const {metres, centimetres: cm} = decoded, out = new Float64Array(metres.length);
+  for (let k = 0; k < out.length; k++) out[k] = cm ? (100 * metres[k] + cm[k]) / 100 : metres[k];
+  return out;
 }
 
 /*
@@ -212,11 +253,11 @@ export function sampleHeight(planet, lonDeg, latDeg, maxLod = planet.manifest.le
     const fy = (1 - fc.b) / 2 * N;
     const x = Math.min(N - 1, Math.max(0, Math.floor(fx)));
     const y = Math.min(N - 1, Math.max(0, Math.floor(fy)));
-    const node = reconstruct(planet, face, lod, x, y);
-    if (!node) break;
+    const heights = nodeHeights(planet, face, lod, x, y);
+    if (!heights) break;
     const px = Math.min(R - 1, Math.max(0, Math.floor((fx - x) * R)));
     const py = Math.min(R - 1, Math.max(0, Math.floor((fy - y) * R)));
-    best = {lod, x, y, px, py, metres: node[(py + 1) * stride + (px + 1)]};
+    best = {lod, x, y, px, py, metres: heights[(py + 1) * stride + (px + 1)]};
   }
   return best;
 }
@@ -227,9 +268,10 @@ export function sampleHeight(planet, lonDeg, latDeg, maxLod = planet.manifest.le
 export function validatePlanet(path) {
   const planet = openPlanet(path);
   try {
-    let nodes = 0;
+    let nodes = 0, fractional = 0;
     for (const [key,entry] of planet.index) {
-      rawNode(planet,entry); nodes++;
+      if (rawNode(planet,entry).centimetres) fractional++;
+      nodes++;
       const lod = Number(key.split("/")[1]);
       if (entry.residual !== (lod > (planet.manifest.absolute_lod ?? planet.manifest.dense_lod))) {
         throw new Error(`residual flag disagrees with absolute_lod: ${key}`);
@@ -250,7 +292,7 @@ export function validatePlanet(path) {
       if (expected !== content_key) throw new Error("manifest content identity mismatch");
       integrity = "verified SHA-256 manifest, index and blobs";
     }
-    return {nodes,integrity};
+    return {nodes,fractional,integrity};
   } finally { planet.close(); }
 }
 
@@ -273,6 +315,7 @@ if (import.meta.main) {
   if (args.includes("--info") || args.length === 1) {
     console.log(`${m.body} / ${m.variant}  seed ${m.seed}  radius ${(m.radius_m / 1000).toFixed(0)} km`);
     console.log(`format v${planet.version}  content key ${m.content_key}`);
+    if (m.height_fraction) console.log(`centimetres within ${m.height_fraction.band_m} m of sea level`);
     console.log(`${planet.index.size} nodes, lod 0..${m.leaf_lod}, dense to ${m.dense_lod}`
       + `, absolute to ${m.absolute_lod ?? m.dense_lod}`);
     console.log(`node ${m.node_resolution} + ${m.node_skirt} skirt = ${m.node_stride} stride`);
@@ -296,7 +339,8 @@ if (import.meta.main) {
    */
   if (args.includes("--selftest")) {
     const report = validatePlanet(path);
-    console.log(`\nselftest: ${report.nodes} nodes decoded; complete base, reachable nodes, checked ranges and payloads`);
+    console.log(`\nselftest: ${report.nodes} nodes decoded (${report.fractional} with centimetres);`
+      + " complete base, reachable nodes, checked ranges and payloads");
     console.log(`integrity: ${report.integrity}`);
     console.log("ok");
   }

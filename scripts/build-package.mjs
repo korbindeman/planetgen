@@ -4,6 +4,7 @@
  *
  *   bun run build:package --project=quarter --variant-name=glep
  *   bun run build:package --project=quarter --variant-name=glep --error=12
+ *   bun run build:package ... --fraction-band=64
  *   bun run build:package ... --validate      (read it back and check it)
  *
  * The contract is docs/stages/export.md § The planet package. The parts that
@@ -20,6 +21,9 @@
  *   neighbour to shade or interpolate an edge.
  * - Dense to `--dense-lod`, sparse above it, and above it a missing node
  *   means exactly one thing: the parent is already within `--error`.
+ * - Heights are int16 metres plus int8 centimetres within `--fraction-band`
+ *   metres of sea level (default 64), so the coastline keeps the Float32
+ *   source's sub-metre signs. The encoding is scripts/package-encoding.mjs.
  *
  * Memory is bounded by working one bake tile at a time. A tile's subtree is
  * 8x8 leaves and its three ancestors — tens of MB — where the whole leaf
@@ -29,15 +33,13 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { zstdCompressSync } from "node:zlib";
 import { projectBakeDir } from "./td-overlays.mjs";
 import { resolveRun } from "./project-run.mjs";
 import { loadSavedPlanet } from "./saved-planet.mjs";
-import { canPruneSubtree } from "./package-pruning.mjs";
-import { createPackageOutput } from "./package-output.mjs";
 import { validatePlanet } from "./read-planet.mjs";
-import { createHash } from "node:crypto";
-import { createPackageTerrain, reduceNodes, fillLevelSkirts } from "./package-terrain.mjs";
+import { createPackageTerrain } from "./package-terrain.mjs";
+import { buildPackage, NODES_PER_TILE } from "./package-build.mjs";
+import { DEFAULT_FRACTION_BAND_M } from "./package-encoding.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(root, "package.json"));
@@ -45,15 +47,9 @@ const Cube = require(join(root, "src", "cubesphere.js"));
 const Projects = require(join(root, "src", "projects"));
 const TdTile = require(join(root, "src", "td-tile.js"));
 
-const MAGIC = "PLANETPK";
-const FORMAT_VERSION = 1;
-/* A bake tile is this many nodes on a side. It is what makes the node grid a
- * power of two while the node itself need not be. */
-const NODES_PER_TILE = 8;
-const NODATA = -32768;
-
 function parseArgs(argv) {
-  const out = {denseLod: 4, absoluteLod: null, error: 12, validate: false, level: 3};
+  const out = {denseLod: 4, absoluteLod: null, error: 12, validate: false, level: 3,
+    fractionBand: DEFAULT_FRACTION_BAND_M};
   for (const arg of argv) {
     if (arg === "--validate") out.validate = true;
     else if (arg.startsWith("--project=")) out.project = arg.slice(10);
@@ -63,16 +59,11 @@ function parseArgs(argv) {
     else if (arg.startsWith("--dense-lod=")) out.denseLod = Number(arg.slice(12)) | 0;
     else if (arg.startsWith("--absolute-lod=")) out.absoluteLod = Number(arg.slice(15)) | 0;
     else if (arg.startsWith("--error=")) out.error = Number(arg.slice(8));
+    else if (arg.startsWith("--fraction-band=")) out.fractionBand = Number(arg.slice(16));
     else if (arg.startsWith("--out=")) out.out = arg.slice(6);
     else throw new Error(`unknown arg: ${arg}`);
   }
   return out;
-}
-
-/* Content identity covers metadata, the index and the actual encoded heights. */
-function contentKey(manifest) {
-  return createHash("sha256").update("planet-package-v1\0")
-    .update(JSON.stringify(manifest)).digest("hex");
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -120,7 +111,7 @@ console.log(`bake level ${level}, ${cells} cells/tile -> node ${nodeRes}px,`
  */
 const absoluteLod = args.absoluteLod ?? args.denseLod;
 console.log(`dense to lod ${args.denseLod} (absolute to lod ${absoluteLod}),`
-  + ` prune above at ${args.error} m`);
+  + ` prune above at ${args.error} m, centimetres within ${args.fractionBand} m of sea level`);
 
 if (args.validate) {
   console.log(validatePlanet(outPath));
@@ -133,286 +124,24 @@ const terrain = await createPackageTerrain({
   bakeDir, planet, sketchFingerprint, level, cells, tileSide, nodeRes, leafLod,
 });
 
-/* A leaf is a window on the extended tile, offset by one so the skirt lands
- * on the border the tile already carries. */
-function leafFrom(ext, span, sx, sy) {
-  const side = nodeRes + 2;
-  const out = new Int16Array(side * side);
-  for (let y = 0; y < side; y++) {
-    const src = (sy * nodeRes + y) * span + sx * nodeRes;
-    out.set(ext.subarray(src, src + side), y * side);
-  }
-  return out;
-}
-
-/* Exact interiors; borders are filled from the completed neighbouring mip. */
-function reduce(children) {
-  return reduceNodes(children, nodeRes);
-}
-
-/* What the consumer would reconstruct for this node from its parent alone:
- * bilinear upsample of the parent's matching quadrant. The prune decision has
- * to measure the same thing the reader will do, or the declared error is
- * fiction. */
-function predictFromParent(parent, quadX, quadY) {
-  const side = nodeRes + 2;
-  const out = new Int16Array(side * side);
-  const half = nodeRes / 2;
-  const p = (x, y) => {
-    const cx = Math.min(nodeRes + 1, Math.max(0, x + 1));
-    const cy = Math.min(nodeRes + 1, Math.max(0, y + 1));
-    return parent[cy * side + cx];
-  };
-  for (let y = -1; y <= nodeRes; y++) {
-    for (let x = -1; x <= nodeRes; x++) {
-      const fx = quadX * half + (x + 0.5) / 2 - 0.5;
-      const fy = quadY * half + (y + 0.5) / 2 - 0.5;
-      const x0 = Math.floor(fx), y0 = Math.floor(fy);
-      const tx = fx - x0, ty = fy - y0;
-      const v = p(x0, y0) * (1 - tx) * (1 - ty) + p(x0 + 1, y0) * tx * (1 - ty)
-        + p(x0, y0 + 1) * (1 - tx) * ty + p(x0 + 1, y0 + 1) * tx * ty;
-      out[(y + 1) * side + (x + 1)] = Math.round(v);
-    }
-  }
-  return out;
-}
-
-function maxAbsDiff(a, b) {
-  let worst = 0;
-  for (let k = 0; k < a.length; k++) {
-    const d = Math.abs(a[k] - b[k]);
-    if (d > worst) worst = d;
-  }
-  return worst;
-}
-
-/* ------------------------------------------------------------------ write */
-
 const started = Date.now();
 await mkdir(dirname(outPath), {recursive: true});
-const output = await createPackageOutput(outPath);
-try {
-let blobOffset = 0;
-const index = [];
-
-async function emit(face, lod, x, y, data, predictorError, residual = false) {
-  const bytes = zstdCompressSync(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
-  await output.append(bytes);
-  index.push({
-    face, lod, x, y,
-    offset: blobOffset,
-    length: bytes.length,
-    predictor_error_m: Math.round(predictorError),
-    residual,
-  });
-  blobOffset += bytes.length;
-}
-
-/*
- * One bake tile at a time: build its 8x8 leaves, reduce to the tile root, and
- * decide presence on the way down. Everything coarser than a tile root is
- * assembled afterwards from the roots, which is small.
- */
-const roots = new Map();
-let emitted = 0, pruned = 0, sketchOnly = 0;
-const n = 1 << level;
-
-for (let face = 0; face < 6; face++) {
-  for (let ti = 0; ti < n; ti++) {
-    for (let tj = 0; tj < n; tj++) {
-      const baseX = ti * NODES_PER_TILE;
-      const baseY = (n - 1 - tj) * NODES_PER_TILE;
-      /* lod -> Map(key -> payload) for this tile's subtree */
-      const levels = new Map();
-      let covered = false;
-      for (let lod = leafLod; lod >= level; lod--) {
-        const {ext, span, covered: baked} = await terrain.extendedTile(face, ti, tj, lod);
-        covered = baked;
-        const count = 1 << (lod - level), nodes = new Map();
-        for (let dy = 0; dy < count; dy++) {
-          for (let dx = 0; dx < count; dx++) {
-            nodes.set(`${dx},${dy}`, leafFrom(ext, span, dx, dy));
-          }
-        }
-        levels.set(lod, nodes);
-      }
-      if (!covered) sketchOnly++;
-      roots.set(`${face}/${ti}/${tj}`, levels.get(level).get("0,0"));
-
-      /* A missing node removes its complete subtree. Certify the retained
-       * ancestor against every descendant's continuous source surface, and
-       * keep mixed land/water regions regardless of the vertical tolerance.
-       * Residual encoding still uses the exact rounded one-level predictor. */
-      const prunedHere = new Set();
-      const recon = new Map([[`${level}/0/0`, levels.get(level).get("0,0")]]);
-      for (let lod = level + 1; lod <= leafLod; lod++) {
-        const span = 1 << (lod - level);
-        const scale = 1 << (lod - level);
-        for (let dy = 0; dy < span; dy++) {
-          for (let dx = 0; dx < span; dx++) {
-            const parentKey = `${lod - 1}/${dx >> 1}/${dy >> 1}`;
-            if (prunedHere.has(parentKey)) {
-              prunedHere.add(`${lod}/${dx}/${dy}`);
-              pruned++;
-              continue;
-            }
-            const data = levels.get(lod).get(`${dx},${dy}`);
-            const predicted = predictFromParent(recon.get(parentKey), dx & 1, dy & 1);
-            const err = maxAbsDiff(data, predicted);
-            if (lod > args.denseLod && err <= args.error && canPruneSubtree({
-              parent: recon.get(parentKey), resolution: nodeRes,
-              parentLod: lod - 1, parentX: dx >> 1, parentY: dy >> 1,
-              lod, x: dx, y: dy, leafLod, levels, maxErrorM: args.error,
-            })) {
-              prunedHere.add(`${lod}/${dx}/${dy}`);
-              pruned++;
-              continue;
-            }
-            const residual = lod > absoluteLod;
-            let payload = data;
-            if (residual) {
-              payload = new Int16Array(data.length);
-              for (let k = 0; k < data.length; k++) payload[k] = data[k] - predicted[k];
-            }
-            recon.set(`${lod}/${dx}/${dy}`, data);
-            await emit(face, lod, baseX * scale / NODES_PER_TILE + dx,
-              baseY * scale / NODES_PER_TILE + dy, payload, err, residual);
-            emitted++;
-          }
-        }
-      }
-    }
-    process.stdout.write(`\r  face ${face} column ${ti + 1}/${n}: ${emitted} nodes, ${pruned} pruned   `);
-  }
-}
-
-/* Coarser than a tile root: reduce the roots themselves. Small enough to hold. */
-let coarse = new Map();
-const coarseRecon = new Map();
-for (const [key, data] of roots) {
-  const [face, ti, tj] = key.split("/").map(Number);
-  coarse.set(`${face}/${level}/${ti}/${(1 << level) - 1 - tj}`, data);
-}
-for (let lod = level; lod >= 0; lod--) {
-  const span = 1 << lod;
-  if (lod < level) {
-    const next = new Map();
-    for (let face = 0; face < 6; face++) {
-      for (let y = 0; y < span; y++) {
-        for (let x = 0; x < span; x++) {
-          next.set(`${face}/${lod}/${x}/${y}`, reduce([
-            coarse.get(`${face}/${lod + 1}/${x * 2}/${y * 2}`),
-            coarse.get(`${face}/${lod + 1}/${x * 2 + 1}/${y * 2}`),
-            coarse.get(`${face}/${lod + 1}/${x * 2}/${y * 2 + 1}`),
-            coarse.get(`${face}/${lod + 1}/${x * 2 + 1}/${y * 2 + 1}`),
-          ]));
-        }
-      }
-    }
-    for (const [k, v] of next) coarse.set(k, v);
-    fillLevelSkirts(coarse, lod, nodeRes);
-  }
-}
-for (let lod = 0; lod <= level; lod++) {
-  const span = 1 << lod;
-  for (let face = 0; face < 6; face++) {
-    for (let y = 0; y < span; y++) {
-      for (let x = 0; x < span; x++) {
-        const data = coarse.get(`${face}/${lod}/${x}/${y}`);
-        if (!data) continue;
-        /* The coarse base is usually all absolute (lod <= absoluteLod), but
-         * with --absolute-lod below the bake level it stores residuals here
-         * too — predicted from the reconstructed parent, same closed loop as
-         * the tile subtrees, so the chain stays exact. */
-        const residual = lod > 0 && lod > absoluteLod;
-        let payload = data, err = 0;
-        if (residual) {
-          const parent = coarseRecon.get(`${face}/${lod - 1}/${x >> 1}/${y >> 1}`);
-          const predicted = predictFromParent(parent, x & 1, y & 1);
-          err = maxAbsDiff(data, predicted);
-          payload = new Int16Array(data.length);
-          for (let k = 0; k < data.length; k++) payload[k] = data[k] - predicted[k];
-        }
-        coarseRecon.set(`${face}/${lod}/${x}/${y}`, data);
-        await emit(face, lod, x, y, payload, err, residual);
-        emitted++;
-      }
-    }
-  }
-}
+const stats = await buildPackage({
+  terrain, outPath, level, nodeRes, leafLod,
+  denseLod: args.denseLod, absoluteLod, errorM: args.error, fractionBandM: args.fractionBand,
+  identity: {
+    body: run.project, variant: variantId, seed, radius_m: radiusKm * 1000,
+    tile_cells: cells, sketch_fingerprint: sketchFingerprint,
+  },
+  progress: (line) => process.stdout.write(line),
+});
 console.log();
 
-const blobBytes = blobOffset;
-const manifest = {
-  format: "planetgen.planet",
-  version: FORMAT_VERSION,
-  body: run.project,
-  variant: variantId,
-  seed,
-  radius_m: radiusKm * 1000,
-  frame: "planetgen equal-angle cubesphere; see src/cubesphere.js",
-  bake_level: level,
-  tile_cells: cells,
-  node_resolution: nodeRes,
-  node_skirt: 1,
-  node_stride: nodeRes + 2,
-  leaf_lod: leafLod,
-  dense_lod: args.denseLod,
-  absolute_lod: absoluteLod,
-  max_error_m: args.error,
-  pruning: {method: "bilinear-subtree-v1", sea_level_m: 0, preserve_mixed_water: true},
-  sketch_fingerprint: sketchFingerprint,
-  terrain: {
-    seam_mode: terrain.settings?.seamMode ?? "legacy",
-    blend_km: terrain.settings?.blendKm ?? null,
-    mask_key: terrain.fine?.maskKey ?? null,
-    skirt_mode: "same-mip-spherical-neighbours-v1",
-  },
-  payload: "int16 little-endian, row-major, north first, zstd; absolute metres at"
-    + " lod <= absolute_lod, residual against the bilinear parent above it",
-  residual_flag: "high bit of the lod byte in an index record",
-  nodata: NODATA,
-  node_count: index.length,
-  pruned_count: pruned,
-  content_identity: "sha256-manifest-index-blobs-v1",
-  blobs_sha256: output.digest(),
-};
-
-/* Header, manifest and index are small; stream the staged blobs after them. */
-const RECORD = 24;
-const indexBuf = Buffer.alloc(index.length * RECORD);
-index.sort((a, b) => a.face - b.face || a.lod - b.lod || a.y - b.y || a.x - b.x);
-index.forEach((node, k) => {
-  const o = k * RECORD;
-  indexBuf.writeUInt8(node.face, o);
-  indexBuf.writeUInt8(node.lod | (node.residual ? 0x80 : 0), o + 1);
-  indexBuf.writeUInt16LE(node.predictor_error_m > 65535 ? 65535 : node.predictor_error_m, o + 2);
-  indexBuf.writeUInt32LE(node.x, o + 4);
-  indexBuf.writeUInt32LE(node.y, o + 8);
-  indexBuf.writeBigUInt64LE(BigInt(node.offset), o + 12);
-  indexBuf.writeUInt32LE(node.length, o + 20);
-});
-manifest.index_sha256 = createHash("sha256").update(indexBuf).digest("hex");
-manifest.content_key = contentKey(manifest);
-const manifestBuf = Buffer.from(JSON.stringify(manifest), "utf8");
-const header = Buffer.alloc(32);
-header.write(MAGIC, 0, "ascii");
-header.writeUInt32LE(FORMAT_VERSION, 8);
-header.writeUInt32LE(manifestBuf.length, 12);
-header.writeUInt32LE(index.length, 16);
-header.writeUInt32LE(RECORD, 20);
-header.writeBigUInt64LE(BigInt(header.length + manifestBuf.length + indexBuf.length), 24);
-await output.commit([header, manifestBuf, indexBuf], validatePlanet);
-
 const size = (await stat(outPath)).size;
-console.log(`\n${index.length} nodes, ${pruned} pruned, ${sketchOnly} tiles sketch-only`);
-console.log(`${(size / 1e6).toFixed(1)} MB  (blobs ${(blobBytes / 1e6).toFixed(1)} MB)`
+console.log(`\n${stats.nodes} nodes, ${stats.pruned} pruned, ${stats.sketchOnly} tiles sketch-only,`
+  + ` ${stats.fractional} with centimetres`);
+console.log(`${(size / 1e6).toFixed(1)} MB  (blobs ${(stats.blobBytes / 1e6).toFixed(1)} MB)`
   + `  in ${((Date.now() - started) / 1000).toFixed(0)}s`);
 console.log(`wrote ${outPath}`);
 console.log(`check it:  bun run build:package --project=${run.project}`
   + ` --variant-name=${args.variantName || ""} --validate`);
-
-} catch (error) {
-  await output.abort();
-  throw error;
-}

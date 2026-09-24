@@ -12,6 +12,8 @@ validates: `bun run build:package --project=<p> --variant-name=<v> --validate`.
 
 - A **sparse quadtree of height nodes** over a cubesphere, `(face, lod, x, y)`.
 - Heights are **int16 metres, sea level 0**. No scale, no bias, no unorm.
+  Format 2 adds **int8 centimetres** to samples near sea level, so the
+  coastline keeps the source's sub-metre signs.
 - Nodes at `lod <= absolute_lod` are **absolute**; above that they are
   **residuals against the parent**. Reconstruction is exact.
 - Every node exists up to `dense_lod`. Above it, **a missing node means the
@@ -37,7 +39,7 @@ All integers are little-endian.
 | Offset | Type | Field |
 | --- | --- | --- |
 | 0 | `char[8]` | magic, ASCII `PLANETPK` |
-| 8 | `u32` | format version (currently `1`) |
+| 8 | `u32` | format version: `1`, or `2` with centimetres |
 | 12 | `u32` | manifest length in bytes |
 | 16 | `u32` | node count |
 | 20 | `u32` | index record size in bytes (currently `24`) |
@@ -63,6 +65,7 @@ Starts at byte 32, runs for `manifest length`. Fields a reader needs:
 | `bake_level` | the cubesphere level the DEM was baked at |
 | `content_key` | 16 hex chars; namespace your caches by this |
 | `max_error_m` | prune budget the writer used |
+| `height_fraction` | format 2 only: `{encoding: "int8-centimetres-v1", band_m, sea_level_m: 0}`. Centimetres are stored for samples within `band_m` of sea level; a format 1 manifest has no such field |
 
 `body`, `variant`, `seed` identify the planet. `payload` and `residual_flag`
 restate the encoding in prose.
@@ -88,6 +91,12 @@ rather than build a hash map. Mask the lod byte with `0x7f` before comparing.
 
 Each blob is a zstd stream. Decompressed it is exactly
 `node_stride² * 2` bytes: int16, row-major, **first row is north**.
+
+In format 2 a blob may instead decompress to `node_stride² * 3` bytes: the
+same int16 array, then one int8 per sample in the same order. These are the
+node's **centimetres**, each in `-99..=99`. A node stores them only when one
+of its samples lies within `height_fraction.band_m` of sea level and has a
+nonzero correction; any other size is an error.
 
 ## Addressing
 
@@ -156,8 +165,9 @@ stride = node_stride
 interior(px, py) -> stored[(py + skirt) * stride + (px + skirt)]
 ```
 
-Absolute nodes are heights. Residual nodes must be added to a prediction from
-the parent.
+Absolute nodes store their metre channel. Residual nodes must be added to a
+prediction from the parent's metre channel. Centimetres are never predicted:
+every node carries its own, residual or not.
 
 ### Reconstruction
 
@@ -170,9 +180,15 @@ reconstruct(face, lod, x, y):
     parent = reconstruct(face, lod - 1, x >> 1, y >> 1)
     predicted = predict(parent, x & 1, y & 1)
     return predicted + raw                    # element-wise
+
+heights(face, lod, x, y):                    # what the node means
+    metres = reconstruct(face, lod, x, y)
+    cm = centimetres stored after raw, or zeros
+    return (100 * metres + cm) / 100          # element-wise
 ```
 
 The chain is bounded: a leaf walks at most `leaf_lod - absolute_lod` parents.
+`reconstruct` is the metre channel; sample and interpolate `heights`.
 
 ### The predictor — must match exactly
 
@@ -229,8 +245,13 @@ you avoid by fetching it. It is a reasonable input to a streaming priority.
 
 ## Heights
 
-Metres, sea level zero, integers. Land is positive, ocean floor negative.
-There is no separate sea-level field: compare against 0.
+Metres, sea level zero. Land is positive, ocean floor negative; a height of
+exactly zero is sea. There is no separate sea-level field: compare against 0.
+Format 1 heights are integers. Format 2 heights are the decoded
+`(100 * metres + centimetres) / 100`: within 1 cm of the Float32 source inside
+the band and within 0.5 m outside it. A source height above sea level never
+decodes to sea level or below, and the metre channel alone puts every sample on
+the same side of sea level as its decoded height.
 
 Terrain below the 90 m grain is not in this file and never will be — it is an
 algorithm and a seed, evaluated at runtime. See
@@ -240,7 +261,8 @@ algorithm and a seed, evaluated at runtime. See
 
 Cheap, and each one has caught a real defect here:
 
-1. **Every node's blob decodes to exactly `node_stride² * 2` bytes.**
+1. **Every node's blob decodes to exactly `node_stride² * 2` bytes**, or in
+   format 2 `node_stride² * 3` with centimetres in `-99..=99`.
 2. **Every node has a parent in the file.** A child whose parent is absent is
    unreachable; that bug shipped 180 such nodes before the check existed.
 3. **The dense base is complete** — all `6 * 4^lod` nodes for every
@@ -270,10 +292,14 @@ present. It does not certify the source's fidelity or the source's seam rules.
 
 ## Pruning certification
 
-New exports identify `pruning.method` as `bilinear-subtree-v1`. Their omission
-test compares the retained ancestor against every descendant's continuous
-bilinear node surface and retains mixed dry/wet subtrees. `max_error_m` bounds
-that omission, independently of the rounded one-level `predictor_error_m`.
+Format 2 exports identify `pruning.method` as `bilinear-subtree-v2`. Their
+omission test compares the retained ancestor, as a reader decodes it, against
+every descendant's continuous bilinear surface of the unquantized source. It
+rejects any omission that changes a sample's side of sea level and retains
+mixed dry/wet subtrees. `bilinear-subtree-v1` made the same comparison between
+metre-rounded nodes. `max_error_m` bounds that omission. `predictor_error_m`
+on a present node is at least the largest difference between its decoded
+heights and the bilinear upsample of its decoded parent.
 Packages without this field predate full-subtree certification; the surviving
 file cannot establish the error of source data removed during export.
 

@@ -95,7 +95,8 @@ all three again.
   under 1%.
   Each level reads its skirt from neighboring interiors at the same level,
   including folded face edges and three-face corners. The interior remains
-  the exact rounded 2:1 reduction. A fold can sample between the outermost
+  the exact unrounded 2:1 reduction of Float32 heights; nothing is quantized
+  before a node is encoded. A fold can sample between the outermost
   pixel centre and the face boundary; this half-pixel extends the neighboring
   slope. It must not clamp that slope or copy the node's last row.
 - **Payload**: `i16`, zstd. Absolute metres at `lod <= absolute_lod`;
@@ -103,6 +104,16 @@ all three again.
   index record's lod byte saying which. `absolute_lod` defaults to
   `dense_lod`; lowering it (with the dense base kept complete) is the next
   compression lever — see § Measured.
+- **Centimetres** (format 2): samples within `--fraction-band` metres of sea
+  level (default 64) add an `i8` centimetre correction after the `i16` array,
+  in the same zstd frame. A node stores them only when one is nonzero. At the
+  coast a vertical error becomes a horizontal one divided by the slope, so
+  whole metres there put the shoreline on the texel grid and flatten the
+  shallowest water to exactly sea level. At 90 m samples and a 64 m band,
+  the metre rounding left outside the band moves no zero crossing more than
+  about 0.35 m.
+  Quantization never moves a sample across sea level. The rule is
+  `scripts/package-encoding.mjs`.
 
   Absolute everywhere was tried first, on the argument that a node should
   decode without walking its ancestors. The measurement killed it: a bilinear
@@ -116,11 +127,15 @@ all three again.
   Prediction is **closed-loop** — the residual is taken against the parent the
   reader will have reconstructed, not the original — so nothing drifts as
   levels stack, and reconstruction is exact against the integer target.
-  Leaves rebuilt from the file match the **rounded** baked DEM to **0 m**.
-  Source floats are rounded before the hierarchy is built; this test does not
-  certify the original near-sea signs or horizontal shoreline displacement.
-  Corrected [Terrain](terrain.md) sources preserve Float32 precision, but v1
-  still quantizes them to metres.
+  Leaves rebuilt from the file match their quantized encoding to **0 m**, and
+  the metre channel alone predicts the next level. Format 1 rounded the source
+  before the hierarchy was built, so its reconstruction test could not certify
+  near-sea signs or horizontal shoreline displacement. Format 2 builds the
+  hierarchy from the Float32 [Terrain](terrain.md) source and quantizes each
+  node last: decoded heights are within 1 cm of the source inside the band,
+  and every sample keeps its side of sea level. `check:package` builds a
+  synthetic Float32 campaign through the real writer and holds every node to
+  that against the independent reader.
 
 ### Publication and content identity
 
@@ -166,8 +181,10 @@ budget. Height error alone does not bound shoreline displacement or preserve a
 small island. This is deliberately conservative until the package carries
 explicit coastal constraints and horizontal error certificates.
 
-`pruning.method = "bilinear-subtree-v1"` identifies this guarantee in new
-manifests. Older packages lack the certificate and must be rebuilt from source;
+`pruning.method = "bilinear-subtree-v2"` identifies this guarantee in format 2
+manifests: the retained ancestor is compared as a reader decodes it, against
+the unquantized source, and an omission that moves any sample across sea level
+is rejected. `bilinear-subtree-v1` compared metre-rounded nodes. Older packages lack the certificate and must be rebuilt from source;
 checking their surviving nodes cannot prove fidelity of discarded descendants.
 The certificate covers stored node interpolants, not terrain-generation
 plausibility, cross-face source agreement, or a consumer's later reprojection.
@@ -224,6 +241,12 @@ moves last.** First pull the levers that do not touch quality — the
 terrain — and only if Thalos still lands far above 3 GB revisit whether the
 2–3 GB row was wrong. Raising `--error` until the number fits is the Mira
 mistake under another name.
+
+Centimetres were costed before any format 2 planet existed. Re-encoding 300
+of Rill's residual nodes with a uniformly random sub-metre part (the
+incompressible worst case for the lost precision) grew them ×1.18 with the
+64 m band. Uniform 10 cm, 2 cm and 1 cm quanta grew them ×2.16, ×2.79 and
+×3.08. Measure the first real format 2 package against this.
 
 ### For the next bake
 

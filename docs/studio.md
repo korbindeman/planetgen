@@ -23,8 +23,11 @@ There is no Adopt/Commit step. Earth has no variants.
 
 ## New project
 
-The picker is **Projects**, then a workspace. **New project** is a real
-step: name the world, then pick **body** buckets (size, age, day, water).
+The picker is **Projects**, then a workspace. It refreshes user projects from
+disk when opened. The dev server forwards `/api/` requests to the local bake
+API, so the browser uses the same origin for the page and saved projects.
+
+**New project** is a real step: name the world, then pick **body** buckets (size, age, day, water).
 Each bucket is a named interval with a real body next to it. Picking
 Small clamps radius; it does not write 3186. Gravity and tilt start at
 Earth and are pinned until you free them.

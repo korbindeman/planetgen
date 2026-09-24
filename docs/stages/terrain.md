@@ -85,9 +85,9 @@ with `--force`. Save a new variant to generate corrected source. The raw
 window/cache memory is twice its previous integer storage (four bytes per
 sample); the cache retains the same sixteen-window bound.
 
-This corrects the authored DEM, not package v1: its exporter still quantizes
-heights to integer metres. A package reconstruction check against those
-rounded values does not certify coastline fidelity to the Float32 source.
+Package format 1 quantized these heights to integer metres before building
+its hierarchy. Format 2 builds from the Float32 source and adds centimetres
+near sea level; see [export.md § Nodes](export.md#nodes).
 Run `python scripts/check-terrain-precision.py`,
 `bun scripts/check-terrain-campaign.mjs` and
 `bun scripts/check-terrain-finalizer.mjs` for the producer and artifact contract.

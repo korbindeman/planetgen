@@ -511,6 +511,7 @@ function showProjectPage(session) {
     document.getElementById('workspace')?.setAttribute('aria-hidden', 'true');
     document.title = 'Projects';
     paint(session);
+    hydrateUserProjects().then(() => paint(session));
 }
 
 

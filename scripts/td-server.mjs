@@ -91,6 +91,7 @@ const server = Bun.serve({
       return json({ok: true});
     }
     if (url.pathname === "/projects" && req.method === "GET") {
+      await loadUserProjects(root, Projects);
       return json({
         projects: Projects.list().filter((p) => !Projects.isShipped(p.name)).map((p) => ({
           name: p.name,

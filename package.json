@@ -52,7 +52,7 @@
         "bake:campaign": "bun ./scripts/bake-campaign.mjs",
         "build:cubemap": "bun ./scripts/build-cubemap.mjs",
         "build:package": "bun ./scripts/build-package.mjs",
-        "check:package": "bun ./scripts/check-package-pruning.mjs && bun ./scripts/check-package-output.mjs && bun ./scripts/check-package-reader.mjs && bun ./scripts/check-package-terrain.mjs",
+        "check:package": "bun ./scripts/check-package-encoding.mjs && bun ./scripts/check-package-pruning.mjs && bun ./scripts/check-package-output.mjs && bun ./scripts/check-package-reader.mjs && bun ./scripts/check-package-terrain.mjs && bun ./scripts/check-package-build.mjs",
         "build:previews": "bun ./scripts/build-previews.mjs"
     }
 }

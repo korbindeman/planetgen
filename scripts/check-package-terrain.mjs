@@ -4,22 +4,26 @@ import {tmpdir} from 'node:os';
 import {join,resolve,sep,basename} from 'node:path';
 import {createRequire} from 'node:module';
 import {HEIGHT_ENCODING} from './terrain-encoding.mjs';
-import {createPackageTerrain,reduceInterior,reduceNodes,fillLevelSkirts,metres} from './package-terrain.mjs';
+import {createPackageTerrain,reduceInterior,reduceNodes,fillLevelSkirts} from './package-terrain.mjs';
 const require=createRequire(import.meta.url),Cube=require('../src/cubesphere');
 
-// Quantization and the intermediate integer reductions stay exactly as before.
-assert.throws(()=>metres(NaN),/Non-finite/);
-assert.equal(metres(-40000),-32767);assert.equal(metres(40000),32767);
+// Reductions are unrounded box averages of Float32 heights. A sub-metre
+// coast survives every mip until a node is encoded.
 {
-    const n=8,full=Int16Array.from({length:4*n*n},(_,k)=>(k*173)%3000-1700);
+    const n=8,full=Float32Array.from({length:4*n*n},(_,k)=>((k*173)%3000-1700)/7);
     const expected=reduceInterior(full,2*n),children=[];
+    for(let y=0;y<n;y++)for(let x=0;x<n;x++) {
+        const k=2*y*2*n+2*x;
+        assert.equal(expected[y*n+x],Math.fround((full[k]+full[k+1]+full[k+2*n]+full[k+2*n+1])/4));
+    }
     for(let qy=0;qy<2;qy++)for(let qx=0;qx<2;qx++) {
-        const c=new Int16Array((n+2)**2).fill(-12345);
+        const c=new Float32Array((n+2)**2).fill(-12345);
         for(let y=0;y<n;y++)for(let x=0;x<n;x++)c[(y+1)*(n+2)+x+1]=full[(qy*n+y)*2*n+qx*n+x];
         children.push(c);
     }
     const actual=reduceNodes(children,n);
     for(let y=0;y<n;y++)for(let x=0;x<n;x++)assert.equal(actual[(y+1)*(n+2)+x+1],expected[y*n+x]);
+    assert.ok(Math.abs(reduceInterior(Float32Array.of(0.3,0.3,-0.1,-0.1),2)[0]-0.1)<1e-6);
 }
 
 // An independent spherical analytic field checks all folded rims and corners
@@ -29,8 +33,8 @@ const analytic=d=>130+310*d[0]-490*d[1]+270*d[2];
 for(let lod=0;lod<=2;lod++) {
     const n=1<<lod,r=64,stride=r+2,nodes=new Map();
     for(let face=0;face<6;face++)for(let y=0;y<n;y++)for(let x=0;x<n;x++) {
-        const tile={face,level:lod,i:x,j:n-1-y},data=new Int16Array(stride*stride).fill(-32768);
-        for(let py=0;py<r;py++)for(let px=0;px<r;px++)data[(py+1)*stride+px+1]=Math.round(analytic(Cube.tileDirection(tile,(px+.5)/r,(py+.5)/r)));
+        const tile={face,level:lod,i:x,j:n-1-y},data=new Float32Array(stride*stride).fill(-32768);
+        for(let py=0;py<r;py++)for(let px=0;px<r;px++)data[(py+1)*stride+px+1]=analytic(Cube.tileDirection(tile,(px+.5)/r,(py+.5)/r));
         nodes.set(`${face}/${lod}/${x}/${y}`,data);
     }
     fillLevelSkirts(nodes,lod,r);
@@ -43,7 +47,8 @@ for(let lod=0;lod<=2;lod++) {
         }
     }
 }
-assert.ok(worst<2,`Folded mip skirt error ${worst}`);
+// Unrounded skirts leave only interpolation of the curved field.
+assert.ok(worst<0.5,`Folded mip skirt error ${worst}`);
 console.log(`package terrain: ${samples} mip border samples, max analytic error ${worst.toFixed(3)} m`);
 
 const dir=await mkdtemp(join(tmpdir(),'planetgen-package-terrain-'));
@@ -63,7 +68,7 @@ try {
     const options={bakeDir:dir,planet:{body:{radiusKm}},sketchFingerprint,level,cells,tileSide:width,nodeRes,leafLod};
     const terrain=await createPackageTerrain(options);
     const raw=await readFile(join(dir,'crop-f0l1x0y0','output.elev'));
-    let expected=Int16Array.from(new Float32Array(raw.buffer,raw.byteOffset,raw.length/4),Math.round),side=width;
+    let expected=Float32Array.from(new Float32Array(raw.buffer,raw.byteOffset,raw.length/4)),side=width;
     for(let lod=leafLod;lod>=level;lod--) {
         const got=await terrain.extendedTile(0,0,0,lod);
         assert.equal(got.span,side+2);assert.equal(got.covered,true);

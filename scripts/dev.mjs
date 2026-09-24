@@ -1,6 +1,7 @@
 /**
  * Live app plus the local TD bake API.
- * bun --hot serves the page; td-server accepts crop jobs and overlay PNGs.
+ * The app server serves the page and proxies its API requests.
+ * td-server accepts crop jobs and overlay PNGs.
  *
  * The page is rebundled on every edit; the bake API is not. Reusing whatever
  * already answers on the port is what let a server from before a change keep
@@ -77,7 +78,7 @@ if (live && live.version === version) {
     stderr: "inherit",
   });
 }
-const app = Bun.spawn(["bun", "--hot", "./index.html"], {
+const app = Bun.spawn(["bun", "--hot", "./scripts/app-server.mjs"], {
   cwd: root,
   stdout: "inherit",
   stderr: "inherit",
